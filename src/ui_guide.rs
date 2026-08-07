@@ -537,10 +537,19 @@ fn draw_row(
         let text_w = cell.max.x - text_x - pad;
 
         if text_w > 30.0 {
+            // The badge sits on the title's own line, at the right edge, so
+            // the title has to be elided to what is left after it rather than
+            // to the whole cell. Eliding to the full width let a long title
+            // run straight under "NEW" — the badge is drawn afterwards and
+            // simply painted over whatever was there.
+            const BADGE_W: f32 = 36.0;
+            let badge = airing.is_new && text_w > 160.0;
+            let title_w = if badge { text_w - BADGE_W } else { text_w };
+
             painter.text(
                 egui::pos2(text_x, cell.min.y + 11.0),
                 egui::Align2::LEFT_TOP,
-                elide(&airing.title, text_w),
+                elide(&airing.title, title_w),
                 egui::FontId::proportional(13.5),
                 Fluent::TEXT_PRIMARY,
             );
@@ -556,7 +565,7 @@ fn draw_row(
                     Fluent::TEXT_TERTIARY,
                 );
             }
-            if airing.is_new && text_w > 160.0 {
+            if badge {
                 painter.text(
                     egui::pos2(cell.max.x - pad, cell.min.y + 12.0),
                     egui::Align2::RIGHT_TOP,
