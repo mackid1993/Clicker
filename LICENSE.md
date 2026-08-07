@@ -103,27 +103,35 @@ Those components are **not** licensed under the terms above. Each is governed by
 its own license, and where those licenses conflict with the terms above, the
 component's own license prevails for that component.
 
-## GStreamer
+## FFmpeg
 
-RustDVR plays video using GStreamer, which is licensed under the GNU Lesser
-General Public License version 2.1 or later. GStreamer is **dynamically linked
-and shipped unmodified as separate shared libraries**, and is not combined into
-RustDVR's own binary.
+RustDVR decodes all audio and video using FFmpeg, which is licensed under the
+GNU Lesser General Public License version 2.1 or later. FFmpeg is **dynamically
+linked and shipped unmodified as separate shared libraries** — `avcodec`,
+`avformat`, `avfilter`, `avutil`, `swscale` and `swresample` — placed beside the
+executable and loaded at runtime. It is never folded into RustDVR's own binary
+and never renamed.
 
-The LGPL requires that anyone who receives RustDVR be free to modify GStreamer,
-to relink RustDVR against their modified version, and to reverse engineer as
+The LGPL requires that anyone who receives RustDVR be free to modify FFmpeg, to
+relink RustDVR against their modified version, and to reverse engineer as
 necessary to debug that relinking. Nothing in the PolyForm Strict License above
-restricts any of that, because GStreamer is not part of "the software" as that
-term is used above. Those rights are granted by the LGPL and are not withdrawn
-here.
+restricts any of that, because FFmpeg is not part of "the software" as that term
+is used above. Those rights are granted by the LGPL and are not withdrawn here,
+and the exception at the top of this file exists so that they cannot be.
 
-The GStreamer source corresponding to the shipped libraries is available from
-<https://gstreamer.freedesktop.org/>. The exact build is pinned in this
-repository so it can be reproduced.
+The corresponding source is FFmpeg `n7.1.1`, from
+<https://github.com/FFmpeg/FFmpeg>. It is built from that source rather than
+downloaded prebuilt, because the license has to be provable: every prebuilt
+FFmpeg-bearing media binary for Windows that was examined embeds a build
+configured `--enable-gpl`, and shipping one of those inside a PolyForm Strict
+application would place the entire distribution under the GPL.
 
-Only plugins that declare an LGPL, MIT, BSD or MPL license are shipped. Plugins
-wrapping GPL libraries are excluded deliberately: bundling even one would place
-the whole distribution under the GPL.
+This build is configured `--disable-gpl --disable-nonfree`. The configure line
+is recorded inside the libraries themselves and can be read back at runtime
+through `av_license()` and `FFMPEG_CONFIGURATION`; RustDVR prints it on startup.
+`scripts/build-ffmpeg.ps1` reproduces the build from the pinned tag, and
+`build.ps1` re-reads the shipped library and refuses to package it if it reports
+GPL.
 
 ## Rust crates
 
@@ -139,6 +147,8 @@ redistribute them.
 
 ## Channels DVR
 
-RustDVR is an independent client that talks to a Channels DVR server over its
-HTTP API. It is not affiliated with, endorsed by, or derived from Channels or
-Fancy Bits LLC. No Channels code is used.
+RustDVR is an independent, unofficial client that talks to a Channels DVR server
+over its public HTTP API. It is not affiliated with, endorsed by, sponsored by,
+supported by, or derived from Channels or Fancy Bits, LLC. No Channels code is
+used. "Channels" and "Channels DVR" are the property of their respective owners
+and appear here only to identify the server this program communicates with.
