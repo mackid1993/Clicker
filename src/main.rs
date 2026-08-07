@@ -1774,7 +1774,7 @@ impl App {
                     ctx.request_repaint();
                 });
             }
-            G::EditPadding(airing) => {
+            G::OpenRecord(airing) => {
                 self.record_dialog = Some(ui_record::RecordDialog::new(
                     airing,
                     self.padding.start,
@@ -2669,7 +2669,21 @@ impl App {
             egui::Sense::click_and_drag(),
         );
 
-        let track = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), 4.0));
+        // A gutter at each end for the times, with the track between them.
+        //
+        // On the bar rather than in the row of buttons underneath: they
+        // describe the bar, and that row sheds controls as the window narrows
+        // — where you are in a programme is not something to shed.
+        const GUTTER: f32 = 64.0;
+        let inner = egui::Rect::from_min_max(
+            egui::pos2(rect.min.x + GUTTER, rect.min.y),
+            egui::pos2(
+                (rect.max.x - GUTTER).max(rect.min.x + GUTTER + 20.0),
+                rect.max.y,
+            ),
+        );
+
+        let track = egui::Rect::from_center_size(inner.center(), egui::vec2(inner.width(), 4.0));
         let painter = ui.painter();
         painter.rect_filled(track, 2.0, with_alpha(Fluent::TEXT_PRIMARY, 40));
 
@@ -2741,6 +2755,42 @@ impl App {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
 
+        // Left: how far in. Right: how much there is, or how far behind live.
+        //
+        // The left one follows the handle while scrubbing rather than the
+        // picture, because the question being asked mid-drag is "where am I
+        // about to land", not "where am I now" — `position` already prefers
+        // the scrub target for exactly that reason.
+        let behind = self.player.as_ref().and_then(|p| p.behind_live());
+        let trailing = if self.live_channel.is_some() {
+            match behind {
+                Some(behind) if behind > 8.0 => format!("-{}", clock(behind)),
+                _ => "LIVE".to_string(),
+            }
+        } else {
+            clock(span)
+        };
+        let trailing_tint = if trailing == "LIVE" {
+            Fluent::LIVE
+        } else {
+            Fluent::TEXT_SECONDARY
+        };
+
+        ui.painter().text(
+            egui::pos2(inner.min.x - SPACE_S, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            clock((position - start).max(0.0)),
+            egui::FontId::proportional(11.5),
+            Fluent::TEXT_SECONDARY,
+        );
+        ui.painter().text(
+            egui::pos2(inner.max.x + SPACE_S, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            trailing,
+            egui::FontId::proportional(11.5),
+            trailing_tint,
+        );
+
         if let Some(target) = commit {
             if let Some(player) = &self.player {
                 player.seek_to(target);
@@ -2767,7 +2817,6 @@ impl App {
         let width = ui.available_width();
         let show_volume = width > 860.0;
         let show_quality = width > 700.0;
-        let show_clock = width > 600.0;
         let show_record = width > 520.0;
         let show_skips = width > 440.0;
 
@@ -2854,40 +2903,9 @@ impl App {
                 }
             }
 
-            // Live says how far back from the edge you are; a recording says
-            // where you are in it. "-39:37" was being shown for both, which
-            // read as "39 minutes behind live" on a program that finished
-            // hours ago.
-            if !show_clock {
-                // Nothing: the scrub bar above already says where playback is.
-            } else if self.live_channel.is_some() {
-                if let Some(behind) = behind.filter(|b| *b > 8.0) {
-                    ui.label(
-                        egui::RichText::new(format!("-{}", clock(behind)))
-                            .size(12.0)
-                            .color(Fluent::TEXT_SECONDARY),
-                    );
-                }
-            } else if let (Some(player), Some(position)) =
-                (self.player.as_ref(), self.elapsed_position())
-            {
-                // The total comes from the seek range, not the container's
-                // duration: the range and the position are both measured from
-                // the stream's own origin, and mixing the two scales is what
-                // once seeked a recording twenty-two hours past its end.
-                let total = player
-                    .seek_range()
-                    .map(|(start, end)| end - start)
-                    .or_else(|| player.duration())
-                    .unwrap_or(0.0);
-                if total > 0.0 {
-                    ui.label(
-                        egui::RichText::new(format!("{} / {}", clock(position), clock(total)))
-                            .size(12.0)
-                            .color(Fluent::TEXT_SECONDARY),
-                    );
-                }
-            }
+            // The clock used to be here as well. It is on the scrub bar now,
+            // at the ends of the thing it describes, where it does not compete
+            // with the buttons for room on a narrow window.
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Leaving the player is a back arrow, not an X.

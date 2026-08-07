@@ -46,8 +46,9 @@ pub enum GuideAction {
     CancelJob(String, Airing),
     /// Cancel the series pass covering this airing.
     CancelSeries(Airing),
-    /// Open the padding editor for an airing.
-    EditPadding(Airing),
+    /// Open the record dialog for an airing: padding, this episode, or the
+    /// whole series.
+    OpenRecord(Airing),
 }
 
 pub struct GuideState {
@@ -580,10 +581,18 @@ fn draw_row(
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
 
-        // Left click: watch what has started, record what has not.
+        // Left click: watch what has started, and ask about what has not.
+        //
+        // It used to schedule a future programme outright. Recording is not a
+        // preview — it claims a tuner, it may create a season pass, and the
+        // padding is usually the thing worth changing — so a single click that
+        // commits to all of that, with no confirmation and no undo beyond
+        // finding the job again, is too much to infer from one click on a
+        // grid cell. The dialog is one keystroke away from the same outcome
+        // and does not guess.
         if response.clicked() {
             action = Some(if airing.in_future(now) {
-                GuideAction::Record(airing.clone())
+                GuideAction::OpenRecord(airing.clone())
             } else {
                 GuideAction::Watch(row.channel.number.clone())
             });
@@ -644,7 +653,7 @@ fn draw_row(
 
             ui.separator();
             if ui.button("⚙  Padding and options…").clicked() {
-                action = Some(GuideAction::EditPadding(airing.clone()));
+                action = Some(GuideAction::OpenRecord(airing.clone()));
                 ui.close_menu();
             }
         });
