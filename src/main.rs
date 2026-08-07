@@ -2266,30 +2266,54 @@ impl App {
         let controls_up = self.last_activity.elapsed().as_secs_f32() < 3.2;
         let lift = if controls_up { 112.0 } else { 40.0 };
 
-        // Scaled to the window. A fixed 19pt caption is most of the picture on
-        // a small window and a whisper on a large one.
+        // Scaled to the window. A fixed size is most of the picture on a small
+        // window and a whisper on a large one.
         let size = (rect.width() / 46.0).clamp(13.0, 26.0);
-        let font = egui::FontId::proportional(size);
-        let max_width = rect.width() * 0.8;
-        let galley = ui.painter().layout(
-            text,
-            font,
-            Fluent::TEXT_PRIMARY,
-            max_width,
-        );
+        // Monospaced and upper case, which is the look a caption decoder has:
+        // CEA-608 is a fixed 32-column grid of capitals, and rendering it in a
+        // proportional face reads as a film subtitle rather than as captions.
+        let font = egui::FontId::monospace(size);
+        let upper = text.to_uppercase();
 
-        let size = galley.size();
-        let origin = egui::pos2(
-            rect.center().x - size.x / 2.0,
-            rect.max.y - lift - size.y,
-        );
-        let plate = egui::Rect::from_min_size(origin, size).expand2(egui::vec2(12.0, 7.0));
-        ui.painter().rect_filled(
-            plate,
-            4.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 190),
-        );
-        ui.painter().galley(origin, galley, Fluent::TEXT_PRIMARY);
+        let lines: Vec<&str> = upper
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+
+        // Laid out first, because the block is drawn upwards from the bottom
+        // and its height is not known until every line has been measured.
+        let max_width = rect.width() * 0.86;
+        let galleys: Vec<_> = lines
+            .iter()
+            .map(|line| {
+                ui.painter()
+                    .layout((*line).to_string(), font.clone(), Fluent::TEXT_PRIMARY, max_width)
+            })
+            .collect();
+
+        let pad = egui::vec2(size * 0.5, size * 0.16);
+        let block: f32 = galleys.iter().map(|g| g.size().y + pad.y * 2.0).sum();
+        let mut y = rect.max.y - lift - block;
+
+        for galley in galleys {
+            let line_size = galley.size();
+            let origin = egui::pos2(rect.center().x - line_size.x / 2.0, y + pad.y);
+            // A box per line, tight to the text, with square corners. One
+            // rounded box around the whole block is a subtitle; the ragged
+            // per-line box is what makes it read as a caption.
+            let plate = egui::Rect::from_min_size(
+                egui::pos2(origin.x - pad.x, y),
+                egui::vec2(line_size.x + pad.x * 2.0, line_size.y + pad.y * 2.0),
+            );
+            ui.painter()
+                .rect_filled(plate, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 235));
+            ui.painter().galley(origin, galley, Fluent::TEXT_PRIMARY);
+            y += line_size.y + pad.y * 2.0;
+        }
     }
 
     /// The transport, drawn over the picture as a single Fluent surface.

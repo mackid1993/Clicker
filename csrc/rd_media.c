@@ -591,16 +591,33 @@ static void cc_from_frame(RdMedia *m)
     AVSubtitle sub;
     int got = 0;
     if (avcodec_decode_subtitle2(m->cc_dec, &sub, &got, packet) >= 0 && got) {
+        /* Every rect, joined, not just the last one. A roll-up caption arrives
+         * as one rect per row, and keeping only the final rect showed the
+         * bottom line of a three-line caption with the rest discarded. */
+        m->cc_text[0] = '\0';
+        int used = 0;
         for (unsigned i = 0; i < sub.num_rects; i++) {
             const AVSubtitleRect *rect = sub.rects[i];
             const char *text = rect->ass ? rect->ass : rect->text;
             if (!text) continue;
-            ass_to_text(text, m->cc_text, (int)sizeof(m->cc_text));
-            /* An empty line is the decoder clearing the screen, which is a
-             * caption in its own right: without it the last line stays up
-             * over the silence that follows it. */
-            m->cc_ready = 1;
+
+            char line[512];
+            ass_to_text(text, line, (int)sizeof(line));
+            if (line[0] == '\0') continue;
+
+            int room = (int)sizeof(m->cc_text) - used;
+            if (room <= 1) break;
+            used += snprintf(m->cc_text + used, room, "%s%s",
+                             used > 0 ? "\n" : "", line);
+            if (used >= (int)sizeof(m->cc_text)) {
+                used = (int)sizeof(m->cc_text) - 1;
+                break;
+            }
         }
+        /* Published even when empty: an empty caption is the decoder clearing
+         * the screen, and without it the last line stays up through the
+         * silence after it. */
+        m->cc_ready = 1;
         avsubtitle_free(&sub);
     }
     av_packet_free(&packet);
@@ -941,6 +958,12 @@ int rd_seek(RdMedia *m, double seconds)
 
     if (m->video_dec) avcodec_flush_buffers(m->video_dec);
     if (m->audio_dec) avcodec_flush_buffers(m->audio_dec);
+    /* Captions too. The 608 decoder is stateful — roll-up mode keeps the rows
+     * above the current one — so carrying that across a seek would put lines
+     * from before the jump on top of the picture after it. */
+    if (m->cc_dec) avcodec_flush_buffers(m->cc_dec);
+    m->cc_text[0] = '\0';
+    m->cc_ready = 1;
     m->draining = 0;
     m->have_video = m->have_audio = 0;
     av_packet_unref(m->packet);

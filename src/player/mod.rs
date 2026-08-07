@@ -204,6 +204,15 @@ const MAX_SPARE_BUFFERS: usize = 4;
 /// nine — a bad bargain.
 const LIVE_PREROLL: Duration = Duration::from_secs(4);
 
+/// How long a caption stays up with nothing new arriving, in stream seconds.
+///
+/// A caption decoder does not announce that a programme has stopped talking,
+/// it simply stops sending — so something has to decide when silence has gone
+/// on long enough that the last line is stale rather than still being read.
+/// Eight seconds is longer than any single pop-on caption and shorter than the
+/// gap before an advert break.
+const CAPTION_HOLD: f64 = 8.0;
+
 struct Shared {
     frame: Mutex<FrameSlot>,
     decoded: AtomicU64,
@@ -950,6 +959,8 @@ fn decode_loop(
     let mut failures = 0u32;
     // Mirrors the shared flag, so the shim is only told when it changes.
     let mut cc_on = false;
+    // Stream time of the last caption, for ageing out a stale one.
+    let mut caption_pts = f64::NAN;
 
     let opened_at = Instant::now();
     let mut report_next_pts = false;
@@ -997,6 +1008,10 @@ fn decode_loop(
                 opened_at.elapsed().as_secs_f64(),
                 if rc == 0 { "ok" } else { "REFUSED by demuxer" }
             );
+            // Whatever was on screen was said before the jump.
+            caption_pts = f64::NAN;
+            shared.caption.lock().unwrap().clear();
+
             if rc == 0 {
                 // Everything queued belongs to before the seek, so it all goes.
                 // The clock is moved to the requested position immediately so
@@ -1218,7 +1233,21 @@ fn decode_loop(
                             .to_string_lossy()
                             .trim()
                             .to_string();
+                        caption_pts = pts;
                         *shared.caption.lock().unwrap() = text;
+                    } else if caption_pts.is_finite() && pts - caption_pts > CAPTION_HOLD {
+                        // Nothing has arrived for a while, so what is on
+                        // screen is stale. A caption decoder is not obliged to
+                        // send anything to say a programme has stopped talking
+                        // — it simply stops — and without a timeout the last
+                        // line of dialogue sits over the whole advert break
+                        // that follows it.
+                        //
+                        // Measured against the stream's own clock rather than
+                        // the wall's, so pausing holds the caption rather than
+                        // ageing it out while the picture is frozen.
+                        caption_pts = f64::NAN;
+                        shared.caption.lock().unwrap().clear();
                     }
                 }
 
