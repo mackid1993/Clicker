@@ -1003,16 +1003,23 @@ impl eframe::App for App {
                 // but the picture and the controls that fade away on their own.
                 let chrome = !self.fullscreen;
                 let caption_h = if chrome { TITLEBAR_HEIGHT } else { 0.0 };
-                // The rail stays up while watching, and only full screen takes
-                // it away. Hiding it the moment something was clicked in the
-                // guide left a blank window with a spinner and no visible way
-                // back — the picture had not arrived yet, and everything that
-                // could have been pressed instead was gone.
+                // The rail slides away while something is playing. Watching is
+                // one thing at a time and a column of somewhere-else is just a
+                // strip of the picture spent on navigation nobody is using.
                 //
-                // The width animates between its two sizes, which is what makes
+                // It used to stay up, because hiding it the moment something
+                // was clicked in the guide left a blank window with a spinner
+                // and no visible way back — the picture had not arrived and
+                // everything pressable had gone. That objection is answered
+                // now: the transport is drawn over the tuning indicator as
+                // well as over the picture, so its back arrow is there from
+                // the first frame of the wait.
+                //
+                // The width animates between its sizes, which is what makes
                 // the hamburger feel like it slides a surface open rather than
-                // teleporting the whole layout.
-                let rail_target = if chrome && self.settings.configured() {
+                // teleporting the whole layout — and what makes this look like
+                // the picture opening out rather than the rail vanishing.
+                let rail_target = if chrome && self.settings.configured() && !self.watching {
                     if self.rail_expanded { RAIL_EXPANDED } else { RAIL_COLLAPSED }
                 } else {
                     0.0
