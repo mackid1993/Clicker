@@ -179,6 +179,9 @@ fn prefer_integrated_gpu() {
 
 fn main() -> eframe::Result<()> {
     install_panic_log();
+    // Before anything can make a request, so every one of them carries the
+    // device name from the first.
+    settings::set_user_agent(&settings::Settings::load().client_name);
     prefer_integrated_gpu();
 
     // The build's own licence, from the binary rather than from a claim in a

@@ -194,6 +194,11 @@ impl Settings {
     }
 
     pub fn save(&self) -> Result<()> {
+        // Kept in step here rather than at every call site, so a device name
+        // edited in settings applies to the next request rather than the next
+        // launch.
+        set_user_agent(&self.client_name);
+
         let path = config_path().ok_or_else(|| anyhow!("no application data directory"))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("creating the settings directory")?;
@@ -282,9 +287,55 @@ pub fn normalize(input: &str) -> String {
 }
 
 /// Ask a candidate address whether it is a Channels DVR.
+/// The User-Agent every request carries, device name included.
+///
+/// Process-wide because it identifies this installation rather than any one
+/// request, and behind a lock rather than a `OnceLock` because the name is a
+/// setting and settings change while the program is running.
+static USER_AGENT: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// `RustDVR/0.0.1 (Living Room PC)`.
+///
+/// The device name is here and nowhere else because this is the only place the
+/// server will take one. Channels identifies a streaming client by its IP
+/// address: verified directly against a DVR, which ignored the User-Agent and
+/// every one of `client`, `client_name`, `device`, `device_name`, `name` and
+/// `player` as query parameters, keying its activity on the address in every
+/// case. So the name cannot reach the client list, but it does reach the logs,
+/// which is worth more than a setting that goes nowhere at all.
+pub fn user_agent() -> String {
+    USER_AGENT
+        .read()
+        .ok()
+        .and_then(|held| held.clone())
+        .unwrap_or_else(|| format!("RustDVR/{}", env!("CARGO_PKG_VERSION")))
+}
+
+/// Rebuild it from the settings. Called at startup and whenever they are saved.
+pub fn set_user_agent(client_name: &str) {
+    let version = env!("CARGO_PKG_VERSION");
+    let name = client_name.trim();
+    // Anything that would break the header, dropped. A device name is free
+    // text and someone will eventually put a newline in it.
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '(' && *c != ')')
+        .collect();
+
+    let agent = if name.is_empty() {
+        format!("RustDVR/{version}")
+    } else {
+        format!("RustDVR/{version} ({name})")
+    };
+    if let Ok(mut held) = USER_AGENT.write() {
+        *held = Some(agent);
+    }
+}
+
 pub async fn probe(url: &str) -> Result<ServerInfo> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(6))
+        .user_agent(user_agent())
         .build()?;
 
     let status: serde_json::Value = http

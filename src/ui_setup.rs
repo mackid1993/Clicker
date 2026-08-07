@@ -310,7 +310,18 @@ pub fn settings_screen(
 
             // ── This device ────────────────────────────────────────────
             ui.add_space(SPACE_L * 1.5);
-            section(ui, "This device", "How RustDVR appears in the DVR's client list.");
+            // Says "logs", not "client list", because that is the truth. A DVR
+            // identifies a streaming client by its IP address and nothing
+            // else — checked against a real server, which ignored both the
+            // User-Agent and every plausible query parameter. The name reaches
+            // the logs and stops there, and a setting that claims more than it
+            // does is worse than one that claims less.
+            section(
+                ui,
+                "This device",
+                "Identifies RustDVR in the DVR's logs. Channels lists connected \
+                 clients by IP address, so this will not change what appears there.",
+            );
             control_row(ui, |ui| {
                 let name = field(ui, &mut settings.client_name, FIELD_W);
                 if ui.add(name).lost_focus() {

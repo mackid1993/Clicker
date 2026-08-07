@@ -103,7 +103,10 @@ impl Downloads {
                 cancels: Mutex::new(HashMap::new()),
                 queue: Mutex::new(VecDeque::new()),
                 repaint: Mutex::new(None),
-                http: reqwest::Client::new(),
+                http: reqwest::Client::builder()
+                .user_agent(crate::settings::user_agent())
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
                 runtime,
             }),
         }

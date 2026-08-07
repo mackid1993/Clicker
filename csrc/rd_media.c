@@ -177,8 +177,8 @@ static AVCodecContext *open_decoder(AVFormatContext *fmt, int index, char *err, 
 }
 
 RdMedia *rd_open(const char *url, int out_rate, int out_channels,
-                 int live_start_index, volatile int *abort_flag,
-                 char *err, int errlen)
+                 int live_start_index, const char *user_agent,
+                 volatile int *abort_flag, char *err, int errlen)
 {
     /* Warnings and errors only. The default level narrates every segment
      * fetch, which on a live HLS stream is a line of output every couple of
@@ -217,7 +217,15 @@ RdMedia *rd_open(const char *url, int out_rate, int out_channels,
     av_dict_set(&opts, "analyzeduration", "3000000", 0);
     /* Without a timeout a dead server hangs the thread forever. */
     av_dict_set(&opts, "rw_timeout", "15000000", 0);
-    av_dict_set(&opts, "user_agent", "RustDVR", 0);
+    /* Carries the device name, because it is the only place the server will
+     * take one. Channels identifies a streaming client by its IP address and
+     * nothing else — verified against the server, which ignored the
+     * User-Agent and every one of `client`, `client_name`, `device`,
+     * `device_name`, `name` and `player` as query parameters, keying its
+     * activity on the address regardless. The name cannot reach the DVR's
+     * client list from here, but it does reach its logs. */
+    av_dict_set(&opts, "user_agent",
+                (user_agent && *user_agent) ? user_agent : "RustDVR", 0);
 
     /*
      * Start at the head of the playlist, not three segments from its end.

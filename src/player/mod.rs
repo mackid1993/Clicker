@@ -479,6 +479,10 @@ impl Player {
         let device = audio::Device::open()?;
 
         let url = CString::new(uri)?;
+        // Falls back to a bare product string if the device name has a NUL in
+        // it, which is not a reason to refuse to play anything.
+        let agent = CString::new(crate::settings::user_agent())
+            .unwrap_or_else(|_| CString::new("RustDVR").unwrap());
         let mut err = vec![0i8; 512];
         // Created before the open, because opening a live playlist is itself a
         // blocking network operation and dropping a player that is still
@@ -490,6 +494,7 @@ impl Player {
                 device.sample_rate as i32,
                 device.channels as i32,
                 join.live_start_index(),
+                agent.as_ptr(),
                 abort.as_ptr(),
                 err.as_mut_ptr(),
                 err.len() as i32,

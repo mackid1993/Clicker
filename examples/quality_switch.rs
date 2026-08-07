@@ -11,6 +11,16 @@
 #[path = "../src/player/mod.rs"]
 mod player;
 
+/// The player asks the application what to identify itself as. This harness is
+/// not the application, so it answers for itself — and says so plainly, because
+/// a request from a test should never be mistaken in a server's logs for one
+/// from the real client.
+mod settings {
+    pub fn user_agent() -> String {
+        "RustDVR-quality-switch-harness".to_string()
+    }
+}
+
 use std::time::{Duration, Instant};
 
 use player::{Player, Transport};

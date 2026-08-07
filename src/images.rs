@@ -52,7 +52,10 @@ impl Images {
         let (tx, rx) = std::sync::mpsc::channel();
         Self {
             runtime,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .user_agent(crate::settings::user_agent())
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             tx,
             rx,
             entries: HashMap::new(),

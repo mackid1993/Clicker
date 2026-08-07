@@ -30,6 +30,9 @@ extern "C" {
         out_rate: c_int,
         out_channels: c_int,
         live_start_index: c_int,
+        // Sent on every request, device name included. See
+        // `settings::user_agent`.
+        user_agent: *const c_char,
         abort_flag: *mut c_int,
         err: *mut c_char,
         errlen: c_int,

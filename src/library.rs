@@ -323,7 +323,10 @@ impl Library {
     pub fn new(base: impl Into<String>) -> Self {
         Self {
             base: base.into().trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .user_agent(crate::settings::user_agent())
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
