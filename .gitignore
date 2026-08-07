@@ -1,0 +1,8 @@
+/target
+/dist
+
+# Vendored FFmpeg: the source checkout and the build output. Neither is
+# committed. `scripts\build-ffmpeg.ps1` reproduces both from a pinned tag, and
+# a build tree full of object files is not something a repository should carry.
+/third_party/ffmpeg-src
+/third_party/ffmpeg

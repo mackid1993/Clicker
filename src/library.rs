@@ -1,0 +1,529 @@
+//! The recorded library, and the shape of a home screen.
+//!
+//! Channels' `/api/v1/all` returns every recording with everything needed to
+//! decide what to put in front of someone: how far through it they are, whether
+//! they finished it, when it was recorded, artwork, and the commercial
+//! markers. `/dvr/groups` adds the per-series view, including which episode is
+//! next. Between them there is no need to invent a watch history or track
+//! anything locally — the server already knows, and it knows across every
+//! client, which a local history never would.
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+
+/// One recording.
+///
+/// Field names follow the API rather than Rust convention because they are
+/// deserialised straight from it; renaming every one of forty fields buys
+/// nothing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Recording {
+    pub id: String,
+    #[serde(default)]
+    pub show_id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub episode_title: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub season_number: u32,
+    #[serde(default)]
+    pub episode_number: u32,
+    #[serde(default)]
+    pub image_url: String,
+    /// A frame grabbed from the recording itself, served by the DVR. Better
+    /// than the series poster for something half watched, because it shows
+    /// where you actually are.
+    #[serde(default)]
+    pub thumbnail_url: String,
+    #[serde(default)]
+    pub duration: f64,
+    /// How far in, in seconds. Non-zero means started but not finished.
+    #[serde(default)]
+    pub playback_time: f64,
+    #[serde(default)]
+    pub original_air_date: String,
+    #[serde(default)]
+    pub watched: bool,
+    #[serde(default)]
+    pub favorited: bool,
+    #[serde(default)]
+    pub completed: bool,
+    #[serde(default)]
+    pub canceled: bool,
+    #[serde(default)]
+    pub corrupted: bool,
+    #[serde(default)]
+    pub genres: Vec<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub content_rating: String,
+    /// Commercial boundaries in seconds, as found by the DVR's comskip pass.
+    /// Alternating start and end of each break.
+    #[serde(default)]
+    pub commercials: Vec<f64>,
+    /// Milliseconds since the epoch.
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub channel: String,
+}
+
+impl Recording {
+    /// Whether this DVR actually recorded it, as opposed to it being external
+    /// media imported into Channels.
+    ///
+    /// The `channel` field is the discriminator: something recorded off a
+    /// tuner knows which channel it came from, and something imported from a
+    /// Plex-style library does not. The file path is not a safe test — the
+    /// DVR's own recording directory is configurable and imported libraries
+    /// sit anywhere the user put them.
+    ///
+    /// The distinction is not cosmetic. On a real server this is 303
+    /// recordings against 7,233 imports, and treating them as one pile makes
+    /// the Recordings screen useless.
+    pub fn from_dvr(&self) -> bool {
+        !self.channel.trim().is_empty()
+    }
+
+    /// A movie, as opposed to an episode of something.
+    pub fn is_movie(&self) -> bool {
+        self.categories.iter().any(|c| c.eq_ignore_ascii_case("Movie"))
+            || (self.season_number == 0 && self.episode_number == 0 && self.show_id.is_empty())
+    }
+
+    /// Fraction watched, 0 to 1.
+    pub fn progress(&self) -> f32 {
+        if self.duration <= 0.0 {
+            return 0.0;
+        }
+        (self.playback_time / self.duration).clamp(0.0, 1.0) as f32
+    }
+
+    /// Started, but not finished and not marked watched.
+    ///
+    /// The lower bound exists because a few seconds of playback is someone
+    /// checking what a recording is, not settling in to watch it, and a home
+    /// screen full of those is noise. The upper bound is the credits: past
+    /// ninety five percent it is finished in every sense that matters.
+    pub fn in_progress(&self) -> bool {
+        !self.watched
+            && self.duration > 0.0
+            && self.playback_time > 60.0
+            && self.progress() < 0.95
+    }
+
+    /// What is left, as human text.
+    pub fn remaining(&self) -> String {
+        let left = (self.duration - self.playback_time).max(0.0);
+        let minutes = (left / 60.0).round() as i64;
+        if minutes >= 60 {
+            format!("{}h {}m left", minutes / 60, minutes % 60)
+        } else {
+            format!("{minutes}m left")
+        }
+    }
+
+    /// "S24E142", or empty for anything that is not episodic.
+    pub fn episode_label(&self) -> String {
+        if self.season_number > 0 && self.episode_number > 0 {
+            format!("S{}E{}", self.season_number, self.episode_number)
+        } else {
+            String::new()
+        }
+    }
+
+    /// The line under the title.
+    pub fn subtitle(&self) -> String {
+        let episode = self.episode_label();
+        match (episode.is_empty(), self.episode_title.trim().is_empty()) {
+            (false, false) => format!("{episode}  ·  {}", self.episode_title),
+            (false, true) => episode,
+            (true, false) => self.episode_title.clone(),
+            (true, true) => String::new(),
+        }
+    }
+
+    /// Whichever image best represents it. A part-watched recording gets its
+    /// own frame; anything else gets the series artwork.
+    pub fn art(&self) -> &str {
+        if self.playback_time > 0.0 && !self.thumbnail_url.is_empty() {
+            &self.thumbnail_url
+        } else if !self.image_url.is_empty() {
+            &self.image_url
+        } else {
+            &self.thumbnail_url
+        }
+    }
+
+    /// Whether this recording is worth showing at all.
+    pub fn playable(&self) -> bool {
+        self.completed && !self.canceled && !self.corrupted
+    }
+}
+
+/// A series, as the DVR groups it.
+///
+/// Built field by field from the raw JSON rather than derived, deliberately.
+/// A derived `Deserialize` fails the entire struct on one unexpected type or
+/// one explicit null — and because the caller treats a failure as "no series",
+/// the whole Library silently rendered empty with 86 perfectly good groups
+/// sitting in the response. Reading each field defensively means one odd value
+/// costs that field, not the screen.
+#[derive(Debug, Clone, Default)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub series_id: String,
+    pub image: String,
+    pub unwatched: u32,
+    /// The episode to play next in this series. The server works this out, so
+    /// it stays right no matter which device did the watching.
+    pub up_next: String,
+}
+
+/// A string from JSON that may be a string, a number, or absent.
+fn loose_str(value: &serde_json::Value, key: &str) -> String {
+    match value.get(key) {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+impl Group {
+    fn from_json(value: &serde_json::Value) -> Self {
+        Self {
+            id: loose_str(value, "ID"),
+            name: loose_str(value, "Name"),
+            series_id: loose_str(value, "SeriesID"),
+            image: loose_str(value, "Image"),
+            unwatched: value
+                .get("NumUnwatched")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32,
+            up_next: loose_str(value, "UpNextFileID"),
+        }
+    }
+
+    pub fn up_next_id(&self) -> Option<String> {
+        (!self.up_next.is_empty()).then(|| self.up_next.clone())
+    }
+}
+
+/// A program the DVR intends to record but has not yet.
+#[derive(Debug, Clone)]
+pub struct Upcoming {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub channel: String,
+    /// Job start, which already includes padding.
+    pub start: i64,
+    pub duration: i64,
+    /// Empty when this job was made by hand rather than by a series pass.
+    pub rule_id: String,
+    pub image: String,
+}
+
+/// Everything the browsing screens show, resolved in one go.
+///
+/// Held together rather than fetched per screen because it all comes from the
+/// same two responses, and re-requesting seven thousand recordings each time
+/// someone switches tab would be absurd.
+#[derive(Default, Clone)]
+pub struct Home {
+    /// Started and unfinished, most recently touched first.
+    pub continue_watching: Vec<Recording>,
+    /// The next unwatched episode of each series that has one.
+    pub up_next: Vec<Recording>,
+    /// Newest recordings that have not been started.
+    pub recent: Vec<Recording>,
+    pub total_recordings: usize,
+
+    /// Everything playable, recorded and imported alike.
+    pub all: Vec<Recording>,
+    /// What this DVR recorded off a tuner, newest first. Distinct from the
+    /// imported library, and usually a tiny fraction of it.
+    pub recorded: Vec<Recording>,
+    /// External media imported into Channels — a Plex-style library.
+    pub imported: Vec<Recording>,
+    /// Series, for the Library's poster grid.
+    pub groups: Vec<Group>,
+    /// Scheduled but not yet recorded, soonest first.
+    pub upcoming: Vec<Upcoming>,
+}
+
+impl Home {
+    /// Recordings grouped under one series, newest first.
+    pub fn episodes_of(&self, show_id: &str) -> Vec<&Recording> {
+        let mut list: Vec<&Recording> = self
+            .all
+            .iter()
+            .filter(|r| r.show_id == show_id)
+            .collect();
+        list.sort_by_key(|r| {
+            std::cmp::Reverse((r.season_number, r.episode_number, r.created_at))
+        });
+        list
+    }
+}
+
+pub struct Library {
+    base: String,
+    http: reqwest::Client,
+}
+
+impl Library {
+    pub fn new(base: impl Into<String>) -> Self {
+        Self {
+            base: base.into().trim_end_matches('/').to_string(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    pub async fn recordings(&self) -> Result<Vec<Recording>> {
+        let url = format!("{}/api/v1/all", self.base);
+        let list: Vec<Recording> = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?
+            .error_for_status()
+            .with_context(|| format!("GET {url}"))?
+            .json()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        Ok(list)
+    }
+
+    pub async fn groups(&self) -> Result<Vec<Group>> {
+        let url = format!("{}/dvr/groups", self.base);
+        let raw: serde_json::Value = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?
+            .error_for_status()
+            .with_context(|| format!("GET {url}"))?
+            .json()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+
+        Ok(raw
+            .as_array()
+            .map(|list| list.iter().map(Group::from_json).collect())
+            .unwrap_or_default())
+    }
+
+    /// Where a recording's video actually lives.
+    pub fn stream_url(&self, id: &str) -> String {
+        format!("{}/dvr/files/{id}/stream.mpg", self.base)
+    }
+
+    /// Tell the server how far through a recording playback has got.
+    ///
+    /// The position is a **path segment**, not a query parameter and not a
+    /// JSON body — `PUT /dvr/files/<id>/playback_time/<seconds>`. Worth
+    /// stating plainly because every other shape returns 404, and this is what
+    /// makes Continue Watching and Up Next work across every Channels client
+    /// rather than only inside one session of this one.
+    pub async fn report_position(&self, id: &str, seconds: f64) -> Result<()> {
+        let secs = seconds.max(0.0).round() as i64;
+        let url = format!("{}/dvr/files/{id}/playback_time/{secs}", self.base);
+        self.http
+            .put(&url)
+            .send()
+            .await
+            .with_context(|| format!("PUT {url}"))?
+            .error_for_status()
+            .with_context(|| format!("PUT {url}"))?;
+        Ok(())
+    }
+
+    /// Mark a recording watched or unwatched.
+    pub async fn set_watched(&self, id: &str, watched: bool) -> Result<()> {
+        let verb = if watched { "watch" } else { "unwatch" };
+        let url = format!("{}/dvr/files/{id}/{verb}", self.base);
+        self.http
+            .put(&url)
+            .send()
+            .await
+            .with_context(|| format!("PUT {url}"))?
+            .error_for_status()
+            .with_context(|| format!("PUT {url}"))?;
+        Ok(())
+    }
+
+    /// Delete a recording from the server.
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        let url = format!("{}/dvr/files/{id}", self.base);
+        self.http
+            .delete(&url)
+            .send()
+            .await
+            .with_context(|| format!("DELETE {url}"))?
+            .error_for_status()
+            .with_context(|| format!("DELETE {url}"))?;
+        Ok(())
+    }
+
+    /// What is scheduled but has not happened yet.
+    pub async fn upcoming(&self) -> Result<Vec<Upcoming>> {
+        let url = format!("{}/dvr/jobs", self.base);
+        let jobs: serde_json::Value = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?
+            .error_for_status()
+            .with_context(|| format!("GET {url}"))?
+            .json()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+
+        let Some(list) = jobs.as_array() else { return Ok(Vec::new()) };
+        let mut out: Vec<Upcoming> = list
+            .iter()
+            .map(|job| {
+                let airing = job.get("Airing").cloned().unwrap_or(serde_json::Value::Null);
+                Upcoming {
+                    id: job
+                        .get("ID")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    title: job
+                        .get("Name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    subtitle: airing
+                        .get("EpisodeTitle")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    channel: job
+                        .get("Channels")
+                        .and_then(|v| v.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    start: job.get("Time").and_then(|v| v.as_i64()).unwrap_or(0),
+                    duration: job.get("Duration").and_then(|v| v.as_i64()).unwrap_or(0),
+                    rule_id: job
+                        .get("RuleID")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    image: airing
+                        .get("Image")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                }
+            })
+            .filter(|u| !u.id.is_empty())
+            .collect();
+
+        out.sort_by_key(|u| u.start);
+        Ok(out)
+    }
+
+    /// Build everything the browsing screens need.
+    ///
+    /// Three requests, then all of it is arranged locally. The alternative,
+    /// asking the server for each row and each screen separately, would be a
+    /// dozen round trips for data that came from the same place.
+    pub async fn home(&self) -> Result<Home> {
+        let (recordings, groups, upcoming) =
+            tokio::join!(self.recordings(), self.groups(), self.upcoming());
+        let recordings = recordings?;
+        let mut groups = groups.unwrap_or_default();
+        let upcoming = upcoming.unwrap_or_default();
+
+        let _ = recordings.len();
+
+        let mut continue_watching: Vec<Recording> = recordings
+            .iter()
+            .filter(|r| r.playable() && r.in_progress())
+            .cloned()
+            .collect();
+        // Most recently touched first: that is the one someone came back for.
+        continue_watching.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
+        continue_watching.truncate(12);
+
+        // "Up next" is the server's own answer, resolved from ids back to
+        // recordings. Series already represented in Continue Watching are left
+        // out so the same program does not appear twice on one screen.
+        let started: std::collections::HashSet<&str> =
+            continue_watching.iter().map(|r| r.show_id.as_str()).collect();
+        let by_id: std::collections::HashMap<&str, &Recording> =
+            recordings.iter().map(|r| (r.id.as_str(), r)).collect();
+
+        let mut up_next: Vec<Recording> = groups
+            .iter()
+            .filter(|g| g.unwatched > 0)
+            .filter_map(|g| g.up_next_id())
+            .filter_map(|id| by_id.get(id.as_str()).copied())
+            .filter(|r| r.playable() && !started.contains(r.show_id.as_str()))
+            .cloned()
+            .collect();
+        up_next.sort_by_key(|r| std::cmp::Reverse(r.created_at));
+        up_next.truncate(12);
+
+        let shown: std::collections::HashSet<&str> = continue_watching
+            .iter()
+            .chain(up_next.iter())
+            .map(|r| r.id.as_str())
+            .collect();
+
+        let mut recent: Vec<Recording> = recordings
+            .iter()
+            .filter(|r| {
+                r.playable() && !r.watched && r.playback_time == 0.0 && !shown.contains(r.id.as_str())
+            })
+            .cloned()
+            .collect();
+        recent.sort_by_key(|r| std::cmp::Reverse(r.created_at));
+        recent.truncate(16);
+
+        let all: Vec<Recording> = recordings.into_iter().filter(|r| r.playable()).collect();
+
+        let mut recorded: Vec<Recording> =
+            all.iter().filter(|r| r.from_dvr()).cloned().collect();
+        recorded.sort_by_key(|r| std::cmp::Reverse(r.created_at));
+
+        let imported: Vec<Recording> =
+            all.iter().filter(|r| !r.from_dvr()).cloned().collect();
+
+        // Series with nothing playable behind them would be dead tiles.
+        let have: std::collections::HashSet<&str> =
+            all.iter().map(|r| r.show_id.as_str()).collect();
+        groups.retain(|g| have.contains(g.id.as_str()) || have.contains(g.series_id.as_str()));
+        groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        Ok(Home {
+            continue_watching,
+            up_next,
+            recent,
+            // What the DVR recorded, not everything it can play. Reporting
+            // 7,536 "recordings" when 303 came off a tuner is simply wrong.
+            total_recordings: recorded.len(),
+            all,
+            recorded,
+            imported,
+            groups,
+            upcoming,
+        })
+    }
+}

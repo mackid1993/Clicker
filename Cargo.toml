@@ -1,0 +1,81 @@
+[package]
+name = "rustdvr"
+version = "0.0.1"
+edition = "2021"
+description = "A native Channels DVR client"
+# PolyForm Strict has no SPDX identifier, so the file is the licence of record.
+license-file = "LICENSE.md"
+# The licence forbids redistribution, and publishing to a registry is exactly
+# that. Refusing here means it cannot happen by accident.
+publish = false
+
+[dependencies]
+# UI. Immediate mode suits a guide that redraws constantly, and the wgpu
+# backend is what makes video-as-a-texture possible: the decoded frame and the
+# controls drawn over it live in the same render pass, so there is no window
+# compositing to fight.
+eframe = { version = "0.29", default-features = false, features = [
+  "wgpu",
+  "default_fonts",
+] }
+egui = "0.29"
+egui_extras = { version = "0.29", features = ["image"] }
+
+# Playback. FFmpeg decodes what the webview never could: MPEG-TS with AC-3
+# audio, straight from the DVR with no server-side transcode. It is built from
+# source by scripts/build-ffmpeg.bat, LGPL only, and reached through the small
+# C shim in csrc/ rather than through bindgen, which would drag in libclang for
+# the sake of forty function signatures.
+#
+# Audio output only; cpal does not decode anything. MIT/Apache-2.0.
+cpal = "0.15"
+
+# Channels DVR API
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs", "io-util"] }
+
+anyhow = "1"
+raw-window-handle = "0.6"
+
+# Artwork decoding. Only the formats the DVR actually serves: posters are JPEG,
+# preview frames are JPEG, channel logos are PNG. Pulling in the whole format
+# zoo would add compile time and attack surface for nothing.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[build-dependencies]
+cc = "1"
+# Embeds the icon and version information into the executable as Win32
+# resources. Without it the .ico only reaches the installer, and the program
+# itself shows the generic default in Explorer, the taskbar and Alt+Tab.
+winresource = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_System_Performance",
+  "Win32_System_SystemInformation",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 3
+# Thin LTO rather than full. Full LTO was costing well over a minute of link
+# time on every single change for a few percent of runtime, which is the wrong
+# trade while the player is still being worked on.
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# For iterating on playback. Optimised enough to decode 1080p60 in real time,
+# which an unoptimised build is not: a debug build measured 55.78ms per frame
+# upload against 2.31ms, and 17fps decode against 58.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3

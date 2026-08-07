@@ -1,0 +1,2895 @@
+//! RustDVR — a native Channels DVR client.
+//!
+//! Video is decoded by FFmpeg and drawn as a texture, so the picture and the
+//! interface share one render pass. That is what makes a media app pleasant to
+//! build: controls float over the picture with no second window, no z-order, no
+//! transparency tricks and no hit-testing to get wrong.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod api;
+mod downloads;
+mod fluent;
+mod guide;
+mod images;
+mod library;
+mod player;
+mod settings;
+mod theme;
+mod ui;
+mod ui_guide;
+mod ui_downloads;
+mod ui_library;
+mod ui_record;
+mod ui_setup;
+
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use eframe::egui;
+use theme::{Fluent, RADIUS_SURFACE, SPACE_L, SPACE_M, SPACE_S, SPACE_XS, TITLEBAR_HEIGHT};
+use ui::Screen;
+
+/// Width of the navigation rail, collapsed and expanded. Both are Fluent's own
+/// values, so it lines up with every other Windows application that uses one.
+const RAIL_COLLAPSED: f32 = 48.0;
+const RAIL_EXPANDED: f32 = 200.0;
+
+/// How many hours of listings to load. Half a day: enough to plan tonight and
+/// tomorrow morning, without pulling a week of data for every channel on the
+/// server. Measured against a real server, twelve hours across 446 channels is
+/// still a single sub-second request.
+const GUIDE_HOURS: i64 = 12;
+
+/// Where to fetch a live channel.
+///
+/// Two decisions are folded in here, and both matter.
+///
+/// **HLS rather than `stream.mpg`.** The direct endpoint has the lowest
+/// latency, but it is one long HTTP response with no ranges and no index:
+/// there is nothing to seek within, and asking it to seek tears the pipeline
+/// down and takes the audio with it. The DVR's HLS output keeps every segment
+/// from the moment the channel was tuned, so it rewinds to the start of the
+/// session with no local storage at all. A DVR that cannot rewind is not a
+/// DVR.
+///
+/// **`vcodec=copy&acodec=copy`.** Without it Channels defaults to
+/// `vcodec=h264` with a hardware deinterlacer and a 5,739kbps ceiling, which
+/// is a full server-side re-encode of a stream it already had, and a
+/// noticeable quality loss: passthrough measured 9,915kbps on the same
+/// channel. Segmenting for HLS does not require re-encoding, so there is no
+/// reason to accept it. Transcoding remains available, but as a choice.
+/// One live-stream quality, picked either globally in Settings or per session
+/// from the player.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum QualityChoice {
+    /// The broadcast untouched: `vcodec=copy&acodec=copy`.
+    Original,
+    /// A server-side transcode capped at this height.
+    Height(u32),
+}
+
+impl QualityChoice {
+    const MENU: [QualityChoice; 5] = [
+        QualityChoice::Original,
+        QualityChoice::Height(1080),
+        QualityChoice::Height(720),
+        QualityChoice::Height(540),
+        QualityChoice::Height(360),
+    ];
+
+    fn label(self) -> String {
+        match self {
+            QualityChoice::Original => "Original".into(),
+            QualityChoice::Height(h) => format!("{h}p"),
+        }
+    }
+
+    /// Bitrates that suit each size. Chosen once here so the player menu and
+    /// the settings screen cannot drift apart.
+    fn kbps(self) -> u32 {
+        match self {
+            QualityChoice::Original => 0,
+            QualityChoice::Height(1080) => 8000,
+            QualityChoice::Height(720) => 4000,
+            QualityChoice::Height(540) => 2500,
+            QualityChoice::Height(_) => 1200,
+        }
+    }
+}
+
+fn stream_uri(server: &str, channel: &str, quality: QualityChoice) -> String {
+    let base = format!("{server}/devices/ANY/channels/{channel}/hls/master.m3u8");
+    match quality {
+        QualityChoice::Original => format!("{base}?vcodec=copy&acodec=copy"),
+        QualityChoice::Height(h) => format!(
+            "{base}?vcodec=h264&acodec=copy&resolution={h}&bitrate={}",
+            quality.kbps()
+        ),
+    }
+}
+
+/// Fetch the home screen's data.
+fn spawn_home(
+    runtime: &tokio::runtime::Runtime,
+    tx: &Sender<Msg>,
+    ctx: egui::Context,
+    server: &str,
+) {
+    if server.is_empty() {
+        return;
+    }
+    let lib = library::Library::new(server);
+    let tx = tx.clone();
+    runtime.spawn(async move {
+        let message = match lib.home().await {
+            Ok(home) => Msg::Home(home),
+            Err(e) => Msg::Failed(format!("Could not read the library: {e:#}")),
+        };
+        let _ = tx.send(message);
+        ctx.request_repaint();
+    });
+}
+
+/// Fetch listings, collections, sources and the current schedule.
+fn spawn_guide(
+    runtime: &tokio::runtime::Runtime,
+    tx: &Sender<Msg>,
+    ctx: egui::Context,
+    server: &str,
+) {
+    if server.is_empty() {
+        return;
+    }
+    let api = guide::GuideApi::new(server);
+    let tx = tx.clone();
+    runtime.spawn(async move {
+        let message = match api.load(now_unix(), GUIDE_HOURS).await {
+            Ok(data) => Msg::Guide(Box::new(data)),
+            Err(e) => Msg::Failed(format!("Could not read the guide: {e:#}")),
+        };
+        let _ = tx.send(message);
+        ctx.request_repaint();
+    });
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Ask for the integrated GPU.
+///
+/// A laptop with switchable graphics will hand an application the discrete GPU
+/// by default, which for a video player is a straight trade of battery life for
+/// nothing: drawing one video frame and some flat panels does not need it.
+///
+/// Set before the graphics context exists, because the adapter is chosen during
+/// initialization and cannot be changed afterwards. The two vendor symbols are
+/// the opposite lever, exported by applications that want the discrete GPU;
+/// they are deliberately left unset.
+fn prefer_integrated_gpu() {
+    if std::env::var_os("WGPU_POWER_PREF").is_none() {
+        std::env::set_var("WGPU_POWER_PREF", "low");
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    install_panic_log();
+    prefer_integrated_gpu();
+
+    // The build's own licence, from the binary rather than from a claim in a
+    // text file. This application may only be distributed if FFmpeg was built
+    // without GPL components, so it is worth being able to check.
+    eprintln!("[rustdvr] {}", player::Player::backend());
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 760.0])
+        .with_min_inner_size([420.0, 280.0])
+        .with_title("RustDVR")
+        // Mica is drawn by the desktop compositor behind the window, so the
+        // window has to be transparent for it to show, and the system caption
+        // has to go so the app can draw its own.
+        .with_transparent(true)
+        .with_decorations(false);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "RustDVR",
+        options,
+        Box::new(|cc| {
+            theme::apply(&cc.egui_ctx);
+            Ok(Box::new(App::new(cc)))
+        }),
+    )
+}
+
+/// Record panics to a file as well as to stderr.
+///
+/// A panic on the UI thread takes the whole process with it, and a windowed
+/// build has no console attached — so the one piece of information that says
+/// where it happened was being written to a handle nobody was reading. The
+/// release profile strips symbols, so a backtrace would be addresses, but the
+/// panic *location* is compiled in regardless and it is the part that names the
+/// bug.
+///
+/// The log is appended to, so a fault that only shows up occasionally still
+/// leaves a trail rather than overwriting the evidence of the last one.
+fn install_panic_log() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let where_ = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "an unknown location".to_string());
+        let what = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panicked".to_string());
+        let thread = std::thread::current();
+        let thread = thread.name().unwrap_or("unnamed").to_string();
+        let line = format!("panic on the {thread} thread at {where_}: {what}\n");
+
+        eprint!("[rustdvr] {line}");
+        if let Some(path) = crash_log_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                use std::io::Write;
+                let _ = write!(file, "{line}");
+            }
+        }
+        previous(info);
+    }));
+}
+
+fn crash_log_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(std::path::PathBuf::from(base).join("RustDVR").join("crash.log"))
+}
+
+/// The icon the running window carries.
+///
+/// This is a separate thing from the Win32 resource `build.rs` compiles in.
+/// That one is what Explorer and the shell read off the file; the window
+/// itself takes its small and large icons from here, and with nothing supplied
+/// the title bar, the taskbar button and Alt+Tab all fall back to a blank
+/// default the whole time the program is running — which is exactly what
+/// "the icon isn't embedded" looked like, even though it was.
+///
+/// The PNG rather than the .ico because the .ico is a container of several
+/// sizes and `image` would only hand back one of them anyway.
+fn app_icon() -> Option<egui::IconData> {
+    const PNG: &[u8] = include_bytes!("../assets/rustdvr.png");
+    let image = image::load_from_memory(PNG).ok()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Some(egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    })
+}
+
+/// Work that happened off the UI thread and needs folding back in.
+enum Msg {
+    /// What is on this channel, the server's padding, and whether the DVR
+    /// already has a job for it.
+    Program(api::Airing, api::Padding, Option<String>),
+    JobCreated(String),
+    JobDeleted,
+    Failed(String),
+    /// The home screen's data, assembled from the recordings and series lists.
+    Home(library::Home),
+    /// The guide, with its listings and the current schedule.
+    Guide(Box<guide::GuideData>),
+    /// A player finished opening off the UI thread. The generation says which
+    /// request it answers; a stale one is dropped, which also stops its
+    /// threads and releases its stream.
+    PlayerOpened {
+        result: Result<Box<player::Player>, String>,
+        resume_at: f64,
+        generation: u64,
+    },
+    /// A candidate DVR answered, or did not.
+    Probed(String, Result<settings::ServerInfo, String>),
+    /// A season pass was created or removed; the guide needs refreshing.
+    ScheduleChanged(String),
+    /// A recording was deleted or its watched state changed; the library and
+    /// home screen need rereading.
+    LibraryChanged(String),
+}
+
+struct App {
+    player: Option<player::Player>,
+    texture: Option<egui::TextureHandle>,
+    /// Video textures that have been replaced but must not be freed yet.
+    ///
+    /// Dropping a `TextureHandle` tells egui to destroy the GPU texture behind
+    /// it. Doing that part-way through a frame destroys something the shapes
+    /// already painted this frame still refer to, and the frame then fails at
+    /// `Queue::submit` with "Texture with 'egui_texid_Managed(N)' label has
+    /// been destroyed" — a panic on the UI thread, so the process goes with it.
+    /// Retired handles are held until the top of the next frame, by which time
+    /// the frame that used them has been submitted.
+    retired: Vec<egui::TextureHandle>,
+    last_generation: u64,
+
+    paused: bool,
+    volume: f32,
+    show_stats: bool,
+
+    // Scrubbing is held locally while the pointer is down so the bar tracks the
+    // finger, and the seek only happens on release. Seeking on every pointer
+    // move would flush the pipeline dozens of times a second.
+    scrubbing: bool,
+    scrub_target: Option<f64>,
+
+    /// When the pointer last did anything. The controls are an overlay on the
+    /// picture, so they have to get out of the way when they are not being
+    /// used, the way every other video player does it.
+    last_activity: Instant,
+
+    // Recording state lives on the server. `job_id` is the DVR's id for the
+    // scheduled job, so an empty value genuinely means "not recording" rather
+    // than "this session has not pressed the button yet".
+    dvr: api::Dvr,
+    runtime: tokio::runtime::Runtime,
+    tx: Sender<Msg>,
+    rx: Receiver<Msg>,
+    airing: Option<api::Airing>,
+    padding: api::Padding,
+    job_id: Option<String>,
+    job_pending: bool,
+    toast: Option<(String, Instant)>,
+
+    frame_times: Vec<f32>,
+    last_frame: Instant,
+    last_decoded: u64,
+    last_fps_sample: Instant,
+    decode_fps: f32,
+    upload_ms: f32,
+
+    // ── Navigation and screens ──────────────────────────────────────────
+    screen: Screen,
+    rail_expanded: bool,
+    /// Full screen hides the caption and the rail entirely: the picture is the
+    /// whole point of full screen, so nothing else should be on it.
+    fullscreen: bool,
+    /// Set when the player is showing rather than a browsing screen. Live TV
+    /// and a recording are both this; what differs is the source.
+    watching: bool,
+
+    lib: library::Library,
+    images: images::Images,
+    downloads: downloads::Downloads,
+    home: library::Home,
+    home_loading: bool,
+
+    settings: settings::Settings,
+    setup: ui_setup::SetupState,
+    guide: guide::GuideData,
+    guide_state: ui_guide::GuideState,
+    guide_loading: bool,
+    library_state: ui_library::LibraryState,
+    recordings_tab: ui_library::RecordingsTab,
+    /// For the crossfade between screens: which one is on show, and when it
+    /// arrived.
+    shown_screen: Screen,
+    screen_changed: Instant,
+    /// Open while choosing padding and pass options for a program.
+    record_dialog: Option<ui_record::RecordDialog>,
+    /// A recording awaiting delete confirmation. Deleting is the one action in
+    /// this application that cannot be undone, so it asks.
+    confirm_delete: Option<library::Recording>,
+    /// What the spinner should say. Live TV really is tuning something;
+    /// a recording is a file and is not.
+    loading: Loading,
+    /// The channel currently being watched, if this is live rather than a
+    /// recording.
+    live_channel: Option<String>,
+    /// Commercial breaks in the playing recording, as (start, end) seconds.
+    /// The DVR's comskip pass found these; they arrive with the recording and
+    /// cost nothing to use. Empty for live TV, which has no markers until the
+    /// recording has been processed.
+    commercials: Vec<(f64, f64)>,
+    /// A quality chosen from the player for this session. None means the
+    /// global default from Settings. Per-session on purpose: dropping to 540p
+    /// on hotel wifi tonight should not quietly degrade the living room
+    /// forever.
+    quality_override: Option<QualityChoice>,
+    /// The in-player quality menu, open above the transport.
+    show_quality: bool,
+    /// The recording being streamed, kept so a quality change can reopen the
+    /// same one at the same position.
+    current_recording: Option<library::Recording>,
+    /// Playing a downloaded local file. Quality does not apply there: the file
+    /// is the file, and downloads always fetch the original.
+    playing_local: bool,
+    /// Which open request is current. Tuning channel B while A is still
+    /// opening must not end with A's picture arriving late and winning.
+    open_generation: u64,
+    /// When the first frame of the current source arrived, for the entrance
+    /// animation.
+    first_frame_at: Option<Instant>,
+    /// When the guide was last loaded. Listings go stale as the evening moves
+    /// on, and a guide showing what was on an hour ago is worse than useless.
+    guide_loaded_at: Instant,
+    /// Set when playback has stalled long enough to look like a dropped
+    /// connection — a closed laptop lid, or wifi going away.
+    stalled_since: Option<Instant>,
+    /// Frame count at the last stall check, to tell "stopped" from "slow".
+    stall_watch_frames: u64,
+    /// When the position was last reported to the server.
+    position_reported_at: Instant,
+    /// Kept so a player opened later can still ask for repaints. The context is
+    /// cheap to clone and is the only handle the decoder threads need.
+    repaint: egui::Context,
+
+    error: Option<String>,
+}
+
+impl App {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        if let Some(handle) = window_handle(cc) {
+            fluent::apply_mica(handle, true);
+        }
+
+        // Four workers rather than two: artwork downloads and decodes run here
+        // alongside the API calls, and a home screen asks for a dozen images at
+        // once. Two threads made the first paint visibly crawl in.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("could not start the async runtime");
+        let runtime_handle = runtime.handle().clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let settings = settings::Settings::load();
+        let server = settings.server_url();
+        let dvr = api::Dvr::new(&server);
+        let lib = library::Library::new(&server);
+
+        // Nothing is tuned at startup, deliberately. Opening a tuner before
+        // being asked to watch anything holds a scarce resource — on a
+        // two-tuner box it is half of them — for someone who may only have
+        // opened the app to check what is recording tonight. The home screen
+        // needs no tuner at all.
+        let configured = settings.configured();
+        if configured {
+            spawn_home(&runtime, &tx, cc.egui_ctx.clone(), &server);
+            spawn_guide(&runtime, &tx, cc.egui_ctx.clone(), &server);
+        }
+
+        Self {
+            player: None,
+            texture: None,
+            retired: Vec::new(),
+            last_generation: 0,
+            paused: false,
+            volume: 1.0,
+            show_stats: false,
+            scrubbing: false,
+            scrub_target: None,
+            last_activity: Instant::now(),
+            dvr,
+            runtime,
+            tx,
+            rx,
+            airing: None,
+            padding: api::Padding::default(),
+            job_id: None,
+            job_pending: false,
+            toast: None,
+            frame_times: Vec::with_capacity(180),
+            last_frame: Instant::now(),
+            last_decoded: 0,
+            last_fps_sample: Instant::now(),
+            decode_fps: 0.0,
+            upload_ms: 0.0,
+            screen: Screen::Home,
+            rail_expanded: false,
+            fullscreen: false,
+            watching: false,
+            images: images::Images::new(runtime_handle.clone()),
+            downloads: downloads::Downloads::new(runtime_handle),
+            lib,
+            home: library::Home::default(),
+            home_loading: configured,
+            setup: ui_setup::SetupState::default(),
+            guide: guide::GuideData::default(),
+            // The guide reopens exactly as it was left: picking a collection
+            // IS picking the default, with no separate setting to configure.
+            guide_state: ui_guide::GuideState {
+                collection: settings.last_collection.clone(),
+                source: settings.last_source.clone(),
+                ..ui_guide::GuideState::default()
+            },
+            settings,
+            guide_loading: configured,
+            library_state: ui_library::LibraryState::default(),
+            recordings_tab: ui_library::RecordingsTab::default(),
+            shown_screen: Screen::Home,
+            screen_changed: Instant::now(),
+            record_dialog: None,
+            confirm_delete: None,
+            loading: Loading::recording(""),
+            live_channel: None,
+            commercials: Vec::new(),
+            quality_override: None,
+            show_quality: false,
+            current_recording: None,
+            playing_local: false,
+            open_generation: 0,
+            first_frame_at: None,
+            guide_loaded_at: Instant::now(),
+            stalled_since: None,
+            stall_watch_frames: 0,
+            position_reported_at: Instant::now(),
+            repaint: cc.egui_ctx.clone(),
+            error: None,
+        }
+    }
+
+    /// Reload everything that depends on which server is selected.
+    fn reconnect(&mut self) {
+        let server = self.settings.server_url();
+        self.dvr = api::Dvr::new(&server);
+        self.lib = library::Library::new(&server);
+        self.home = library::Home::default();
+        self.guide = guide::GuideData::default();
+        self.home_loading = true;
+        self.guide_loading = true;
+
+        // Whatever was playing came from the old server.
+        self.player = None;
+        self.retire_texture();
+        self.watching = false;
+        self.live_channel = None;
+
+        spawn_home(&self.runtime, &self.tx, self.repaint.clone(), &server);
+        spawn_guide(&self.runtime, &self.tx, self.repaint.clone(), &server);
+    }
+
+    fn drain_messages(&mut self) {
+        while let Ok(message) = self.rx.try_recv() {
+            match message {
+                Msg::Program(airing, padding, existing) => {
+                    self.padding = padding;
+                    self.job_id = existing;
+                    self.airing = Some(airing);
+                }
+                Msg::JobCreated(id) => {
+                    self.job_pending = false;
+                    let name = self
+                        .airing
+                        .as_ref()
+                        .map(|a| a.title.clone())
+                        .unwrap_or_else(|| "this program".into());
+                    self.job_id = Some(id);
+                    self.announce(format!("Recording {name}"));
+                }
+                Msg::JobDeleted => {
+                    self.job_pending = false;
+                    self.job_id = None;
+                    self.announce("Recording canceled".into());
+                }
+                Msg::Failed(reason) => {
+                    self.job_pending = false;
+                    self.home_loading = false;
+                    self.announce(reason);
+                }
+                Msg::Home(home) => {
+                    self.home = home;
+                    self.home_loading = false;
+                }
+                Msg::Guide(data) => {
+                    self.guide = *data;
+                    self.guide_loading = false;
+                    self.guide_loaded_at = Instant::now();
+                }
+                Msg::PlayerOpened {
+                    result,
+                    resume_at,
+                    generation,
+                } => {
+                    // A stale open: the user has already tuned something else.
+                    // Dropping the player stops its threads and its stream.
+                    if generation != self.open_generation {
+                        continue;
+                    }
+                    match result {
+                        Ok(player) => {
+                            // `resume_at` is elapsed seconds from the start of
+                            // the item; the player seeks in stream time, whose
+                            // origin is whatever the file begins at. Adding
+                            // the origin is what turns one into the other —
+                            // without it, a resume asks for a position tens of
+                            // thousands of seconds past the end.
+                            if resume_at > 5.0 {
+                                let origin = player
+                                    .seek_range()
+                                    .map(|(start, _)| start)
+                                    .unwrap_or(0.0);
+                                player.seek_to(origin + resume_at);
+                            }
+
+                            self.player = Some(*player);
+                            self.error = None;
+                            self.paused = false;
+                            self.first_frame_at = None;
+                        }
+                        Err(e) => {
+                            self.watching = false;
+                            self.announce(format!("Could not play: {e}"));
+                        }
+                    }
+                }
+                Msg::LibraryChanged(note) => {
+                    self.announce(note);
+                    // Reload rather than patching the local copy, so what is
+                    // on screen is what the server actually has.
+                    let server = self.settings.server_url();
+                    spawn_home(&self.runtime, &self.tx, self.repaint.clone(), &server);
+                }
+                Msg::ScheduleChanged(note) => {
+                    self.announce(note);
+                    // Reload so the guide's dots match the server rather than
+                    // an optimistic guess made here.
+                    let server = self.settings.server_url();
+                    spawn_guide(&self.runtime, &self.tx, self.repaint.clone(), &server);
+                }
+                Msg::Probed(url, result) => {
+                    self.setup.probing = false;
+                    match result {
+                        Ok(info) => {
+                            self.setup.message =
+                                Some((format!("Connected to {}", info.name), true));
+                            self.setup.address.clear();
+                            self.settings
+                                .add_server(ui_setup::server_from_probe(url, info));
+                            if let Err(e) = self.settings.save() {
+                                self.announce(format!("Could not save settings: {e:#}"));
+                            }
+                            self.reconnect();
+                            self.screen = Screen::Home;
+                        }
+                        Err(e) => self.setup.message = Some((e, false)),
+                    }
+                }
+            }
+        }
+    }
+
+    fn announce(&mut self, text: String) {
+        self.toast = Some((text, Instant::now()));
+    }
+
+    /// Ask the DVR to schedule this program, or to drop the job it already
+    /// has. Recording is the server's job, so the button reports what the
+    /// server said rather than lighting up optimistically.
+    fn toggle_record(&mut self, ctx: &egui::Context) {
+        if self.job_pending {
+            return;
+        }
+
+        let dvr = self.dvr.clone();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+
+        match self.job_id.clone() {
+            Some(id) => {
+                self.job_pending = true;
+                self.runtime.spawn(async move {
+                    let message = match dvr.delete_job(&id).await {
+                        Ok(()) => Msg::JobDeleted,
+                        Err(e) => Msg::Failed(format!("Could not cancel: {e:#}")),
+                    };
+                    let _ = tx.send(message);
+                    ctx.request_repaint();
+                });
+            }
+            None => {
+                let Some(airing) = self.airing.clone() else {
+                    self.announce("Still loading the guide for this channel".into());
+                    return;
+                };
+                self.job_pending = true;
+                let padding = self.padding;
+                self.runtime.spawn(async move {
+                    let message = match dvr.create_job(&airing, padding).await {
+                        Ok(id) => Msg::JobCreated(id),
+                        Err(e) => Msg::Failed(format!("Could not record: {e:#}")),
+                    };
+                    let _ = tx.send(message);
+                    ctx.request_repaint();
+                });
+            }
+        }
+    }
+
+    /// Stop showing the video texture without freeing it yet.
+    ///
+    /// Every caller of this runs part-way through a frame — tuning a channel,
+    /// switching quality, stopping playback, changing server — and the picture
+    /// has already been painted by the time they do. Freeing the texture there
+    /// leaves the frame referring to something that no longer exists.
+    fn retire_texture(&mut self) {
+        if let Some(handle) = self.texture.take() {
+            self.retired.push(handle);
+        }
+    }
+
+    fn sync_texture(&mut self, ctx: &egui::Context) {
+        let Some(player) = &self.player else { return };
+        let slot = player.frame();
+        if slot.generation == self.last_generation || slot.pixels.is_empty() {
+            return;
+        }
+
+        // Check the size against the buffer before handing both to egui.
+        //
+        // These are written together under one lock, so they should always
+        // agree — but "should" is not good enough here. egui's wgpu backend
+        // asserts that the pixel count matches the size, and an assert on the
+        // UI thread aborts the process. Changing stream quality is exactly when
+        // a picture of one size can meet a buffer sized for another, and the
+        // result was a hard crash with nothing on screen to explain it. A
+        // dropped frame is the right cost for that.
+        let expected = slot.width as usize * slot.height as usize * 4;
+        if expected == 0 || slot.pixels.len() != expected {
+            eprintln!(
+                "[player] skipping a frame: {} bytes for {}x{}, expected {expected}",
+                slot.pixels.len(),
+                slot.width,
+                slot.height
+            );
+            return;
+        }
+
+        let started = Instant::now();
+
+        // Premultiplied, not unmultiplied. `from_rgba_unmultiplied` runs a
+        // multiply per channel over every pixel, which at 1920x1080 is over
+        // eight million scalar operations per frame on the UI thread. Video is
+        // opaque, so alpha is 255 and the two forms are identical: the whole
+        // computation was being done to arrive back at the bytes we started
+        // with. This just packs them.
+        let image = egui::ColorImage {
+            size: [slot.width as usize, slot.height as usize],
+            pixels: slot
+                .pixels
+                .chunks_exact(4)
+                .map(|p| egui::Color32::from_rgba_premultiplied(p[0], p[1], p[2], p[3]))
+                .collect(),
+        };
+        // Reuse the handle only while the picture is the same size.
+        //
+        // `set` on a differently-sized image makes egui destroy the GPU texture
+        // and allocate a new one *under the same id*. Anything already painted
+        // this frame with that id then submits against a texture that no longer
+        // exists, which is a wgpu validation error and a panic on the UI thread.
+        // Changing stream quality is exactly when the size changes, so that was
+        // the crash. A new size gets a new texture, and the old one is retired
+        // rather than dropped.
+        let same_size = self
+            .texture
+            .as_ref()
+            .map(|handle| handle.size() == image.size)
+            .unwrap_or(false);
+
+        match &mut self.texture {
+            Some(handle) if same_size => handle.set(image, egui::TextureOptions::LINEAR),
+            _ => {
+                if let Some(old) = self.texture.take() {
+                    self.retired.push(old);
+                }
+                self.texture =
+                    Some(ctx.load_texture("video", image, egui::TextureOptions::LINEAR));
+                // The first frame of a new source starts the entrance
+                // animation: the picture rises in rather than snapping on.
+                self.first_frame_at = Some(Instant::now());
+            }
+        }
+        self.last_generation = slot.generation;
+        self.upload_ms = started.elapsed().as_secs_f32() * 1000.0;
+    }
+
+    fn sample_rates(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32();
+        self.last_frame = now;
+        if dt > 0.0 && dt < 1.0 {
+            self.frame_times.push(dt);
+            if self.frame_times.len() > 180 {
+                self.frame_times.remove(0);
+            }
+        }
+
+        // Sampled over a longer window than feels necessary, because a short
+        // one quantizes a 59.94fps source into a readout that jitters between
+        // 59 and 62 and looks like a fault when nothing is wrong.
+        let since = now.duration_since(self.last_fps_sample).as_secs_f32();
+        if since >= 2.0 {
+            if let Some(player) = &self.player {
+                let count = player.decoded();
+                self.decode_fps = count.saturating_sub(self.last_decoded) as f32 / since;
+                self.last_decoded = count;
+
+                // A decode error arrives asynchronously, so it is picked up
+                // here rather than at open time.
+                if self.error.is_none() {
+                    self.error = player.error();
+                }
+            }
+            self.last_fps_sample = now;
+        }
+    }
+
+    fn ui_fps(&self) -> f32 {
+        if self.frame_times.is_empty() {
+            return 0.0;
+        }
+        let mean: f32 = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
+        if mean > 0.0 { 1.0 / mean } else { 0.0 }
+    }
+}
+
+impl eframe::App for App {
+    /// Transparent, so Mica is what fills the window.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Before anything paints. The frame that referenced these has been
+        // submitted, so the GPU textures behind them can safely go now.
+        self.retired.clear();
+
+        self.drain_messages();
+        self.sync_texture(ctx);
+        self.sample_rates();
+        self.images.pump(ctx);
+        self.handle_keys(ctx);
+        self.housekeeping();
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(Fluent::LAYER_BASE))
+            .show(ctx, |ui| {
+                let full = ctx.screen_rect();
+
+                // Full screen means full screen: no caption, no rail, nothing
+                // but the picture and the controls that fade away on their own.
+                let chrome = !self.fullscreen;
+                let caption_h = if chrome { TITLEBAR_HEIGHT } else { 0.0 };
+                // The rail stays up while watching, and only full screen takes
+                // it away. Hiding it the moment something was clicked in the
+                // guide left a blank window with a spinner and no visible way
+                // back — the picture had not arrived yet, and everything that
+                // could have been pressed instead was gone.
+                //
+                // The width animates between its two sizes, which is what makes
+                // the hamburger feel like it slides a surface open rather than
+                // teleporting the whole layout.
+                let rail_target = if chrome && self.settings.configured() {
+                    if self.rail_expanded { RAIL_EXPANDED } else { RAIL_COLLAPSED }
+                } else {
+                    0.0
+                };
+                let rail_w = ctx.animate_value_with_time(
+                    egui::Id::new("rail-width"),
+                    rail_target,
+                    theme::ANIM_SURFACE,
+                );
+
+                if chrome {
+                    title_bar(
+                        ui,
+                        ctx,
+                        egui::Rect::from_min_size(full.min, egui::vec2(full.width(), caption_h)),
+                    );
+                }
+
+                if rail_w > 0.0 {
+                    let rail = egui::Rect::from_min_size(
+                        egui::pos2(full.min.x, full.min.y + caption_h),
+                        egui::vec2(rail_w, full.height() - caption_h),
+                    );
+                    let mut screen = self.screen;
+                    if ui::nav_rail(ui, rail, &mut screen, &mut self.rail_expanded) {
+                        self.screen = screen;
+                        // Navigating away ends playback, same as Escape. The
+                        // alternative — sound continuing under a screen with
+                        // no picture — reads as a bug every time.
+                        if self.watching {
+                            self.stop_playback();
+                        }
+                    }
+                }
+
+                let content = egui::Rect::from_min_max(
+                    egui::pos2(full.min.x + rail_w, full.min.y + caption_h),
+                    full.max,
+                );
+
+                // Nothing works without a server, so nothing else is offered
+                // until there is one. Showing a navigation rail over five
+                // empty screens would only invite someone to explore a broken
+                // application.
+                if !self.settings.configured() {
+                    let action = ui_setup::onboarding(
+                        ui,
+                        content,
+                        &mut self.settings,
+                        &mut self.setup,
+                    );
+                    self.handle_setup(action);
+                } else if self.watching {
+                    self.watch_view(ui, ctx, full, content);
+                } else {
+                    self.browse_view(ui, content);
+                }
+
+                self.toast_banner(ui, content);
+            });
+
+        self.record_dialog_frame(ctx);
+        self.delete_dialog_frame(ctx);
+
+        // The decoder asks for a repaint per frame, so the UI presents in step
+        // with the video. This slow tick keeps the clock and the progress bar
+        // moving when nothing is decoding.
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
+impl App {
+    /// Keyboard shortcuts.
+    ///
+    /// The ones a media application is expected to have. F11 and Escape are the
+    /// Windows conventions for full screen; space for play/pause and the arrow
+    /// keys for skipping are what every player does, and doing something else
+    /// would only be surprising.
+    fn handle_keys(&mut self, ctx: &egui::Context) {
+        // A focused text field owns the keyboard. Without this, typing a space
+        // into the guide's search box also toggles pause, and the arrow keys
+        // seek instead of moving the caret.
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+
+        let (f11, escape, space, left, right, home) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::F11),
+                i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::Space),
+                i.key_pressed(egui::Key::ArrowLeft),
+                i.key_pressed(egui::Key::ArrowRight),
+                i.key_pressed(egui::Key::Backspace),
+            )
+        });
+
+        if f11 {
+            self.set_fullscreen(ctx, !self.fullscreen);
+        }
+        if escape {
+            if self.fullscreen {
+                self.set_fullscreen(ctx, false);
+            } else if self.watching {
+                // Escape stops playback outright. An earlier version kept the
+                // stream running in the background so returning was instant,
+                // but that is not what Escape means anywhere else, and it
+                // silently held a tuner — half of them, on a two-tuner box —
+                // for a program nobody was watching.
+                self.stop_playback();
+            }
+        }
+        if home && self.watching && !self.fullscreen {
+            self.stop_playback();
+        }
+
+        if !self.watching {
+            return;
+        }
+
+        if space {
+            self.paused = !self.paused;
+            if let Some(p) = &self.player {
+                p.set_paused(self.paused);
+            }
+        }
+        if left {
+            let back = self.settings.skip_back_secs as f64;
+            if let Some(p) = &self.player {
+                if !p.seek_by(-back) {
+                    self.announce("This source cannot be rewound".into());
+                }
+            }
+        }
+        if right {
+            let forward = self.settings.skip_forward_secs as f64;
+            if let Some(p) = &self.player {
+                p.seek_by(forward);
+            }
+        }
+
+        // Channel surfing. Steps through the guide as it is currently
+        // filtered, so a collection picked in the guide is also the lineup
+        // being surfed rather than the whole thousand-channel list.
+        let (up, down) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::PageUp),
+                i.key_pressed(egui::Key::PageDown),
+            )
+        });
+        if (up || down) && self.live_channel.is_some() {
+            self.surf(if up { -1 } else { 1 });
+        }
+    }
+
+    /// Tune the next or previous channel in the filtered guide order.
+    fn surf(&mut self, delta: isize) {
+        let Some(current) = self.live_channel.clone() else { return };
+        let rows = guide::filter(
+            &self.guide,
+            self.guide_state.collection.as_deref(),
+            self.guide_state.source.as_deref(),
+            "",
+        );
+        if rows.is_empty() {
+            return;
+        }
+
+        let index = rows
+            .iter()
+            .position(|r| r.channel.number == current)
+            .unwrap_or(0) as isize;
+        // Wrapping, because reaching the end of the lineup and stopping dead
+        // is not what a channel button does.
+        let count = rows.len() as isize;
+        let next = ((index + delta) % count + count) % count;
+        let channel = rows[next as usize].channel.number.clone();
+        let name = rows[next as usize].channel.name.clone();
+
+        self.watch_channel(&channel);
+        self.announce(format!("{channel}  {name}"));
+    }
+
+    /// The quality flyout, opened from the transport's quality badge.
+    fn quality_menu(&mut self, ctx: &egui::Context) {
+        if !self.show_quality || self.playing_local {
+            return;
+        }
+
+        let mut chosen: Option<QualityChoice> = None;
+        let current = self.effective_quality();
+
+        egui::Area::new(egui::Id::new("quality-menu"))
+            .anchor(
+                egui::Align2::RIGHT_BOTTOM,
+                egui::vec2(-SPACE_L, -(96.0 + SPACE_S)),
+            )
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(with_alpha(Fluent::SOLID, 240))
+                    .rounding(RADIUS_SURFACE)
+                    .stroke(egui::Stroke::new(1.0, Fluent::STROKE_SURFACE))
+                    .inner_margin(egui::Margin::same(SPACE_S))
+                    .show(ui, |ui| {
+                        ui.set_min_width(150.0);
+                        ui.label(
+                            egui::RichText::new("QUALITY")
+                                .size(10.0)
+                                .color(Fluent::TEXT_TERTIARY),
+                        );
+                        ui.add_space(SPACE_XS);
+                        for choice in QualityChoice::MENU {
+                            let selected = choice == current;
+                            let label = if choice == QualityChoice::Original {
+                                "Original — no transcode".to_string()
+                            } else {
+                                choice.label()
+                            };
+                            if ui.selectable_label(selected, label).clicked() {
+                                chosen = Some(choice);
+                            }
+                        }
+                    });
+            });
+
+        if let Some(choice) = chosen {
+            self.show_quality = false;
+            if choice == current {
+                return;
+            }
+            self.quality_override = Some(choice);
+
+            // Retune the same source in place, carrying the position across.
+            // Live rejoins at the live edge, which is where live belongs; a
+            // recording comes back exactly where it was.
+            if let Some(channel) = self.live_channel.clone() {
+                // Rejoin near the live edge, not at the head of the playlist.
+                //
+                // Channels keeps every segment since the channel was tuned, so
+                // by the time anyone changes quality the head of that playlist
+                // is however long they have been watching — and joining there
+                // restarts the channel from whenever they tuned in. This cannot
+                // be corrected with a seek afterwards: a live stream states no
+                // duration, so the seekable window is measured from what this
+                // player has decoded, and for the first second there is no
+                // window at all.
+                self.tune(&channel, player::JoinAt::LiveEdge);
+                self.announce(format!("Switched to {}", choice.label()));
+            } else if let Some(recording) = self.current_recording.clone() {
+                // Elapsed, not the raw clock. Stream timestamps do not start
+                // at zero — these recordings begin around 81,876 seconds — so
+                // handing the position straight back reopened the file and
+                // seeked twenty-two hours past the end of it.
+                let position = self.elapsed_position().unwrap_or(0.0);
+                self.open_recording(recording, position);
+                self.announce(format!("Switched to {}", choice.label()));
+            }
+        }
+    }
+
+    /// How far into the current item playback has reached, in seconds from its
+    /// beginning.
+    ///
+    /// `Player::position` reports the stream's own timeline, whose origin is
+    /// whatever the file happens to start at. Everything outside the player —
+    /// resume points, commercial markers, what the server records — counts
+    /// from zero, and confusing the two has now caused two separate bugs.
+    fn elapsed_position(&self) -> Option<f64> {
+        let player = self.player.as_ref()?;
+        let position = player.position()?;
+        let origin = player.seek_range().map(|(start, _)| start).unwrap_or(0.0);
+        Some((position - origin).max(0.0))
+    }
+
+    /// Stop playback completely: tear the player down, release the tuner, and
+    /// return to whatever screen the rail has selected.
+    fn stop_playback(&mut self) {
+        // One last position report before the player goes away, so stopping
+        // two minutes into something records those two minutes.
+        self.report_position();
+        self.player = None;
+        self.retire_texture();
+        self.last_generation = 0;
+        self.watching = false;
+        self.paused = false;
+        self.live_channel = None;
+        self.commercials.clear();
+        self.current_recording = None;
+        self.playing_local = false;
+        self.show_quality = false;
+    }
+
+    fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
+        if self.fullscreen == on {
+            return;
+        }
+        self.fullscreen = on;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+        // Coming out of full screen with the controls hidden would leave no
+        // visible way back, so wake them.
+        self.last_activity = Instant::now();
+    }
+
+    /// The player.
+    fn watch_view(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        full: egui::Rect,
+        content: egui::Rect,
+    ) {
+        if let Some(error) = &self.error {
+            ui.painter().text(
+                content.center(),
+                egui::Align2::CENTER_CENTER,
+                error,
+                egui::FontId::proportional(14.0),
+                Fluent::LIVE,
+            );
+            return;
+        }
+
+        match &self.texture {
+            Some(texture) => {
+                // The swoop: the picture rises from below and fades in over a
+                // third of a second, easing out. Tuning takes long enough that
+                // the arrival deserves to feel like one.
+                let entrance = self
+                    .first_frame_at
+                    .map(|at| {
+                        (at.elapsed().as_secs_f32() / (theme::ANIM_SURFACE * 1.6)).min(1.0)
+                    })
+                    .unwrap_or(1.0);
+                let eased = 1.0 - (1.0 - entrance) * (1.0 - entrance) * (1.0 - entrance);
+                if entrance < 1.0 {
+                    ctx.request_repaint();
+                }
+                draw_video(ui, content, texture, eased);
+            }
+            None => tuning_indicator(ui, content, &self.loading),
+        }
+
+        // Double click anywhere on the picture toggles full screen, as it does
+        // in every other video player.
+        let surface = ui.interact(
+            content,
+            egui::Id::new("video-surface"),
+            egui::Sense::click(),
+        );
+        if surface.double_clicked() {
+            self.set_fullscreen(ctx, !self.fullscreen);
+        }
+
+        self.transport(ui, ctx, full);
+        self.skip_pill(ctx);
+        self.quality_menu(ctx);
+
+        if self.show_stats {
+            self.stats_card(ui, content);
+        }
+    }
+
+    /// The break currently playing, as stream-time `(start, end)`.
+    fn current_break(&self) -> Option<(f64, f64)> {
+        let player = self.player.as_ref()?;
+        let origin = player.seek_range().map(|(start, _)| start).unwrap_or(0.0);
+        let elapsed = self.elapsed_position()?;
+        self.commercials
+            .iter()
+            .find(|(start, end)| elapsed >= *start && elapsed < end - 0.5)
+            .map(|(start, end)| (origin + start, origin + end))
+    }
+
+    /// Jump past the current break, or forward to the end of the next one.
+    fn skip_break(&mut self) {
+        let Some(player) = &self.player else { return };
+        let origin = player.seek_range().map(|(start, _)| start).unwrap_or(0.0);
+        let Some(elapsed) = self.elapsed_position() else { return };
+
+        let target = self
+            .commercials
+            .iter()
+            // Inside a break: its end. Otherwise the end of the next one
+            // ahead, which is what "skip the adverts" means when pressed
+            // during the program.
+            .find(|(start, end)| (elapsed >= *start && elapsed < end - 0.5) || *start > elapsed)
+            .map(|(_, end)| origin + *end);
+
+        match target {
+            Some(t) => {
+                player.seek_to(t);
+            }
+            None => self.announce("No commercial breaks left".into()),
+        }
+    }
+
+    /// "Skip break", shown only while playback is inside one.
+    ///
+    /// The button is the whole comskip feature from the viewer's side: the
+    /// bar's amber bands say where the breaks are, and this takes you past the
+    /// one you are in with a single press. It slides in rather than popping,
+    /// and disappears the moment it is no longer true.
+    fn skip_pill(&mut self, ctx: &egui::Context) {
+        let Some(player) = &self.player else { return };
+        if self.commercials.is_empty() {
+            return;
+        }
+        let Some(position) = player.position() else { return };
+
+        // Marker times are offsets into the recording; the clock is in stream
+        // PTS, which does not start at zero. Comparing the two directly means
+        // the pill never appears. See the same correction in `scrub_bar`.
+        let origin = player.seek_range().map(|(start, _)| start).unwrap_or(0.0);
+        let elapsed = position - origin;
+
+        // A small lead-out: offering "skip" for the last half second of a
+        // break would seek past nothing.
+        let target = self
+            .commercials
+            .iter()
+            .find(|(start, end)| elapsed >= *start && elapsed < end - 0.5)
+            .map(|(_, end)| origin + *end);
+
+        let visible = ctx.animate_bool_with_time(
+            egui::Id::new("skip-pill"),
+            target.is_some(),
+            theme::ANIM_NORMAL,
+        );
+        if visible <= 0.01 {
+            return;
+        }
+
+        egui::Area::new(egui::Id::new("skip-pill-area"))
+            .anchor(
+                egui::Align2::RIGHT_BOTTOM,
+                egui::vec2(-SPACE_L * 2.0, -(96.0 + SPACE_L) + (1.0 - visible) * 14.0),
+            )
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_opacity(visible);
+
+                // Two sections, because the glyph has to be laid out in the
+                // icon family explicitly. It was part of the button's plain
+                // RichText, which uses the proportional face, and Segoe UI
+                // Variable has nothing in the Private Use Area — so the one
+                // control that most needs to look deliberate was rendering a
+                // blank box. Every other glyph in the app names the family;
+                // this was the only one that did not.
+                let ink = egui::Color32::from_rgb(12, 14, 18);
+                let mut label = egui::text::LayoutJob::default();
+                label.append(
+                    "Skip break  ",
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::proportional(14.0),
+                        color: ink,
+                        valign: egui::Align::Center,
+                        ..Default::default()
+                    },
+                );
+                label.append(
+                    theme::icon::SKIP_BREAK,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::new(
+                            12.0,
+                            egui::FontFamily::Name(theme::ICON_FONT.into()),
+                        ),
+                        color: ink,
+                        valign: egui::Align::Center,
+                        ..Default::default()
+                    },
+                );
+
+                let button = egui::Button::new(label)
+                    .fill(Fluent::ACCENT)
+                .rounding(18.0)
+                .min_size(egui::vec2(128.0, 36.0));
+
+                if ui.add(button).clicked() {
+                    if let (Some(end), Some(p)) = (target, &self.player) {
+                        p.seek_to(end);
+                    }
+                }
+            });
+    }
+
+    /// Whichever browsing screen is selected.
+    fn browse_view(&mut self, ui: &mut egui::Ui, content: egui::Rect) {
+        // Screens crossfade in rather than cutting. Tracked by hand instead of
+        // egui's animate_bool, because that helper snaps to its target the
+        // first time an id is seen — which is precisely the moment the fade is
+        // supposed to happen.
+        if self.shown_screen != self.screen {
+            self.shown_screen = self.screen;
+            self.screen_changed = Instant::now();
+        }
+        let t = (self.screen_changed.elapsed().as_secs_f32() / theme::ANIM_SURFACE).min(1.0);
+        ui.set_opacity(t * t * (3.0 - 2.0 * t));
+        if t < 1.0 {
+            ui.ctx().request_repaint();
+        }
+
+        match self.screen {
+            Screen::Home => {
+                let action = ui::home(
+                    ui,
+                    content,
+                    &self.home,
+                    &mut self.images,
+                    self.home_loading,
+                );
+                self.handle_item(action);
+            }
+            Screen::Guide => {
+                let (action, settings_changed) = ui_guide::guide(
+                    ui,
+                    content,
+                    &self.guide,
+                    &mut self.guide_state,
+                    &mut self.images,
+                    &mut self.settings,
+                    now_unix(),
+                    self.guide_loading,
+                );
+                if settings_changed {
+                    if let Err(e) = self.settings.save() {
+                        self.announce(format!("Could not save settings: {e:#}"));
+                    }
+                }
+                self.handle_guide(action);
+            }
+            Screen::Downloads => {
+                // Local only. Nothing on this screen reaches the DVR: removing
+                // a download deletes a file from this machine and leaves the
+                // recording on the server untouched.
+                let action = ui_downloads::downloads_screen(
+                    ui,
+                    content,
+                    &self.home,
+                    &mut self.images,
+                    &self.downloads,
+                );
+                match action {
+                    ui_downloads::DownloadAction::None => {}
+                    ui_downloads::DownloadAction::Play(id) => {
+                        // `open_recording` prefers a finished download over the
+                        // server, so this plays the local file with the network
+                        // unplugged — which is the entire point of having it.
+                        match self.home.all.iter().find(|r| r.id == id).cloned() {
+                            Some(recording) => self.play_recording(&recording),
+                            None => self.announce(
+                                "That recording is no longer in the library".into(),
+                            ),
+                        }
+                    }
+                    ui_downloads::DownloadAction::Remove(id) => {
+                        self.downloads.remove(&id);
+                        self.announce("Removed the local copy".into());
+                    }
+                    ui_downloads::DownloadAction::ClearFinished => {
+                        self.downloads.clear_finished();
+                        self.announce("Cleared finished downloads".into());
+                    }
+                }
+            }
+            Screen::Library => {
+                let action = ui_library::library_screen(
+                    ui,
+                    content,
+                    &self.home,
+                    &mut self.library_state,
+                    &mut self.images,
+                    &self.downloads,
+                    self.home_loading,
+                );
+                self.handle_item(action);
+            }
+            Screen::Recordings => {
+                let action = ui_library::recordings_screen(
+                    ui,
+                    content,
+                    &self.home,
+                    &mut self.recordings_tab,
+                    &mut self.images,
+                    &self.downloads,
+                    now_unix(),
+                    self.home_loading,
+                );
+                match action {
+                    ui_library::RecordingsAction::Cancel(id) => self.cancel_job(id),
+                    ui_library::RecordingsAction::Item(item) => self.handle_item(item),
+                    ui_library::RecordingsAction::None => {}
+                }
+            }
+            Screen::Settings => {
+                let action = ui_setup::settings_screen(
+                    ui,
+                    content,
+                    &mut self.settings,
+                    &mut self.setup,
+                );
+                self.handle_setup(action);
+            }
+        }
+    }
+
+    /// Act on something asked of a recording, from whichever screen asked it.
+    fn handle_item(&mut self, action: ui::Action) {
+        match action {
+            ui::Action::Play(recording) => self.play_recording(&recording),
+            ui::Action::WatchLive => self.screen = Screen::Guide,
+            ui::Action::Download(recording) => self.start_download(&recording),
+            ui::Action::RemoveDownload(id) => self.downloads.remove(&id),
+            ui::Action::SetWatched(id, watched) => self.set_watched(id, watched),
+            ui::Action::Delete(recording) => self.confirm_delete = Some(recording),
+            ui::Action::None => {}
+        }
+    }
+
+    fn handle_setup(&mut self, action: ui_setup::SetupAction) {
+        match action {
+            ui_setup::SetupAction::None => {}
+            ui_setup::SetupAction::Save => {
+                if let Err(e) = self.settings.save() {
+                    self.announce(format!("Could not save settings: {e:#}"));
+                }
+            }
+            ui_setup::SetupAction::Probe(input) => {
+                let url = settings::normalize(&input);
+                if url.is_empty() {
+                    return;
+                }
+                self.setup.probing = true;
+                self.setup.message = None;
+                let tx = self.tx.clone();
+                let ctx = self.repaint.clone();
+                self.runtime.spawn(async move {
+                    let result = settings::probe(&url)
+                        .await
+                        .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(Msg::Probed(url, result));
+                    ctx.request_repaint();
+                });
+            }
+            ui_setup::SetupAction::Select(index) => {
+                self.settings.active = index;
+                let _ = self.settings.save();
+                self.reconnect();
+            }
+            ui_setup::SetupAction::Remove(index) => {
+                self.settings.remove_server(index);
+                let _ = self.settings.save();
+                self.reconnect();
+            }
+        }
+    }
+
+    /// Act on a click in the guide.
+    fn handle_guide(&mut self, action: ui_guide::GuideAction) {
+        use ui_guide::GuideAction as G;
+        match action {
+            G::None => {}
+            G::Watch(channel) => self.watch_channel(&channel),
+            G::Record(airing) => self.schedule(airing, false),
+            G::RecordSeries(airing) => self.schedule(airing, true),
+            G::CancelJob(id, _) => self.cancel_job(id),
+            G::CancelSeries(airing) => {
+                let Some(rule) = self.guide.schedule.rule_for(&airing).cloned() else {
+                    self.announce("No series pass found for this program".into());
+                    return;
+                };
+                let dvr = self.dvr.clone();
+                let tx = self.tx.clone();
+                let ctx = self.repaint.clone();
+                let title = airing.title.clone();
+                self.runtime.spawn(async move {
+                    let note = match dvr.delete_rule(&rule).await {
+                        Ok(()) => format!("Stopped recording {title}"),
+                        Err(e) => format!("Could not cancel the pass: {e:#}"),
+                    };
+                    let _ = tx.send(Msg::ScheduleChanged(note));
+                    ctx.request_repaint();
+                });
+            }
+            G::EditPadding(airing) => {
+                self.record_dialog = Some(ui_record::RecordDialog::new(
+                    airing,
+                    self.padding.start,
+                    self.padding.end,
+                ));
+            }
+        }
+    }
+
+    fn cancel_job(&mut self, id: String) {
+        let dvr = self.dvr.clone();
+        let tx = self.tx.clone();
+        let ctx = self.repaint.clone();
+        self.runtime.spawn(async move {
+            let note = match dvr.delete_job(&id).await {
+                Ok(()) => "Recording canceled".to_string(),
+                Err(e) => format!("Could not cancel: {e:#}"),
+            };
+            let _ = tx.send(Msg::ScheduleChanged(note));
+            ctx.request_repaint();
+        });
+    }
+
+    /// The record dialog, when one is open.
+    fn record_dialog_frame(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.record_dialog else { return };
+        match dialog.show(ctx) {
+            ui_record::RecordChoice::Pending => {}
+            ui_record::RecordChoice::Canceled => self.record_dialog = None,
+            ui_record::RecordChoice::Once { start_pad, end_pad } => {
+                let airing = dialog.airing.clone();
+                self.record_dialog = None;
+                self.schedule_with(airing, false, start_pad, end_pad, true, 0);
+            }
+            ui_record::RecordChoice::Series {
+                start_pad,
+                end_pad,
+                new_only,
+                keep,
+            } => {
+                let airing = dialog.airing.clone();
+                self.record_dialog = None;
+                self.schedule_with(airing, true, start_pad, end_pad, new_only, keep);
+            }
+        }
+    }
+
+    /// Confirmation before deleting a recording.
+    ///
+    /// The file is gone from the DVR afterwards, so this asks first and names
+    /// what will go. The destructive button is the one that has to be aimed
+    /// at, not the one under the cursor.
+    fn delete_dialog_frame(&mut self, ctx: &egui::Context) {
+        let Some(recording) = self.confirm_delete.clone() else { return };
+        let mut open = true;
+        let mut decision: Option<bool> = None;
+
+        egui::Window::new("Delete recording")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(&recording.title)
+                        .size(16.0)
+                        .color(Fluent::TEXT_PRIMARY),
+                );
+                let subtitle = recording.subtitle();
+                if !subtitle.is_empty() {
+                    ui.label(
+                        egui::RichText::new(subtitle)
+                            .size(12.0)
+                            .color(Fluent::TEXT_SECONDARY),
+                    );
+                }
+                ui.add_space(SPACE_M);
+                ui.label(
+                    egui::RichText::new("This deletes the file from the DVR. It cannot be undone.")
+                        .size(12.0)
+                        .color(Fluent::CAUTION),
+                );
+                ui.add_space(SPACE_L);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(96.0, 32.0)))
+                        .clicked()
+                    {
+                        decision = Some(false);
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::from_rgb(16, 16, 18)),
+                            )
+                            .fill(Fluent::LIVE)
+                            .min_size(egui::vec2(96.0, 32.0)),
+                        )
+                        .clicked()
+                    {
+                        decision = Some(true);
+                    }
+                });
+            });
+
+        if !open {
+            self.confirm_delete = None;
+            return;
+        }
+        match decision {
+            Some(true) => {
+                self.confirm_delete = None;
+                self.delete_recording(&recording);
+            }
+            Some(false) => self.confirm_delete = None,
+            None => {}
+        }
+    }
+
+    fn delete_recording(&mut self, recording: &library::Recording) {
+        // The local copy goes too. Leaving a download behind for a recording
+        // the server no longer has would show it in the library forever with
+        // nothing to refresh it from.
+        self.downloads.remove(&recording.id);
+
+        let lib = library::Library::new(self.settings.server_url());
+        let tx = self.tx.clone();
+        let ctx = self.repaint.clone();
+        let id = recording.id.clone();
+        let title = recording.title.clone();
+        self.runtime.spawn(async move {
+            let note = match lib.delete(&id).await {
+                Ok(()) => format!("Deleted {title}"),
+                Err(e) => format!("Could not delete: {e:#}"),
+            };
+            let _ = tx.send(Msg::LibraryChanged(note));
+            ctx.request_repaint();
+        });
+    }
+
+    fn set_watched(&mut self, id: String, watched: bool) {
+        let lib = library::Library::new(self.settings.server_url());
+        let tx = self.tx.clone();
+        let ctx = self.repaint.clone();
+        self.runtime.spawn(async move {
+            let note = match lib.set_watched(&id, watched).await {
+                Ok(()) => {
+                    if watched { "Marked watched" } else { "Marked unwatched" }.to_string()
+                }
+                Err(e) => format!("Could not update: {e:#}"),
+            };
+            let _ = tx.send(Msg::LibraryChanged(note));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Schedule an airing using the server's default padding.
+    fn schedule(&mut self, airing: guide::Airing, series: bool) {
+        let (start, end) = (self.padding.start, self.padding.end);
+        self.schedule_with(airing, series, start, end, true, 0);
+    }
+
+    /// Schedule an airing, as one recording or as a whole series.
+    fn schedule_with(
+        &mut self,
+        airing: guide::Airing,
+        series: bool,
+        start_pad: i64,
+        end_pad: i64,
+        new_only: bool,
+        keep: i64,
+    ) {
+        let dvr = self.dvr.clone();
+        let tx = self.tx.clone();
+        let ctx = self.repaint.clone();
+        let title = airing.title.clone();
+
+        // The guide's Airing carries the server's own object, which is handed
+        // straight back so the recording keeps its metadata.
+        let job = api::Airing {
+            title: airing.title.clone(),
+            subtitle: airing.episode_title.clone(),
+            start: airing.start,
+            duration: airing.duration,
+            channel: airing.channel.clone(),
+            raw: airing.raw.clone(),
+        };
+        let padding = api::Padding {
+            start: start_pad,
+            end: end_pad,
+        };
+
+        self.runtime.spawn(async move {
+            let note = if series {
+                let options = api::PassOptions {
+                    padding,
+                    new_only,
+                    keep,
+                };
+                match dvr
+                    .create_series_rule(&job, airing.series_id.as_str(), options)
+                    .await
+                {
+                    Ok(()) => format!("Recording every episode of {title}"),
+                    Err(e) => format!("Could not create the pass: {e:#}"),
+                }
+            } else {
+                match dvr.create_job(&job, padding).await {
+                    Ok(_) => format!("Recording {title}"),
+                    Err(e) => format!("Could not record: {e:#}"),
+                }
+            };
+            let _ = tx.send(Msg::ScheduleChanged(note));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Everything that has to happen on a clock rather than on a click:
+    /// telling the server where playback is, keeping the guide from going
+    /// stale, and noticing that the stream has died.
+    fn housekeeping(&mut self) {
+        // ── Position, every 20 seconds ──────────────────────────────────
+        //
+        // Without this, everything watched here is invisible to Continue
+        // Watching, Up Next, and every other Channels client. Live has no
+        // position to report, and a local file has no server to report to.
+        if self.watching && !self.paused && !self.playing_local {
+            if self.position_reported_at.elapsed() > Duration::from_secs(20) {
+                self.position_reported_at = Instant::now();
+                self.report_position();
+            }
+        }
+
+        // ── Guide freshness, every 30 minutes ───────────────────────────
+        //
+        // Listings are a moving window. Half an hour in, the leftmost column
+        // is describing programs that already finished.
+        if self.settings.configured()
+            && !self.guide_loading
+            && self.guide_loaded_at.elapsed() > Duration::from_secs(1800)
+        {
+            self.guide_loaded_at = Instant::now();
+            let server = self.settings.server_url();
+            spawn_guide(&self.runtime, &self.tx, self.repaint.clone(), &server);
+        }
+
+        // ── Stall detection ─────────────────────────────────────────────
+        //
+        // A closed laptop lid or a dropped wifi leaves the HTTP connection
+        // dead and the player sitting on a frozen frame forever. Frames
+        // stopping while unpaused is the symptom; reopening the same source
+        // is the cure, and it is the same one for both causes.
+        if self.watching && !self.paused {
+            if let Some(player) = &self.player {
+                let frames = player.decoded();
+                if frames != self.stall_watch_frames {
+                    self.stall_watch_frames = frames;
+                    self.stalled_since = None;
+                } else {
+                    let since = *self.stalled_since.get_or_insert_with(Instant::now);
+                    // Generous: a slow segment fetch is not a dead connection,
+                    // and reopening a stream that was merely thinking would be
+                    // worse than waiting.
+                    if since.elapsed() > Duration::from_secs(12) {
+                        self.stalled_since = None;
+                        self.announce("Reconnecting…".into());
+                        self.reopen_current();
+                    }
+                }
+            }
+        } else {
+            self.stalled_since = None;
+        }
+    }
+
+    /// Send the current position to the server.
+    fn report_position(&self) {
+        let Some(recording) = &self.current_recording else { return };
+        // Elapsed from the start of the recording, which is what the server
+        // stores and every other client expects.
+        let Some(position) = self.elapsed_position() else { return };
+        if position <= 1.0 {
+            return;
+        }
+
+        let lib = library::Library::new(self.settings.server_url());
+        let id = recording.id.clone();
+        let duration = recording.duration;
+        self.runtime.spawn(async move {
+            let _ = lib.report_position(&id, position).await;
+            // Past 95% it is finished in every sense that matters, and that is
+            // the same threshold the server uses to decide what is unwatched.
+            if duration > 0.0 && position / duration >= 0.95 {
+                let _ = lib.set_watched(&id, true).await;
+            }
+        });
+    }
+
+    /// Reopen whatever is playing, at the position it had reached.
+    fn reopen_current(&mut self) {
+        if let Some(channel) = self.live_channel.clone() {
+            self.watch_channel(&channel);
+        } else if let Some(recording) = self.current_recording.clone() {
+            let position = self
+                .elapsed_position()
+                .unwrap_or(recording.playback_time);
+            self.open_recording(recording, position);
+        }
+    }
+
+    /// Open a source off the UI thread.
+    ///
+    /// `Player::open` blocks on the network — a connection, then a probe of
+    /// several megabytes — which is over a second on a live tune. Doing it on
+    /// the UI thread froze the window at exactly the moment the tuning
+    /// animation was supposed to be showing that work was happening.
+    fn spawn_open(
+        &mut self,
+        uri: String,
+        transport: player::Transport,
+        resume_at: f64,
+        join: player::JoinAt,
+    ) {
+        self.player = None;
+        self.retire_texture();
+        self.last_generation = 0;
+        self.first_frame_at = None;
+        self.watching = true;
+        self.paused = false;
+        self.open_generation += 1;
+
+        let generation = self.open_generation;
+        let tx = self.tx.clone();
+        let notify = self.repaint.clone();
+        let frame_repaint = self.repaint.clone();
+        std::thread::spawn(move || {
+            let result =
+                player::Player::open_at(&uri, transport, join, move || {
+                    frame_repaint.request_repaint()
+                })
+                    .map(Box::new)
+                    .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::PlayerOpened {
+                result,
+                resume_at,
+                generation,
+            });
+            notify.request_repaint();
+        });
+    }
+
+    /// The quality in effect: the session's pick, or the global default.
+    fn effective_quality(&self) -> QualityChoice {
+        self.quality_override.unwrap_or({
+            if self.settings.original_quality {
+                QualityChoice::Original
+            } else {
+                QualityChoice::Height(self.settings.transcode_height)
+            }
+        })
+    }
+
+    /// Tune a live channel.
+    ///
+    /// A fresh tune joins where the server's playlist begins, which for a
+    /// channel being tuned now is a few seconds back — a buffer held on the
+    /// server rather than in memory.
+    fn watch_channel(&mut self, channel: &str) {
+        self.tune(channel, player::JoinAt::Start);
+    }
+
+    /// Tune a channel, choosing where a live playlist is joined.
+    fn tune(&mut self, channel: &str, join: player::JoinAt) {
+        let server = self.settings.server_url();
+        let uri = stream_uri(&server, channel, self.effective_quality());
+        let transport = player::Transport::of(&uri);
+
+        self.loading = Loading::live(channel);
+        self.live_channel = Some(channel.to_string());
+        self.commercials.clear();
+        self.current_recording = None;
+        self.playing_local = false;
+
+        self.spawn_open(uri, transport, 0.0, join);
+    }
+
+    /// Begin fetching a recording to local disk.
+    fn start_download(&mut self, recording: &library::Recording) {
+        let url = self.lib.stream_url(&recording.id);
+        let repaint = self.repaint.clone();
+        self.downloads
+            .start(&recording.id, url, move || repaint.request_repaint());
+        self.announce(format!("Downloading {}", recording.title));
+    }
+
+    /// Where to stream a recording from, at a given quality.
+    ///
+    /// Original goes straight to the file, which serves with byte ranges and
+    /// seeks perfectly. A transcode goes through the recording's own HLS
+    /// endpoint, which accepts the same parameters as live — verified against
+    /// the server: `resolution=720` on a recording comes back honored.
+    fn recording_uri(&self, id: &str, quality: QualityChoice) -> String {
+        let server = self.settings.server_url();
+        match quality {
+            QualityChoice::Original => format!("{server}/dvr/files/{id}/stream.mpg"),
+            QualityChoice::Height(h) => format!(
+                "{server}/dvr/files/{id}/hls/master.m3u8?vcodec=h264&acodec=copy&resolution={h}&bitrate={}",
+                quality.kbps()
+            ),
+        }
+    }
+
+    /// Open a recording, resuming where it was left.
+    fn play_recording(&mut self, recording: &library::Recording) {
+        self.open_recording(recording.clone(), recording.playback_time);
+    }
+
+    /// Open a recording at a given position.
+    ///
+    /// A finished download is preferred over the server: it plays with the
+    /// network unplugged, and at home it is byte-identical to what the server
+    /// would have sent anyway. Downloads always hold the original file, so
+    /// quality selection does not apply to them.
+    fn open_recording(&mut self, recording: library::Recording, resume_at: f64) {
+        let (uri, local) = match self.downloads.local_path(&recording.id) {
+            Some(path) => (path.to_string_lossy().into_owned(), true),
+            None => (
+                self.recording_uri(&recording.id, self.effective_quality()),
+                false,
+            ),
+        };
+        let transport = player::Transport::of(&uri);
+
+        self.loading = Loading::recording(&recording.title);
+        self.live_channel = None;
+        self.playing_local = local;
+        // The boundary list alternates break-start, break-end.
+        self.commercials = recording
+            .commercials
+            .chunks_exact(2)
+            .map(|pair| (pair[0], pair[1]))
+            .filter(|(start, end)| end > start)
+            .collect();
+        self.current_recording = Some(recording);
+
+        self.spawn_open(uri, transport, resume_at, player::JoinAt::Start);
+    }
+
+    /// How visible the controls should be, 0 to 1.
+    ///
+    /// They fade out after a few seconds of a still pointer and come straight
+    /// back on any movement. Anything mid-interaction pins them open: fading
+    /// out from under a drag, or while the stats card is being read, would be
+    /// the overlay fighting the person using it.
+    fn controls_opacity(&mut self, ctx: &egui::Context) -> f32 {
+        let active = ctx.input(|i| {
+            i.pointer.velocity().length() > 1.0
+                || i.pointer.any_down()
+                || i.pointer.any_click()
+                || !i.raw.events.is_empty()
+        });
+        if active {
+            self.last_activity = Instant::now();
+        }
+        if self.scrubbing || self.show_stats || self.job_pending {
+            return 1.0;
+        }
+
+        const HOLD: f32 = 2.75;
+        const FADE: f32 = 0.45;
+        let idle = self.last_activity.elapsed().as_secs_f32();
+        let opacity = 1.0 - ((idle - HOLD) / FADE).clamp(0.0, 1.0);
+
+        // Repaint through the fade, otherwise it freezes part way whenever the
+        // decoder happens not to deliver a frame.
+        if opacity > 0.0 && idle > HOLD {
+            ctx.request_repaint();
+        }
+        opacity
+    }
+
+    /// The transport, drawn over the picture as a single Fluent surface.
+    fn transport(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, full: egui::Rect) {
+        let opacity = self.controls_opacity(ctx);
+        if opacity <= 0.001 {
+            ctx.set_cursor_icon(egui::CursorIcon::None);
+            return;
+        }
+
+        // Anchored to the bottom of the window rather than positioned at a
+        // computed y. An Area sizes itself to its contents, so placing it by
+        // its top-left left a sliver of picture showing beneath it whenever the
+        // contents came out shorter than the rect reserved for them. Anchoring
+        // the bottom edge makes it flush by construction, whatever it contains.
+        egui::Area::new(egui::Id::new("transport"))
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(0.0, 0.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_width(full.width());
+                ui.set_opacity(opacity);
+
+                egui::Frame::none()
+                    .fill(with_alpha(Fluent::SOLID, 216))
+                    .inner_margin(egui::Margin {
+                        left: SPACE_M,
+                        right: SPACE_M,
+                        top: SPACE_S,
+                        bottom: SPACE_S,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(full.width() - SPACE_M * 2.0);
+                        ui.spacing_mut().item_spacing.y = SPACE_XS;
+                        self.scrub_bar(ui);
+                        self.transport_row(ui);
+                    });
+            });
+        let _ = ui;
+    }
+
+    /// The progress bar: where playback is inside the timeshift window.
+    ///
+    /// The window is the DVR's, not this client's. Its left edge is the moment
+    /// the channel was tuned and its right edge is the live edge, and both move
+    /// as the session goes on, so the bar is drawn from the seek range the
+    /// pipeline reports rather than from a fixed duration.
+    fn scrub_bar(&mut self, ui: &mut egui::Ui) {
+        let range = self.player.as_ref().and_then(|p| p.seek_range());
+        let live_position = self.player.as_ref().and_then(|p| p.position());
+
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), 20.0),
+            egui::Sense::click_and_drag(),
+        );
+
+        let track = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), 4.0));
+        let painter = ui.painter();
+        painter.rect_filled(track, 2.0, with_alpha(Fluent::TEXT_PRIMARY, 40));
+
+        // Nothing to scrub through on a stream that cannot seek. The track is
+        // left dead and the explanation moved to a tooltip: a line of text
+        // floating in the middle of a four pixel bar reads as a rendering
+        // fault rather than as an explanation.
+        let Some((start, end)) = range else {
+            response.on_hover_text("This source is live only and cannot be rewound");
+            return;
+        };
+
+        let span = (end - start).max(1.0);
+        let position = self.scrub_target.or(live_position).unwrap_or(start);
+        let fraction = (((position - start) / span) as f32).clamp(0.0, 1.0);
+
+        // Pointer handling first, so a drag reads this frame instead of next.
+        let mut commit: Option<f64> = None;
+        if response.drag_started() {
+            self.scrubbing = true;
+        }
+        if self.scrubbing || response.clicked() {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let t = ((pointer.x - track.min.x) / track.width().max(1.0)).clamp(0.0, 1.0);
+                self.scrub_target = Some(start + t as f64 * span);
+            }
+        }
+        if response.drag_stopped() || response.clicked() {
+            commit = self.scrub_target.take();
+            self.scrubbing = false;
+        }
+
+        let filled = egui::Rect::from_min_max(
+            track.min,
+            egui::pos2(track.min.x + track.width() * fraction, track.max.y),
+        );
+        ui.painter().rect_filled(filled, 2.0, Fluent::ACCENT);
+
+        // Commercial breaks, marked on the bar itself so scrubbing past them
+        // needs no guesswork. Amber, not red: they are information, not a
+        // warning.
+        //
+        // The marker times are measured from the start of the recording, but
+        // `start` here is the stream's own origin — which for these recordings
+        // is around 81,876 seconds, not zero. Subtracting it turned every
+        // break negative, clamped them all to the left edge, and made them
+        // invisible. They are offsets into the span, not absolute positions.
+        for (break_start, break_end) in &self.commercials {
+            let x0 = track.min.x + track.width() * ((break_start / span) as f32).clamp(0.0, 1.0);
+            let x1 = track.min.x + track.width() * ((break_end / span) as f32).clamp(0.0, 1.0);
+            if x1 - x0 >= 1.0 {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(x0, track.min.y),
+                        egui::pos2(x1, track.max.y),
+                    ),
+                    2.0,
+                    with_alpha(Fluent::CAUTION, 150),
+                );
+            }
+        }
+
+        // Fluent shows the handle on hover and while dragging, not at rest, so
+        // the bar stays a thin line until it is being used.
+        if response.hovered() || self.scrubbing {
+            let knob = egui::pos2(filled.max.x, track.center().y);
+            ui.painter().circle_filled(knob, 7.0, Fluent::TEXT_PRIMARY);
+            ui.painter().circle_filled(knob, 4.0, Fluent::ACCENT);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        if let Some(target) = commit {
+            if let Some(player) = &self.player {
+                player.seek_to(target);
+            }
+        }
+    }
+
+    fn transport_row(&mut self, ui: &mut egui::Ui) {
+        let seekable = self.player.as_ref().map(|p| p.is_seekable()).unwrap_or(false);
+        let behind = self.player.as_ref().and_then(|p| p.behind_live());
+
+        ui.horizontal(|ui| {
+            let play_glyph = if self.paused { theme::icon::PLAY } else { theme::icon::PAUSE };
+            if subtle_button(ui, play_glyph, 40.0, false).clicked() {
+                self.paused = !self.paused;
+                if let Some(p) = &self.player {
+                    p.set_paused(self.paused);
+                }
+            }
+
+            let back = self.settings.skip_back_secs as f64;
+            let forward = self.settings.skip_forward_secs as f64;
+            if subtle_button(ui, theme::icon::SKIP_BACK, 40.0, false)
+                .on_hover_text(format!("Back {back:.0} seconds"))
+                .clicked()
+            {
+                if let Some(p) = &self.player {
+                    if !p.seek_by(-back) {
+                        self.announce("This source cannot be rewound".into());
+                    }
+                }
+            }
+            if subtle_button(ui, theme::icon::SKIP_FORWARD, 40.0, false)
+                .on_hover_text(format!("Forward {forward:.0} seconds"))
+                .clicked()
+            {
+                if let Some(p) = &self.player {
+                    p.seek_by(forward);
+                }
+            }
+
+            // Recording the channel being watched is a first-class action, so
+            // it sits in the bar rather than behind the overflow menu.
+            let recording = self.job_id.is_some();
+            let record = subtle_button(ui, theme::icon::RECORD, 40.0, recording);
+            let record = if recording {
+                record.on_hover_text("Stop recording this program")
+            } else {
+                record.on_hover_text("Record this program")
+            };
+            if record.clicked() {
+                let ctx = ui.ctx().clone();
+                self.toggle_record(&ctx);
+            }
+
+            ui.add_space(SPACE_S);
+
+            // Live controls belong to live. A recording has no live edge to be
+            // behind and nothing to jump back to, so a LIVE pill on one is
+            // just wrong.
+            if self.live_channel.is_some() {
+                // Red at the live edge because that is where the picture
+                // already is, green when behind because the button then has
+                // somewhere to take you. Clicking returns to live.
+                if live_pill(ui, behind, seekable).clicked() {
+                    if let Some(p) = &self.player {
+                        p.seek_to_live();
+                    }
+                }
+            }
+
+            // Skip-commercial, in the transport row where controls belong.
+            // The floating pill over the picture appears only while a break is
+            // actually playing; this one is always present on a recording that
+            // has markers, so the feature is discoverable rather than
+            // something you have to be mid-advert to find out about.
+            if !self.commercials.is_empty() {
+                ui.add_space(SPACE_XS);
+                let inside = self.current_break().is_some();
+                let button = subtle_button(ui, theme::icon::SKIP_BREAK, 40.0, inside);
+                let button = if inside {
+                    button.on_hover_text("Skip this commercial break")
+                } else {
+                    button.on_hover_text("Skip to the end of the next break")
+                };
+                if button.clicked() {
+                    self.skip_break();
+                }
+            }
+
+            // Live says how far back from the edge you are; a recording says
+            // where you are in it. "-39:37" was being shown for both, which
+            // read as "39 minutes behind live" on a program that finished
+            // hours ago.
+            if self.live_channel.is_some() {
+                if let Some(behind) = behind.filter(|b| *b > 8.0) {
+                    ui.label(
+                        egui::RichText::new(format!("-{}", clock(behind)))
+                            .size(12.0)
+                            .color(Fluent::TEXT_SECONDARY),
+                    );
+                }
+            } else if let (Some(player), Some(position)) =
+                (self.player.as_ref(), self.elapsed_position())
+            {
+                // The total comes from the seek range, not the container's
+                // duration: the range and the position are both measured from
+                // the stream's own origin, and mixing the two scales is what
+                // once seeked a recording twenty-two hours past its end.
+                let total = player
+                    .seek_range()
+                    .map(|(start, end)| end - start)
+                    .or_else(|| player.duration())
+                    .unwrap_or(0.0);
+                if total > 0.0 {
+                    ui.label(
+                        egui::RichText::new(format!("{} / {}", clock(position), clock(total)))
+                            .size(12.0)
+                            .color(Fluent::TEXT_SECONDARY),
+                    );
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Leaving the player is a back arrow, not an X.
+                //
+                // An X here was mistaken for the window's close button — which
+                // is also an X, also on the right edge of the same window —
+                // and people quit the program when they meant to stop
+                // watching. An arrow cannot be confused with it.
+                if subtle_button(ui, theme::icon::BACK, 40.0, false)
+                    .on_hover_text("Stop watching (Esc)")
+                    .clicked()
+                {
+                    self.stop_playback();
+                    return;
+                }
+                ui.add_space(SPACE_XS);
+
+                if subtle_button(ui, theme::icon::MORE, 40.0, self.show_stats).clicked() {
+                    self.show_stats = !self.show_stats;
+                }
+
+                // Quality, for anything streamed from the server — live or a
+                // recording, both of which the DVR will transcode on request.
+                // Hidden for a downloaded file, which is already whatever it
+                // is and always the original.
+                //
+                // The button says what it opens, not what is selected. It used
+                // to show an abbreviation of the current pick — "SRC" for the
+                // untranscoded original — which read as an acronym nobody owed
+                // an explanation for. The flyout already marks the selection,
+                // and the hover text carries it for anyone who wants it
+                // without opening the menu.
+                if !self.playing_local {
+                    ui.add_space(SPACE_XS);
+                    let current = self.effective_quality();
+                    if subtle_text_button(ui, "Quality", self.show_quality)
+                        .on_hover_text(format!("Stream quality — {}", current.label()))
+                        .clicked()
+                    {
+                        self.show_quality = !self.show_quality;
+                    }
+                }
+
+                ui.add_space(SPACE_XS);
+                let mut volume = self.volume;
+                if ui
+                    .add_sized(
+                        [96.0, 18.0],
+                        egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false),
+                    )
+                    .changed()
+                {
+                    self.volume = volume;
+                    if let Some(p) = &self.player {
+                        p.set_volume(volume as f64);
+                    }
+                }
+                let vol_glyph = if self.volume <= 0.001 {
+                    theme::icon::MUTE
+                } else {
+                    theme::icon::VOLUME
+                };
+                if subtle_button(ui, vol_glyph, 36.0, false).clicked() {
+                    self.volume = if self.volume <= 0.001 { 1.0 } else { 0.0 };
+                    if let Some(p) = &self.player {
+                        p.set_volume(self.volume as f64);
+                    }
+                }
+            });
+        });
+    }
+
+    /// A short-lived message, for things the user asked for and the server
+    /// answered: scheduled, canceled, or refused.
+    fn toast_banner(&mut self, ui: &egui::Ui, area: egui::Rect) {
+        let Some((text, shown)) = &self.toast else { return };
+        let age = shown.elapsed().as_secs_f32();
+        if age > 4.0 {
+            self.toast = None;
+            return;
+        }
+
+        // Slides down and fades in, holds, then fades away. A message that
+        // pops into existence startles; one that arrives has somewhere to have
+        // come from.
+        let entrance = (age / 0.18).min(1.0);
+        let entrance = entrance * entrance * (3.0 - 2.0 * entrance);
+        let alpha = ((1.0 - ((age - 3.0) / 1.0).clamp(0.0, 1.0)) * entrance * 255.0) as u8;
+        let slide = (1.0 - entrance) * -10.0;
+
+        let galley = ui.painter().layout_no_wrap(
+            text.clone(),
+            egui::FontId::proportional(13.0),
+            with_alpha(Fluent::TEXT_PRIMARY, alpha),
+        );
+        let size = galley.size() + egui::vec2(SPACE_L * 2.0, SPACE_M * 1.5);
+        let card = egui::Rect::from_center_size(
+            egui::pos2(area.center().x, area.min.y + SPACE_L + size.y / 2.0 + slide),
+            size,
+        );
+
+        ui.painter().rect_filled(card, RADIUS_SURFACE, with_alpha(Fluent::SOLID, alpha.saturating_sub(20)));
+        ui.painter().rect_stroke(
+            card,
+            RADIUS_SURFACE,
+            egui::Stroke::new(1.0, with_alpha(egui::Color32::WHITE, alpha / 10)),
+        );
+        ui.painter().galley(
+            egui::pos2(card.center().x - galley.size().x / 2.0, card.center().y - galley.size().y / 2.0),
+            galley,
+            Fluent::TEXT_PRIMARY,
+        );
+
+        ui.ctx().request_repaint();
+    }
+
+    /// Stream stats, as a Fluent card.
+    fn stats_card(&self, ui: &egui::Ui, area: egui::Rect) {
+        let card = egui::Rect::from_min_size(
+            area.min + egui::vec2(SPACE_L, SPACE_L),
+            egui::vec2(276.0, 312.0),
+        );
+        let painter = ui.painter();
+        painter.rect_filled(card, RADIUS_SURFACE, Fluent::LAYER_CARD);
+        painter.rect_stroke(card, RADIUS_SURFACE, egui::Stroke::new(1.0, Fluent::STROKE_SURFACE));
+
+        let mut y = card.min.y + SPACE_M;
+        painter.text(
+            egui::pos2(card.min.x + SPACE_M, y),
+            egui::Align2::LEFT_TOP,
+            "Stream",
+            egui::FontId::proportional(12.0),
+            Fluent::TEXT_TERTIARY,
+        );
+        y += 22.0;
+
+        let mut row = |label: &str, value: String, tint: egui::Color32| {
+            painter.text(
+                egui::pos2(card.min.x + SPACE_M, y),
+                egui::Align2::LEFT_TOP,
+                label,
+                egui::FontId::proportional(13.0),
+                Fluent::TEXT_SECONDARY,
+            );
+            painter.text(
+                egui::pos2(card.max.x - SPACE_M, y),
+                egui::Align2::RIGHT_TOP,
+                value,
+                egui::FontId::proportional(13.0),
+                tint,
+            );
+            y += 21.0;
+        };
+
+        let health = if self.ui_fps() >= 50.0 { Fluent::SUCCESS } else { Fluent::CAUTION };
+        row("Display", format!("{:.0} fps", self.ui_fps()), health);
+        row("Decode", format!("{:.0} fps", self.decode_fps), Fluent::TEXT_PRIMARY);
+        row("Upload", format!("{:.2} ms", self.upload_ms), Fluent::TEXT_PRIMARY);
+
+        // Frames decoded but never shown, because the clock had already passed
+        // them. A number that climbs steadily is the honest signal that
+        // playback is not keeping up.
+        let dropped = self.player.as_ref().map(|p| p.dropped()).unwrap_or(0);
+        row(
+            "Dropped",
+            dropped.to_string(),
+            if dropped == 0 { Fluent::SUCCESS } else { Fluent::CAUTION },
+        );
+
+        // The three numbers that say *why* when something stutters.
+        //
+        // Decode time is the budget: 16.7ms is one frame at 60fps, and this
+        // covers demux, decode and color conversion on a single thread.
+        // A queue sitting near its limit means the decoder is comfortable; a
+        // queue near zero means it is not keeping up, which is the opposite
+        // fault and needs the opposite fix.
+        let decode_ms = self.player.as_ref().map(|p| p.decode_ms()).unwrap_or(0.0);
+        row(
+            "Decode time",
+            format!("{decode_ms:.1} ms"),
+            if decode_ms < 12.0 {
+                Fluent::SUCCESS
+            } else if decode_ms < 16.7 {
+                Fluent::CAUTION
+            } else {
+                Fluent::LIVE
+            },
+        );
+
+        let queued = self.player.as_ref().map(|p| p.queued_frames()).unwrap_or(0);
+        row(
+            "Frame queue",
+            format!("{queued}"),
+            if queued >= 2 { Fluent::SUCCESS } else { Fluent::CAUTION },
+        );
+
+        let audio_s = self.player.as_ref().map(|p| p.queued_audio()).unwrap_or(0.0);
+        row(
+            "Audio buffer",
+            format!("{:.0} ms", audio_s * 1000.0),
+            if audio_s > 0.05 { Fluent::SUCCESS } else { Fluent::CAUTION },
+        );
+        row(
+            "Resolution",
+            self.texture
+                .as_ref()
+                .map(|t| format!("{}x{}", t.size()[0], t.size()[1]))
+                .unwrap_or_else(|| "—".into()),
+            Fluent::TEXT_PRIMARY,
+        );
+        // The raw timeline numbers, not a tidied summary. A live HLS playlist
+        // is where seeking goes wrong, and it goes wrong by the pipeline
+        // reporting a position or a range that does not mean what it looks
+        // like, so the three values have to be visible separately to tell
+        // which one is at fault.
+        let player = self.player.as_ref();
+        row(
+            "Position",
+            player
+                .and_then(|p| p.position())
+                .map(clock)
+                .unwrap_or_else(|| "—".into()),
+            Fluent::TEXT_PRIMARY,
+        );
+        row(
+            "Seek range",
+            player
+                .and_then(|p| p.seek_range())
+                .map(|(s, e)| format!("{} → {}", clock(s), clock(e)))
+                .unwrap_or_else(|| "not seekable".into()),
+            Fluent::TEXT_PRIMARY,
+        );
+        row(
+            "Duration",
+            player
+                .and_then(|p| p.duration())
+                .map(clock)
+                .unwrap_or_else(|| "—".into()),
+            Fluent::TEXT_PRIMARY,
+        );
+        row(
+            "Source",
+            player.map(|p| p.transport.label().to_string()).unwrap_or_else(|| "—".into()),
+            Fluent::TEXT_PRIMARY,
+        );
+    }
+}
+
+/// The custom caption. Undecorated windows have to provide their own, which is
+/// what lets the Mica material run edge to edge instead of stopping below a
+/// system title bar.
+fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
+    let painter = ui.painter();
+    painter.text(
+        egui::pos2(rect.min.x + SPACE_L, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "RustDVR",
+        egui::FontId::proportional(13.0),
+        Fluent::TEXT_SECONDARY,
+    );
+
+    // Dragging anywhere in the caption moves the window, as Fluent expects.
+    let drag = ui.interact(rect, egui::Id::new("caption"), egui::Sense::click_and_drag());
+    if drag.is_pointer_button_down_on() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+
+    // Caption buttons, laid out right to left in the Windows order.
+    let mut x = rect.max.x;
+    let size = egui::vec2(46.0, rect.height());
+
+    let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+    for (glyph, action) in [
+        (theme::icon::CLOSE, CaptionAction::Close),
+        (
+            if maximized { theme::icon::RESTORE } else { theme::icon::MAXIMIZE },
+            CaptionAction::Maximize,
+        ),
+        (theme::icon::MINIMIZE, CaptionAction::Minimize),
+    ] {
+        x -= size.x;
+        let button = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), size);
+        let response = ui.interact(
+            button,
+            egui::Id::new(("caption", glyph)),
+            egui::Sense::click(),
+        );
+
+        if response.hovered() {
+            // Close goes red on hover, as every Windows app does.
+            let tint = if matches!(action, CaptionAction::Close) {
+                egui::Color32::from_rgb(196, 43, 28)
+            } else {
+                Fluent::CONTROL_HOVER
+            };
+            ui.painter().rect_filled(button, 0.0, tint);
+        }
+
+        ui.painter().text(
+            button.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            egui::FontId::new(10.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
+            Fluent::TEXT_PRIMARY,
+        );
+
+        if response.clicked() {
+            match action {
+                CaptionAction::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                CaptionAction::Minimize => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true))
+                }
+                CaptionAction::Maximize => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                }
+            }
+        }
+    }
+}
+
+enum CaptionAction {
+    Close,
+    Minimize,
+    Maximize,
+}
+
+/// Letterbox the frame into the available space, preserving aspect ratio so the
+/// window can be dragged to any proportion without distorting the picture.
+///
+/// `entrance` is the arrival animation, 0 to 1: the picture rises the last few
+/// pixels into place while fading up from black.
+fn draw_video(ui: &egui::Ui, rect: egui::Rect, texture: &egui::TextureHandle, entrance: f32) {
+    let size = texture.size_vec2();
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return;
+    }
+    let scale = (rect.width() / size.x).min(rect.height() / size.y);
+    let rise = (1.0 - entrance) * 42.0;
+    let target =
+        egui::Rect::from_center_size(rect.center() + egui::vec2(0.0, rise), size * scale);
+
+    let tint = egui::Color32::from_gray((entrance * 255.0) as u8);
+    ui.painter().with_clip_rect(rect).image(
+        texture.id(),
+        target,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        tint,
+    );
+}
+
+/// What is being waited for, so the spinner can say so.
+///
+/// "Tuning channel" is true of live TV, where the DVR really is driving a
+/// tuner and it really does take several seconds. It is nonsense in front of a
+/// recording, which is a file on a disk: nothing is being tuned, and telling
+/// someone otherwise makes the app look like it does not know what it is doing.
+#[derive(Clone)]
+struct Loading {
+    title: String,
+    detail: String,
+}
+
+impl Loading {
+    fn live(channel: &str) -> Self {
+        Self {
+            title: "Tuning channel".into(),
+            detail: format!("Waiting for the DVR to start channel {channel}"),
+        }
+    }
+
+    fn recording(title: &str) -> Self {
+        Self {
+            title: "Opening recording".into(),
+            detail: title.to_string(),
+        }
+    }
+}
+
+/// A Fluent progress ring, shown while the source is opening.
+///
+/// A cold tune on an ah4c source takes several seconds before a single frame
+/// exists, and a static line of text through that reads as a hang rather than
+/// as work in progress.
+fn tuning_indicator(ui: &egui::Ui, area: egui::Rect, what: &Loading) {
+    let painter = ui.painter();
+    let center = egui::pos2(area.center().x, area.center().y - 18.0);
+    let radius = 21.0;
+
+    // Continuous rotation, driven by wall time rather than frame count so the
+    // speed does not change with the refresh rate.
+    let t = ui.input(|i| i.time) as f32;
+    let spin = t * 2.4;
+
+    // The faint track the arc travels along.
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(3.0, with_alpha(Fluent::TEXT_PRIMARY, 28)),
+    );
+
+    // WinUI's ring is an arc of roughly a third of the circle, easing as it
+    // goes rather than sweeping at a constant rate.
+    let sweep = std::f32::consts::TAU * 0.34;
+    let start = spin % std::f32::consts::TAU;
+    let segments = 48;
+    let points: Vec<egui::Pos2> = (0..=segments)
+        .map(|i| {
+            let angle = start + sweep * (i as f32 / segments as f32);
+            egui::pos2(
+                center.x + radius * angle.cos(),
+                center.y + radius * angle.sin(),
+            )
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(3.0, Fluent::ACCENT),
+    ));
+
+    painter.text(
+        egui::pos2(center.x, center.y + radius + 26.0),
+        egui::Align2::CENTER_CENTER,
+        &what.title,
+        egui::FontId::proportional(14.0),
+        Fluent::TEXT_PRIMARY,
+    );
+    painter.text(
+        egui::pos2(center.x, center.y + radius + 47.0),
+        egui::Align2::CENTER_CENTER,
+        &what.detail,
+        egui::FontId::proportional(12.0),
+        Fluent::TEXT_TERTIARY,
+    );
+
+    // Keep animating: no frames are arriving yet, so nothing else asks for a
+    // repaint.
+    ui.ctx().request_repaint();
+}
+
+/// Fluent's Subtle button: nothing at rest, a soft fill on hover, a firmer one
+/// while pressed. No outline — an always-visible border is what made these look
+/// like web buttons rather than Windows ones.
+fn subtle_button(ui: &mut egui::Ui, glyph: &str, width: f32, active: bool) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, 36.0), egui::Sense::click());
+
+    let fill = if response.is_pointer_button_down_on() {
+        Fluent::CONTROL_PRESSED
+    } else if response.hovered() {
+        Fluent::CONTROL_HOVER
+    } else if active {
+        Fluent::CONTROL
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+
+    if fill != egui::Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, theme::RADIUS_CONTROL, fill);
+    }
+
+    // The accent only appears on the active state, so it always means "this is
+    // on" rather than merely decorating the control.
+    let tint = if active { Fluent::ACCENT } else { Fluent::TEXT_PRIMARY };
+
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::FontId::new(15.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
+        tint,
+    );
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// A Fluent Subtle button carrying a short text label instead of a glyph —
+/// the quality badge. Same states and geometry as `subtle_button`, so it sits
+/// in the row as a sibling rather than a stranger.
+fn subtle_text_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
+    let width = (14.0 + label.chars().count() as f32 * 7.5).max(44.0);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, 36.0), egui::Sense::click());
+
+    let fill = if response.is_pointer_button_down_on() {
+        Fluent::CONTROL_PRESSED
+    } else if response.hovered() {
+        Fluent::CONTROL_HOVER
+    } else if active {
+        Fluent::CONTROL
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if fill != egui::Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, theme::RADIUS_CONTROL, fill);
+    }
+
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        if active { Fluent::ACCENT } else { Fluent::TEXT_SECONDARY },
+    );
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// The live control.
+///
+/// Red means the picture is the live edge. Green means playback is behind it
+/// and the button will take you back, so the color states what pressing it
+/// would do rather than merely labelling the stream.
+fn live_pill(ui: &mut egui::Ui, behind: Option<f64>, seekable: bool) -> egui::Response {
+    let at_live = behind.map(|b| b <= 8.0).unwrap_or(true);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(62.0, 24.0),
+        if seekable && !at_live {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+
+    let tint = if at_live { Fluent::LIVE } else { Fluent::SUCCESS };
+    let wash = if response.hovered() && !at_live { 78 } else { 46 };
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, 12.0, with_alpha(tint, wash));
+    painter.circle_filled(egui::pos2(rect.min.x + 13.0, rect.center().y), 3.5, tint);
+    painter.text(
+        egui::pos2(rect.min.x + 23.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "LIVE",
+        egui::FontId::proportional(11.0),
+        tint,
+    );
+
+    if response.hovered() && !at_live {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if !at_live {
+        return response.on_hover_text("Jump to live");
+    }
+    response
+}
+
+/// Seconds as `m:ss`, or `h:mm:ss` once there is an hour of it.
+fn clock(seconds: f64) -> String {
+    let total = seconds.max(0.0) as u64;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
+/// The app's own window handle, needed to ask DWM for Mica.
+///
+/// Taken from the window itself rather than GetForegroundWindow: the app is not
+/// necessarily foreground when it first paints, and asking the OS for whatever
+/// happens to be in front applied Mica to a terminal instead.
+fn window_handle(cc: &eframe::CreationContext<'_>) -> Option<isize> {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let handle = cc.window_handle().ok()?;
+        match handle.as_raw() {
+            RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cc;
+        None
+    }
+}

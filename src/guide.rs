@@ -1,0 +1,418 @@
+//! The TV guide: channels, what is on them, and what is scheduled to record.
+//!
+//! Three sources of truth, merged once and then filtered locally:
+//!
+//! * `/dvr/guide/channels` — every channel, keyed by number, carrying which
+//!   device it came from
+//! * `/devices/ANY/guide?duration=N` — the listings
+//! * `/dvr/jobs` and `/dvr/rules` — what is already going to be recorded
+//!
+//! Collections and sources are separate filters that **intersect**. Picking
+//! DirecTV and then picking the HDHomeRun should show what is on both, which
+//! is usually nothing; the alternative, where the second choice silently
+//! replaces the first, means the interface quietly ignores half of what it was
+//! told.
+
+use std::collections::{HashMap, HashSet};
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use serde_json::Value;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Channel {
+    #[serde(rename = "Number", default)]
+    pub number: String,
+    #[serde(rename = "Name", default)]
+    pub name: String,
+    #[serde(rename = "Image", default)]
+    pub logo: String,
+    /// Which tuner or source this channel belongs to.
+    #[serde(rename = "DeviceID", default)]
+    pub source: String,
+    #[serde(rename = "HD", default)]
+    pub hd: bool,
+    #[serde(rename = "Hidden", default)]
+    pub hidden: bool,
+    #[serde(rename = "Favorite", default)]
+    pub favorite: bool,
+}
+
+/// One program.
+#[derive(Debug, Clone)]
+pub struct Airing {
+    pub title: String,
+    pub episode_title: String,
+    pub summary: String,
+    pub start: i64,
+    pub duration: i64,
+    pub channel: String,
+    pub series_id: String,
+    pub program_id: String,
+    pub is_new: bool,
+    pub is_movie: bool,
+    /// The server's own object, handed back untouched when scheduling so the
+    /// recording carries the right metadata. Rebuilding it field by field
+    /// would silently drop anything this client does not know about.
+    pub raw: Value,
+}
+
+impl Airing {
+    pub fn end(&self) -> i64 {
+        self.start + self.duration
+    }
+
+    pub fn airing_now(&self, now: i64) -> bool {
+        self.start <= now && now < self.end()
+    }
+
+    /// Whether this has yet to happen. The only thing that can be done with a
+    /// program that has not aired is record it, which is what makes a plain
+    /// left click unambiguous there.
+    pub fn in_future(&self, now: i64) -> bool {
+        self.start > now
+    }
+
+    pub fn subtitle(&self) -> String {
+        if self.episode_title.is_empty() {
+            self.summary.clone()
+        } else {
+            self.episode_title.clone()
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub channel: Channel,
+    pub airings: Vec<Airing>,
+}
+
+/// A named group of channels, as configured on the server.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Collection {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub items: Vec<String>,
+}
+
+/// What the DVR already intends to record.
+#[derive(Default, Clone)]
+pub struct Schedule {
+    /// Keyed `channel|airing start`, because a job's own start has padding
+    /// folded into it and will not match a guide entry.
+    pub jobs: HashMap<String, String>,
+    /// Series that have a pass: SeriesID to rule id. The id is kept, not just
+    /// membership, because canceling a pass needs it and hunting for it again
+    /// would mean another round trip at exactly the wrong moment.
+    pub rules: HashMap<String, String>,
+}
+
+impl Schedule {
+    pub fn job_for(&self, airing: &Airing) -> Option<&String> {
+        self.jobs.get(&key(&airing.channel, airing.start))
+    }
+
+    pub fn has_pass(&self, airing: &Airing) -> bool {
+        self.rule_for(airing).is_some()
+    }
+
+    pub fn rule_for(&self, airing: &Airing) -> Option<&String> {
+        if airing.series_id.is_empty() {
+            return None;
+        }
+        self.rules.get(&airing.series_id)
+    }
+}
+
+pub fn key(channel: &str, start: i64) -> String {
+    format!("{}|{}", channel.trim().to_lowercase(), start)
+}
+
+#[derive(Default, Clone)]
+pub struct GuideData {
+    pub rows: Vec<Row>,
+    pub collections: Vec<Collection>,
+    pub sources: Vec<String>,
+    pub schedule: Schedule,
+    /// The window the listings cover.
+    pub start: i64,
+    pub hours: i64,
+}
+
+pub struct GuideApi {
+    base: String,
+    http: reqwest::Client,
+}
+
+fn as_i64(v: &Value, key: &str) -> i64 {
+    v.get(key).and_then(Value::as_i64).unwrap_or(0)
+}
+fn as_str(v: &Value, key: &str) -> String {
+    v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+}
+fn has_tag(v: &Value, key: &str, needle: &str) -> bool {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .any(|s| s.eq_ignore_ascii_case(needle))
+        })
+        .unwrap_or(false)
+}
+
+impl GuideApi {
+    pub fn new(base: impl Into<String>) -> Self {
+        Self {
+            base: base.into().trim_end_matches('/').to_string(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    async fn get(&self, path: &str) -> Result<Value> {
+        let url = format!("{}{}", self.base, path);
+        Ok(self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?
+            .error_for_status()
+            .with_context(|| format!("GET {url}"))?
+            .json()
+            .await
+            .with_context(|| format!("GET {url}"))?)
+    }
+
+    /// Load the whole guide for a window starting now.
+    pub async fn load(&self, now: i64, hours: i64) -> Result<GuideData> {
+        // Listings are requested from the aligned start, not from this exact
+        // second, and the two have to match. Asking from `now` while drawing a
+        // grid that begins at the previous half hour leaves up to thirty
+        // minutes at the left of every row with no program in it — a dead
+        // band that looks like missing data and is really a mismatched query.
+        let now = now - now.rem_euclid(1800);
+        // `duration` is in SECONDS, and `time` has to be given explicitly.
+        //
+        // This is not a detail. `?duration=6` — which reads as six hours and is
+        // what this originally sent — returns exactly one airing per channel
+        // and nothing else, so the guide rendered as a column of lonely boxes
+        // with hours of blank space beside them. It looked like a layout bug
+        // and was not. Measured against the real server: `duration=6` gives 1.0
+        // airings per channel, `time=<now>&duration=21600` gives 8.7 on
+        // average and up to 29.
+        //
+        // The path is held in a binding because passing `&format!(...)`
+        // straight into join! creates a temporary that is dropped while the
+        // future still borrows it.
+        let listings_path = format!(
+            "/devices/ANY/guide?time={now}&duration={}",
+            hours * 3600
+        );
+        let (channels, listings, collections, jobs, rules) = tokio::join!(
+            self.get("/dvr/guide/channels"),
+            self.get(&listings_path),
+            self.get("/dvr/collections/channels"),
+            self.get("/dvr/jobs"),
+            self.get("/dvr/rules"),
+        );
+
+        // Channels come back as an object keyed by number, not a list.
+        let mut by_number: HashMap<String, Channel> = HashMap::new();
+        if let Ok(Value::Object(map)) = channels {
+            for (number, value) in map {
+                if let Ok(mut channel) = serde_json::from_value::<Channel>(value) {
+                    if channel.number.is_empty() {
+                        channel.number = number.clone();
+                    }
+                    if !channel.hidden {
+                        by_number.insert(number, channel);
+                    }
+                }
+            }
+        }
+
+        let mut rows: Vec<Row> = Vec::new();
+        if let Ok(Value::Array(entries)) = listings {
+            for entry in entries {
+                let number = entry
+                    .get("Channel")
+                    .map(|c| as_str(c, "Number"))
+                    .unwrap_or_default();
+                if number.is_empty() {
+                    continue;
+                }
+
+                // Prefer the merged channel record, which knows the source.
+                let channel = by_number.get(&number).cloned().unwrap_or_else(|| {
+                    let c = entry.get("Channel").cloned().unwrap_or(Value::Null);
+                    Channel {
+                        number: number.clone(),
+                        name: as_str(&c, "Name"),
+                        logo: as_str(&c, "Image"),
+                        source: as_str(&c, "DeviceID"),
+                        hd: c.get("HD").and_then(Value::as_bool).unwrap_or(false),
+                        hidden: false,
+                        favorite: false,
+                    }
+                });
+
+                let airings = entry
+                    .get("Airings")
+                    .and_then(Value::as_array)
+                    .map(|list| {
+                        list.iter()
+                            .map(|a| Airing {
+                                title: as_str(a, "Title"),
+                                episode_title: as_str(a, "EpisodeTitle"),
+                                summary: as_str(a, "Summary"),
+                                start: as_i64(a, "Time"),
+                                duration: as_i64(a, "Duration"),
+                                channel: number.clone(),
+                                series_id: as_str(a, "SeriesID"),
+                                program_id: as_str(a, "ProgramID"),
+                                is_new: has_tag(a, "Tags", "New"),
+                                is_movie: has_tag(a, "Categories", "Movie"),
+                                raw: a.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                if !airings.is_empty() {
+                    rows.push(Row { channel, airings });
+                }
+            }
+        }
+
+        // Numeric where possible: "10" before "9" is what string ordering gives
+        // and it looks broken on a channel list.
+        rows.sort_by(|a, b| {
+            let pa: f64 = a.channel.number.parse().unwrap_or(f64::MAX);
+            let pb: f64 = b.channel.number.parse().unwrap_or(f64::MAX);
+            pa.partial_cmp(&pb)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.channel.number.cmp(&b.channel.number))
+        });
+
+        let mut sources: Vec<String> = rows
+            .iter()
+            .map(|r| r.channel.source.clone())
+            .filter(|s| !s.is_empty())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        sources.sort();
+
+        let collections: Vec<Collection> = collections
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+
+        // The window starts at the previous half hour, not at this exact
+        // second. Listings are organized in half-hour slots, so a ruler that
+        // begins at "1:56 AM" is both ugly and harder to read against, and
+        // anything already in progress needs somewhere to the left of now to
+        // be drawn from.
+        let aligned_start = now - now.rem_euclid(1800);
+
+        Ok(GuideData {
+            rows,
+            collections,
+            sources,
+            schedule: build_schedule(jobs.ok(), rules.ok()),
+            start: aligned_start,
+            hours,
+        })
+    }
+}
+
+fn build_schedule(jobs: Option<Value>, rules: Option<Value>) -> Schedule {
+    let mut schedule = Schedule::default();
+
+    if let Some(Value::Array(list)) = jobs {
+        for job in list {
+            let id = as_str(&job, "ID");
+            if id.is_empty() {
+                continue;
+            }
+            // The airing's own start, not the job's: the job's has padding
+            // folded in and will never equal a guide entry.
+            let start = job
+                .get("Airing")
+                .map(|a| as_i64(a, "Time"))
+                .unwrap_or_else(|| as_i64(&job, "Time"));
+            if let Some(channels) = job.get("Channels").and_then(Value::as_array) {
+                for channel in channels.iter().filter_map(Value::as_str) {
+                    schedule.jobs.insert(key(channel, start), id.clone());
+                }
+            }
+        }
+    }
+
+    if let Some(Value::Array(list)) = rules {
+        for rule in list {
+            let series = rule
+                .get("EQ")
+                .map(|eq| as_str(eq, "SeriesID"))
+                .unwrap_or_default();
+            let id = as_str(&rule, "ID");
+            if !series.is_empty() && !id.is_empty() {
+                schedule.rules.insert(series, id);
+            }
+        }
+    }
+
+    schedule
+}
+
+/// Which rows survive the current filters.
+///
+/// Collection and source intersect rather than override; see the module note.
+pub fn filter<'a>(
+    data: &'a GuideData,
+    collection: Option<&str>,
+    source: Option<&str>,
+    search: &str,
+) -> Vec<&'a Row> {
+    let allowed: Option<HashSet<&str>> = collection.and_then(|slug| {
+        data.collections
+            .iter()
+            .find(|c| c.slug == slug)
+            .map(|c| c.items.iter().map(String::as_str).collect())
+    });
+
+    let needle = search.trim().to_lowercase();
+
+    data.rows
+        .iter()
+        .filter(|row| {
+            if let Some(allowed) = &allowed {
+                if !allowed.contains(row.channel.number.as_str()) {
+                    return false;
+                }
+            }
+            if let Some(source) = source {
+                if row.channel.source != source {
+                    return false;
+                }
+            }
+            if !needle.is_empty() {
+                let matches_channel = row.channel.name.to_lowercase().contains(&needle)
+                    || row.channel.number.contains(&needle);
+                let matches_program = row
+                    .airings
+                    .iter()
+                    .any(|a| a.title.to_lowercase().contains(&needle));
+                if !matches_channel && !matches_program {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
+}
