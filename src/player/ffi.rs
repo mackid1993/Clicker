@@ -77,6 +77,9 @@ extern "C" {
 
     pub fn rd_seek(m: *mut RdMedia, seconds: c_double) -> c_int;
 
+    /// Clear a latched end-of-file so a growing file can be read further.
+    pub fn rd_retry_eof(m: *mut RdMedia);
+
     /// Microseconds spent inside `av_read_frame` and inside the decoders since
     /// this was last called, and the worst single read. Reading resets them.
     pub fn rd_take_timings(

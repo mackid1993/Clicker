@@ -52,6 +52,11 @@ pub enum Transport {
     Hls,
     /// A recording or any other addressable file, local or over HTTP.
     File,
+    /// A live stream being written to a local file as it arrives.
+    ///
+    /// Seekable like any file, but catching up with the writer looks exactly
+    /// like the end of it — so end-of-file here means "wait", not "stop".
+    Timeshift,
 }
 
 impl Transport {
@@ -72,6 +77,7 @@ impl Transport {
             Transport::Direct => "Direct",
             Transport::Hls => "HLS",
             Transport::File => "File",
+            Transport::Timeshift => "Direct + buffer",
         }
     }
 }
@@ -559,7 +565,10 @@ impl Player {
             opened_at: Instant::now(),
             // Only a growing playlist has a live edge that moves without this
             // player doing anything. A recording's "edge" is its last frame.
-            live: transport == Transport::Hls && facts.duration <= 0.0,
+            // A growing local buffer has a live edge that moves on its own,
+            // exactly as a playlist does.
+            live: (transport == Transport::Hls && facts.duration <= 0.0)
+                || transport == Transport::Timeshift,
             audio_buffered: AtomicUsize::new(0),
             decode_ms: AtomicU32::new(0.0f32.to_bits()),
             convert_us: AtomicU32::new(0),
@@ -590,7 +599,12 @@ impl Player {
         // already on disk, where the wait buys nothing but four seconds of
         // spinner. Measured on this server: 8.61s tuning, 0.35s warm — far
         // enough apart that the threshold between them is not a fine judgement.
-        let preroll = if transport == Transport::Hls && facts.duration <= 0.0 {
+        let preroll = if transport == Transport::Timeshift {
+            // A local file. There is nothing to fall behind: the writer is
+            // already as far ahead as the network has managed, and the reader
+            // cannot outrun it by more than the wait in the EOF branch.
+            Duration::ZERO
+        } else if transport == Transport::Hls && facts.duration <= 0.0 {
             if opening.elapsed() < WARM_OPEN {
                 Duration::ZERO
             } else {
@@ -610,7 +624,7 @@ impl Player {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
                 .name("rustdvr-decode".into())
-                .spawn(move || decode_loop(media, shared, rx, preroll))?
+                .spawn(move || decode_loop(media, shared, rx, preroll, transport))?
         });
         threads.push({
             let shared = Arc::clone(&shared);
@@ -988,6 +1002,7 @@ fn decode_loop(
     shared: Arc<Shared>,
     commands: Receiver<Command>,
     preroll: Duration,
+    transport: Transport,
 ) {
     let handle = media.0;
     // The container's idea of the picture size, which is only a starting point.
@@ -1393,13 +1408,25 @@ fn decode_loop(
                 }
             }
             ffi::RD_EOF => {
-                // A live stream can report EOF between segments. Wait and try
-                // again rather than tearing down a session that is still valid.
-                std::thread::sleep(Duration::from_millis(250));
-                failures += 1;
-                if failures > 40 {
-                    *shared.error.lock().unwrap() = Some("the stream ended".into());
-                    break;
+                if transport == Transport::Timeshift {
+                    // Caught up with the writer. Normal, and frequent: the
+                    // player drains its queue faster than a 5 Mbit stream
+                    // fills the file, so this happens several times a second
+                    // at the live edge. Not a failure, and not counted as one
+                    // — counting it would end the session after ten seconds
+                    // of perfectly healthy playback.
+                    unsafe { ffi::rd_retry_eof(handle) };
+                    std::thread::sleep(Duration::from_millis(30));
+                } else {
+                    // A live stream can report EOF between segments. Wait and
+                    // try again rather than tearing down a session that is
+                    // still valid.
+                    std::thread::sleep(Duration::from_millis(250));
+                    failures += 1;
+                    if failures > 40 {
+                        *shared.error.lock().unwrap() = Some("the stream ended".into());
+                        break;
+                    }
                 }
             }
             ffi::RD_NOTHING => {}

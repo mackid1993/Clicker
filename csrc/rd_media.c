@@ -39,6 +39,10 @@
 struct RdMedia {
     AVFormatContext *fmt;
 
+    /* Opened through a local buffer, so the stream can be rewound even though
+     * the source it came from cannot. See rd_seekable. */
+    int buffered;
+
     /* Set by another thread to make a blocking read give up.
      *
      * Owned by the caller, not by this struct, and guaranteed by it to outlive
@@ -193,6 +197,7 @@ RdMedia *rd_open(const char *url, int out_rate, int out_channels,
     m->out_rate = out_rate > 0 ? out_rate : 48000;
     m->out_channels = out_channels > 0 ? out_channels : 2;
     m->abort_flag = abort_flag;
+    m->buffered = (url && strncmp(url, "cache:", 6) == 0);
 
     /* The context is allocated here rather than by avformat_open_input so the
      * interrupt callback is installed before the first byte is fetched. Opening
@@ -422,6 +427,14 @@ int rd_seekable(RdMedia *m)
      * range support. */
     if (m->fmt->pb && m->fmt->pb->seekable) return 1;
 
+    /* A live stream being written to a local buffer as it arrives.
+     *
+     * The underlying HTTP response is not seekable and never will be — it is
+     * one endless body with no length and no ranges — so `pb->seekable` is 0
+     * and stays 0. What is seekable is the copy on disk behind it, which is
+     * the whole reason the buffer exists. */
+    if (m->buffered) return 1;
+
     /* A known duration means the demuxer has the whole thing indexed. */
     if (m->fmt->duration != AV_NOPTS_VALUE) return 1;
 
@@ -444,6 +457,27 @@ int rd_seekable(RdMedia *m)
      * nothing useful. Assume it cannot seek rather than offering an action
      * that breaks playback. */
     return 0;
+}
+
+/* Clear a latched end-of-file, so a file that is still being written can be
+ * read further.
+ *
+ * Reading a live buffer means racing the thing filling it, and catching up is
+ * normal rather than an error — but the AVIO layer does not know that. Once it
+ * reads short it sets eof_reached and every later read returns EOF immediately,
+ * even after the file has grown, so playback would stop the first time the
+ * player got ahead of the network for a fraction of a second.
+ *
+ * Seeking to the position already held is what makes it look at the file
+ * again; clearing the flag alone is not enough. */
+void rd_retry_eof(RdMedia *m)
+{
+    if (!m || !m->fmt || !m->fmt->pb) return;
+    int64_t here = avio_tell(m->fmt->pb);
+    m->fmt->pb->eof_reached = 0;
+    if (here >= 0) {
+        avio_seek(m->fmt->pb, here, SEEK_SET);
+    }
 }
 
 /* Read and reset the accumulated timings. */

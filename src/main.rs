@@ -16,6 +16,7 @@ mod library;
 mod player;
 mod settings;
 mod theme;
+mod timeshift;
 mod tray;
 mod ui;
 mod ui_guide;
@@ -100,11 +101,28 @@ impl QualityChoice {
 }
 
 fn stream_uri(server: &str, channel: &str, quality: QualityChoice) -> String {
-    let base = format!("{server}/devices/ANY/channels/{channel}/hls/master.m3u8");
     match quality {
-        QualityChoice::Original => format!("{base}?vcodec=copy&acodec=copy"),
+        // The tuner's own transport stream, straight through.
+        //
+        // Not `hls/master.m3u8?vcodec=copy`, which is what this used to ask
+        // for. `vcodec=copy` means "do not re-encode", not "do not touch": the
+        // HLS endpoint still stands a pipeline up to cut the stream into
+        // segments. Checked against a real DVR — asking for this endpoint
+        // produced no server activity at all, while the copy playlist on the
+        // same channel reported "Remux Starting". Original is supposed to mean
+        // the broadcast untouched, and only one of those two is.
+        //
+        // This is one long HTTP response with no index, so there is nothing to
+        // seek within it as it stands. Timeshift is bought back by writing it
+        // to disk on the way past and playing the file — see `tune`, and
+        // `timeshift.rs` for why FFmpeg's own `cache:` protocol does not do
+        // the job.
+        QualityChoice::Original => {
+            format!("{server}/devices/ANY/channels/{channel}/stream.mpg")
+        }
         QualityChoice::Height(h) => format!(
-            "{base}?vcodec=h264&acodec=copy&resolution={h}&bitrate={}",
+            "{server}/devices/ANY/channels/{channel}/hls/master.m3u8\
+             ?vcodec=h264&acodec=copy&resolution={h}&bitrate={}",
             quality.kbps()
         ),
     }
@@ -179,6 +197,8 @@ fn prefer_integrated_gpu() {
 
 fn main() -> eframe::Result<()> {
     install_panic_log();
+    // Buffers left by a process that did not live to clean up after itself.
+    timeshift::sweep();
     // Before anything can make a request, so every one of them carries the
     // device name from the first.
     settings::set_user_agent(&settings::Settings::load().client_name);
@@ -432,6 +452,10 @@ struct App {
     /// opening must not end with A's picture arriving late and winning.
     open_generation: u64,
 
+    /// The live buffer behind direct playback, when there is one. Dropping it
+    /// stops its writer and deletes the file, so it is held exactly as long as
+    /// something is playing from it.
+    timeshift: Option<timeshift::Timeshift>,
     /// The notification-area icon, present only while the setting is on.
     tray: Option<tray::Tray>,
     /// This window, so the tray thread can bring it back without going through
@@ -575,6 +599,7 @@ impl App {
             current_recording: None,
             playing_local: false,
             open_generation: 0,
+            timeshift: None,
             tray: None,
             hwnd: window_handle(cc),
             online: true,
@@ -1260,7 +1285,11 @@ impl App {
                         for choice in QualityChoice::MENU {
                             let selected = choice == current;
                             let label = if choice == QualityChoice::Original {
-                                "Original — no transcode".to_string()
+                                if self.live_channel.is_some() {
+                                    "Original — straight from the tuner".to_string()
+                                } else {
+                                    "Original — no transcode".to_string()
+                                }
                             } else {
                                 choice.label()
                             };
@@ -1328,6 +1357,8 @@ impl App {
         self.report_position();
         self.player = None;
         self.retire_texture();
+        // Gigabytes, and worthless the moment nothing is reading them.
+        self.timeshift = None;
         self.last_generation = 0;
         self.watching = false;
         self.paused = false;
@@ -2124,6 +2155,26 @@ impl App {
         let notify = self.repaint.clone();
         let frame_repaint = self.repaint.clone();
         std::thread::spawn(move || {
+            // A live buffer is created empty and the tuner takes several
+            // seconds to produce its first byte, so opening straight away only
+            // ever gets "invalid data". The demuxer needs enough of a
+            // transport stream to find the programs and probe the codecs.
+            //
+            // Waited for here rather than before the thread is spawned: this
+            // is exactly the blocking the interface must not do, and the
+            // tuning animation is already on screen while it happens.
+            if transport == player::Transport::Timeshift {
+                const ENOUGH: u64 = 1024 * 1024;
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while Instant::now() < deadline {
+                    let size = std::fs::metadata(&uri).map(|m| m.len()).unwrap_or(0);
+                    if size >= ENOUGH {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+
             let result =
                 player::Player::open_at(&uri, transport, join, move || {
                     frame_repaint.request_repaint()
@@ -2162,14 +2213,58 @@ impl App {
     /// Tune a channel, choosing where a live playlist is joined.
     fn tune(&mut self, channel: &str, join: player::JoinAt) {
         let server = self.settings.server_url();
-        let uri = stream_uri(&server, channel, self.effective_quality());
-        let transport = player::Transport::of(&uri);
+        let quality = self.effective_quality();
+        let uri = stream_uri(&server, channel, quality);
 
         self.loading = Loading::live(channel);
         self.live_channel = Some(channel.to_string());
         self.commercials.clear();
         self.current_recording = None;
         self.playing_local = false;
+
+        // Direct has no timeshift of its own — one endless HTTP body with no
+        // ranges — so the stream is written to disk here and the player opens
+        // the file instead. Pause and rewind are not optional on live TV, and
+        // this is what buys them back without asking the server to do anything.
+        //
+        // Dropping the previous buffer stops its writer and deletes it, which
+        // is why the new one is built into a variable first: doing it the
+        // other way round would leave two writers on the same channel for as
+        // long as the assignment took.
+        let buffer = if quality == QualityChoice::Original {
+            let http = reqwest::Client::builder()
+                .user_agent(settings::user_agent())
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+            match timeshift::Timeshift::start(
+                self.runtime.handle(),
+                http,
+                uri.clone(),
+                channel,
+            ) {
+                Ok(buffer) => Some(buffer),
+                Err(e) => {
+                    // Not fatal: without a buffer the picture still plays,
+                    // just without rewind, which is better than not tuning.
+                    self.announce(format!("No live buffer: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let (uri, transport) = match &buffer {
+            Some(buffer) => (
+                buffer.path().to_string_lossy().into_owned(),
+                player::Transport::Timeshift,
+            ),
+            None => {
+                let transport = player::Transport::of(&uri);
+                (uri, transport)
+            }
+        };
+        self.timeshift = buffer;
 
         self.spawn_open(uri, transport, 0.0, join);
     }
