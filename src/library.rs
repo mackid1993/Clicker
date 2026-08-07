@@ -9,14 +9,14 @@
 //! client, which a local history never would.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One recording.
 ///
 /// Field names follow the API rather than Rust convention because they are
 /// deserialised straight from it; renaming every one of forty fields buys
 /// nothing.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Recording {
     pub id: String,
     #[serde(default)]
@@ -175,7 +175,7 @@ impl Recording {
 /// the whole Library silently rendered empty with 86 perfectly good groups
 /// sitting in the response. Reading each field defensively means one odd value
 /// costs that field, not the screen.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Group {
     pub id: String,
     pub name: String,
@@ -217,7 +217,7 @@ impl Group {
 }
 
 /// A program the DVR intends to record but has not yet.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Upcoming {
     pub id: String,
     pub title: String,
@@ -236,7 +236,7 @@ pub struct Upcoming {
 /// Held together rather than fetched per screen because it all comes from the
 /// same two responses, and re-requesting seven thousand recordings each time
 /// someone switches tab would be absurd.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Deserialize, Serialize)]
 pub struct Home {
     /// Started and unfinished, most recently touched first.
     pub continue_watching: Vec<Recording>,
@@ -271,6 +271,46 @@ impl Home {
             std::cmp::Reverse((r.season_number, r.episode_number, r.created_at))
         });
         list
+    }
+
+    /// Where the last successful load is kept.
+    ///
+    /// Beside the downloads rather than in the settings file: this is a cache,
+    /// not a preference, and deleting it costs nothing but one refresh.
+    fn cache_path() -> Option<std::path::PathBuf> {
+        let base = std::env::var_os("LOCALAPPDATA")?;
+        Some(
+            std::path::PathBuf::from(base)
+                .join("RustDVR")
+                .join("library.json"),
+        )
+    }
+
+    /// Keep a copy on disk, so the next launch has something to show before —
+    /// or without — the server.
+    ///
+    /// A download is only watchable offline if its title, artwork and episode
+    /// number survive being offline too. Without this the library is empty
+    /// until the DVR answers, which is precisely when it cannot.
+    pub fn save_cache(&self) {
+        let Some(path) = Self::cache_path() else { return };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let Ok(json) = serde_json::to_vec(self) else { return };
+        // Written beside and renamed, so an interrupted write cannot leave a
+        // half-file that fails to parse on the next start.
+        let temporary = path.with_extension("json.part");
+        if std::fs::write(&temporary, &json).is_ok() {
+            let _ = std::fs::rename(&temporary, &path);
+        }
+    }
+
+    /// The last successful load, if there is one.
+    pub fn load_cache() -> Option<Self> {
+        let path = Self::cache_path()?;
+        let bytes = std::fs::read(path).ok()?;
+        serde_json::from_slice(&bytes).ok()
     }
 }
 

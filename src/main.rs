@@ -542,7 +542,10 @@ impl App {
             images: images::Images::new(runtime_handle.clone()),
             downloads: downloads::Downloads::new(runtime_handle),
             lib,
-            home: library::Home::default(),
+            // Last session's library, so downloaded recordings have a title
+            // and a poster from the first frame, server or no server. It is
+            // replaced the moment a live load arrives.
+            home: library::Home::load_cache().unwrap_or_default(),
             home_loading: configured,
             setup: ui_setup::SetupState::default(),
             guide: guide::GuideData::default(),
@@ -686,6 +689,9 @@ impl App {
                     }
                 }
                 Msg::Home(home) => {
+                    // Kept on disk so the next launch has titles and artwork
+                    // for downloaded recordings even with no server to ask.
+                    home.save_cache();
                     self.home = home;
                     self.home_loading = false;
                 }
@@ -1036,6 +1042,7 @@ impl eframe::App for App {
                     self.watch_view(ui, ctx, full, content);
                 } else {
                     self.browse_view(ui, content);
+                    self.offline_banner(ui, content);
                 }
 
                 self.toast_banner(ui, content);
@@ -2245,6 +2252,110 @@ impl App {
             ctx.request_repaint();
         }
         opacity
+    }
+
+    /// Says the server has gone, and points at what can still be watched.
+    ///
+    /// Sitting on a browsing screen with a dead DVR, everything on it is a
+    /// promise that cannot be kept: the artwork is cached, the titles are
+    /// cached, and clicking any of them fails. Downloads are the exception —
+    /// they are on this disk — so the thing to do is say so and offer them,
+    /// rather than leave a library that looks fine and is not.
+    ///
+    /// Shown only where it helps: not on the Downloads screen, which is
+    /// already the answer, and not when there is nothing downloaded, when it
+    /// would be an offer of nothing.
+    fn offline_banner(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        if self.online || self.screen == Screen::Downloads {
+            return;
+        }
+        let ready = self
+            .downloads
+            .entries()
+            .iter()
+            .filter(|(_, status)| matches!(status, downloads::Status::Done(_)))
+            .count();
+
+        let (title, detail) = if ready > 0 {
+            (
+                format!("Offline — {ready} downloaded to watch"),
+                "The DVR is not answering. Downloads play from this machine.",
+            )
+        } else {
+            (
+                "Offline".to_string(),
+                "The DVR is not answering. Reconnecting automatically.",
+            )
+        };
+
+        let width = 430.0_f32.min(rect.width() - SPACE_L * 2.0);
+        let height = 66.0;
+        let card = egui::Rect::from_min_size(
+            egui::pos2(
+                rect.center().x - width / 2.0,
+                rect.max.y - height - SPACE_L * 2.0,
+            ),
+            egui::vec2(width, height),
+        );
+
+        let response = ui.interact(
+            card,
+            egui::Id::new("offline-banner"),
+            if ready > 0 { egui::Sense::click() } else { egui::Sense::hover() },
+        );
+        let hover = ui.ctx().animate_bool_with_time(
+            egui::Id::new("offline-banner-h"),
+            ready > 0 && response.hovered(),
+            theme::ANIM_FAST,
+        );
+
+        ui.painter().rect_filled(
+            card,
+            RADIUS_SURFACE,
+            theme::mix(with_alpha(Fluent::SOLID, 245), Fluent::CONTROL_HOVER, hover),
+        );
+        ui.painter().rect_stroke(
+            card,
+            RADIUS_SURFACE,
+            egui::Stroke::new(1.0, with_alpha(Fluent::LIVE, 110)),
+        );
+        ui.painter().circle_filled(
+            egui::pos2(card.min.x + SPACE_L + 4.0, card.center().y),
+            4.0,
+            Fluent::LIVE,
+        );
+
+        let text_x = card.min.x + SPACE_L + 18.0;
+        ui.painter().text(
+            egui::pos2(text_x, card.center().y - 10.0),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(13.5),
+            Fluent::TEXT_PRIMARY,
+        );
+        ui.painter().text(
+            egui::pos2(text_x, card.center().y + 11.0),
+            egui::Align2::LEFT_CENTER,
+            detail,
+            egui::FontId::proportional(11.5),
+            Fluent::TEXT_TERTIARY,
+        );
+
+        if ready > 0 {
+            ui.painter().text(
+                egui::pos2(card.max.x - SPACE_M, card.center().y),
+                egui::Align2::RIGHT_CENTER,
+                "\u{E72A}", // Forward
+                egui::FontId::new(12.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
+                Fluent::TEXT_SECONDARY,
+            );
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if response.clicked() {
+                self.screen = Screen::Downloads;
+            }
+        }
     }
 
     /// Closed captions, drawn over the picture.
