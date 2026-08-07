@@ -435,6 +435,27 @@ pub fn settings_screen(
                     });
             });
 
+            // ── Closing ────────────────────────────────────────────────
+            ui.add_space(SPACE_L * 1.5);
+            section(
+                ui,
+                "When the window is closed",
+                "Downloads only continue while RustDVR is running.",
+            );
+            control_row(ui, |ui| {
+                let mut to_tray = settings.minimize_to_tray;
+                if ui
+                    .checkbox(&mut to_tray, "Keep running in the notification area")
+                    .on_hover_text(
+                        "Off: closing the window exits, and any download in progress is lost.",
+                    )
+                    .changed()
+                {
+                    settings.minimize_to_tray = to_tray;
+                    action = SetupAction::Save;
+                }
+            });
+
             // ── About ──────────────────────────────────────────────────
             //
             // The in-app third-party notice the LGPL asks for, alongside the

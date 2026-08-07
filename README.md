@@ -33,14 +33,13 @@ interface. Windows 11 only, deliberately.
   bar with a skip button
 - **Downloads** for offline viewing, two at a time with the rest queued, and
   playable with the network unplugged
+- **Closed captions** — CEA-608/708, decoded out of the picture itself
 - **Home screen** — continue watching, up next, and what was recorded recently
 - **Multiple DVRs**, switchable at any time
+- **Keeps running in the notification area** when the window is closed, so a
+  download that is nine tenths transferred survives it
+- **Reconnects by itself** after sleep, a network change or a DVR restart
 - Full screen, an auto-hiding transport, and keyboard control throughout
-
-Not yet, and listed so nobody has to find out the hard way: **subtitles and
-closed captions** are not implemented — the media shim does not open subtitle
-streams at all — and there is no **minimise to tray**, so downloads stop when
-the window is closed.
 
 ## Why it is native
 
@@ -118,6 +117,19 @@ libclang for the sake of forty function signatures, or hand-transcribing
 `AVFrame`, where one wrong field offset is silent memory corruption instead of a
 compile error. The shim's surface is opaque pointers and scalars, so a mistake
 is a link failure.
+
+### Closed captions
+
+Broadcast captions are not a stream. CEA-608 and CEA-708 ride inside the video —
+in H.264 SEI user-data, in MPEG-2 picture user-data — so there is nothing for
+`av_find_best_stream` to select and nothing in `nb_streams` to find. They exist
+only once pictures are being decoded.
+
+The shim pulls the A53 side data off each decoded frame and feeds it to FFmpeg's
+own EIA-608 decoder, which is what turns control codes and roll-up positioning
+into lines of text. The CC button appears only on streams where that data has
+actually been seen, rather than sitting there permanently on files that will
+never have any.
 
 ### Timeshift
 

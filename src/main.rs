@@ -16,6 +16,7 @@ mod library;
 mod player;
 mod settings;
 mod theme;
+mod tray;
 mod ui;
 mod ui_guide;
 mod ui_downloads;
@@ -294,6 +295,9 @@ enum Msg {
     JobCreated(String),
     JobDeleted,
     Failed(String),
+    /// The periodic health check answered: whether the DVR is reachable, and
+    /// why not when it is not.
+    ServerHealth(bool, String),
     /// The home screen's data, assembled from the recordings and series lists.
     Home(library::Home),
     /// The guide, with its listings and the current schedule.
@@ -424,6 +428,34 @@ struct App {
     /// Which open request is current. Tuning channel B while A is still
     /// opening must not end with A's picture arriving late and winning.
     open_generation: u64,
+
+    /// The notification-area icon, present only while the setting is on.
+    tray: Option<tray::Tray>,
+    /// Set when the tray's Quit was chosen, so the close it triggers is
+    /// allowed through instead of being turned back into a hide.
+    quitting: bool,
+
+    // ── Server health ───────────────────────────────────────────────────
+    //
+    // The player had stall detection, but only while something was playing.
+    // Left sitting on the home screen while the laptop slept, nothing ever
+    // noticed the DVR had gone: the guide's half-hourly refresh reset its own
+    // timer before making the request, so one failure meant half an hour of
+    // silence, and no screen said anything was wrong. Relaunching was the only
+    // way back, which is not a state an application should be able to reach.
+    /// Whether the DVR answered the last health check.
+    online: bool,
+    /// A health check is in flight; do not start another.
+    probing_server: bool,
+    /// When the next health check is due.
+    next_health_check: Instant,
+    /// Consecutive failures, for backoff.
+    health_failures: u32,
+    /// Wall-clock seconds at the last housekeeping pass. Wall clock, not
+    /// `Instant`: `Instant` is `QueryPerformanceCounter`, which is not
+    /// guaranteed to advance while the machine is asleep — and sleeping is
+    /// exactly the case this exists to notice.
+    last_tick_unix: i64,
     /// When the first frame of the current source arrived, for the entrance
     /// animation.
     first_frame_at: Option<Instant>,
@@ -537,6 +569,13 @@ impl App {
             current_recording: None,
             playing_local: false,
             open_generation: 0,
+            tray: None,
+            quitting: false,
+            online: true,
+            probing_server: false,
+            next_health_check: Instant::now() + Duration::from_secs(30),
+            health_failures: 0,
+            last_tick_unix: now_unix(),
             first_frame_at: None,
             guide_loaded_at: Instant::now(),
             stalled_since: None,
@@ -548,6 +587,25 @@ impl App {
     }
 
     /// Reload everything that depends on which server is selected.
+    /// Re-fetch everything the screens are built from, without disturbing
+    /// playback or which screen is showing.
+    ///
+    /// Distinct from `reconnect`, which is for changing server and throws the
+    /// player away with the data. After an outage the server is the same one
+    /// and whatever is playing may well still be playing; only the listings
+    /// are stale.
+    fn refresh_data(&mut self) {
+        if !self.settings.configured() {
+            return;
+        }
+        let server = self.settings.server_url();
+        self.home_loading = true;
+        self.guide_loading = true;
+        self.guide_loaded_at = Instant::now();
+        spawn_home(&self.runtime, &self.tx, self.repaint.clone(), &server);
+        spawn_guide(&self.runtime, &self.tx, self.repaint.clone(), &server);
+    }
+
     fn reconnect(&mut self) {
         let server = self.settings.server_url();
         self.dvr = api::Dvr::new(&server);
@@ -594,6 +652,38 @@ impl App {
                     self.job_pending = false;
                     self.home_loading = false;
                     self.announce(reason);
+                }
+                Msg::ServerHealth(reachable, why) => {
+                    self.probing_server = false;
+                    if reachable {
+                        // Coming back is the interesting half. Everything on
+                        // screen was fetched before the server went away, so
+                        // it is however stale the outage was long.
+                        if !self.online {
+                            self.announce("Reconnected to the DVR".into());
+                            self.refresh_data();
+                        }
+                        self.online = true;
+                        self.health_failures = 0;
+                        self.next_health_check = Instant::now() + Duration::from_secs(30);
+                    } else {
+                        if self.online {
+                            self.announce(format!("Lost the DVR: {why}"));
+                        }
+                        self.online = false;
+                        self.health_failures = self.health_failures.saturating_add(1);
+                        // Back off, but not far. A DVR that went away because
+                        // the laptop moved rooms is usually back within
+                        // seconds, and a half-minute ceiling means the wait is
+                        // never long enough to be worth relaunching over.
+                        let wait = match self.health_failures {
+                            1 => 3,
+                            2 => 6,
+                            3 => 12,
+                            _ => 30,
+                        };
+                        self.next_health_check = Instant::now() + Duration::from_secs(wait);
+                    }
                 }
                 Msg::Home(home) => {
                     self.home = home;
@@ -862,6 +952,7 @@ impl eframe::App for App {
         // submitted, so the GPU textures behind them can safely go now.
         self.retired.clear();
 
+        self.pump_tray(ctx);
         self.drain_messages();
         self.sync_texture(ctx);
         self.sample_rates();
@@ -903,6 +994,7 @@ impl eframe::App for App {
                         ui,
                         ctx,
                         egui::Rect::from_min_size(full.min, egui::vec2(full.width(), caption_h)),
+                        self.online,
                     );
                 }
 
@@ -947,6 +1039,11 @@ impl eframe::App for App {
                 }
 
                 self.toast_banner(ui, content);
+
+                // Last, so the borders sit above everything they overlap —
+                // notably the caption, whose drag-to-move would otherwise
+                // swallow the top edge.
+                resize_borders(ui, ctx, full, self.fullscreen);
             });
 
         self.record_dialog_frame(ctx);
@@ -960,6 +1057,64 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Keep the tray in step with the setting, act on it, and decide what the
+    /// window's close button means.
+    ///
+    /// Order matters. The icon has to exist *before* a close is turned into a
+    /// hide, because a hidden window with no tray icon is an application that
+    /// has vanished with no way back — so if the notification area refuses the
+    /// icon, closing goes on meaning close.
+    fn pump_tray(&mut self, ctx: &egui::Context) {
+        if self.settings.minimize_to_tray {
+            if self.tray.is_none() {
+                self.tray = app_icon().and_then(|icon| {
+                    tray::Tray::new(
+                        icon.rgba,
+                        icon.width,
+                        icon.height,
+                        "RustDVR — downloads keep running",
+                    )
+                });
+            }
+        } else {
+            // Dropping it takes the icon out of the notification area, so
+            // turning the setting off is visible immediately rather than at
+            // the next launch.
+            self.tray = None;
+        }
+
+        if let Some(tray) = &self.tray {
+            match tray.poll() {
+                Some(tray::TrayCommand::Show) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                Some(tray::TrayCommand::Quit) => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                None => {}
+            }
+        }
+
+        // Turn the close into a hide, but only when there is somewhere to hide
+        // to and nobody has asked to quit outright.
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quitting
+            && self.settings.minimize_to_tray
+            && self.tray.is_some()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            // Playback is not a background activity. Downloads are the reason
+            // this exists; a tuner held open by a window nobody can see is
+            // just a tuner nobody else can use.
+            if self.watching {
+                self.stop_playback();
+            }
+        }
+    }
+
     /// Keyboard shortcuts.
     ///
     /// The ones a media application is expected to have. F11 and Escape are the
@@ -1242,6 +1397,7 @@ impl App {
             self.set_fullscreen(ctx, !self.fullscreen);
         }
 
+        self.captions(ui, content);
         self.transport(ui, ctx, full);
         self.skip_pill(ctx);
         self.quality_menu(ctx);
@@ -1823,6 +1979,47 @@ impl App {
             spawn_guide(&self.runtime, &self.tx, self.repaint.clone(), &server);
         }
 
+        // ── Server health ───────────────────────────────────────────────
+        //
+        // A single cheap request, on a timer, rather than threading failure
+        // reporting through every call site. It catches a sleeping laptop, a
+        // changed network, a rebooted DVR and a pulled cable identically,
+        // because from here they are all the same thing: the server stopped
+        // answering and has to be waited for.
+        let now_secs = now_unix();
+        let asleep_for = now_secs - self.last_tick_unix;
+        self.last_tick_unix = now_secs;
+
+        // A gap far larger than the repaint interval means this process was
+        // not running — the machine slept, or the window was hidden long
+        // enough to stop being redrawn. Whatever was true about the network
+        // before that gap is not evidence of anything now.
+        if asleep_for > 45 {
+            self.next_health_check = Instant::now();
+            if self.watching {
+                self.announce("Reconnecting after sleep…".into());
+                self.reopen_current();
+            }
+        }
+
+        if self.settings.configured()
+            && !self.probing_server
+            && Instant::now() >= self.next_health_check
+        {
+            self.probing_server = true;
+            let server = self.settings.server_url();
+            let tx = self.tx.clone();
+            let notify = self.repaint.clone();
+            self.runtime.spawn(async move {
+                let message = match settings::probe(&server).await {
+                    Ok(_) => Msg::ServerHealth(true, String::new()),
+                    Err(e) => Msg::ServerHealth(false, format!("{e:#}")),
+                };
+                let _ = tx.send(message);
+                notify.request_repaint();
+            });
+        }
+
         // ── Stall detection ─────────────────────────────────────────────
         //
         // A closed laptop lid or a dropped wifi leaves the HTTP connection
@@ -2056,6 +2253,48 @@ impl App {
             ctx.request_repaint();
         }
         opacity
+    }
+
+    /// Closed captions, drawn over the picture.
+    ///
+    /// Sat above the transport rather than behind it: a caption hidden under
+    /// the controls is worse than one that moves, so it rides up when they are
+    /// showing and drops back down when they fade.
+    ///
+    /// Drawn on a plate rather than with an outline. Broadcast captions land
+    /// on whatever the picture happens to be, and white-on-white is a caption
+    /// that is not there — which is the whole failure this is meant to fix.
+    fn captions(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let Some(player) = &self.player else { return };
+        let Some(text) = player.caption() else { return };
+        if text.is_empty() {
+            return;
+        }
+
+        let controls_up = self.last_activity.elapsed().as_secs_f32() < 3.2;
+        let lift = if controls_up { 112.0 } else { 40.0 };
+
+        let font = egui::FontId::proportional(19.0);
+        let max_width = rect.width() * 0.8;
+        let galley = ui.painter().layout(
+            text,
+            font,
+            Fluent::TEXT_PRIMARY,
+            max_width,
+        );
+
+        let size = galley.size();
+        let origin = egui::pos2(
+            rect.center().x - size.x / 2.0,
+            rect.max.y - lift - size.y,
+        );
+        let plate = egui::Rect::from_min_size(origin, size).expand2(egui::vec2(12.0, 7.0));
+        ui.painter().rect_filled(
+            plate,
+            4.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 190),
+        );
+        ui.painter().galley(origin, galley, Fluent::TEXT_PRIMARY);
     }
 
     /// The transport, drawn over the picture as a single Fluent surface.
@@ -2326,6 +2565,29 @@ impl App {
                     self.show_stats = !self.show_stats;
                 }
 
+                // Captions, offered only where they exist. Broadcast carries
+                // them and imported files generally do not, and a permanently
+                // dead CC button would say nothing except that it is broken.
+                let cc = self
+                    .player
+                    .as_ref()
+                    .map(|p| (p.captions_available(), p.captions_on()));
+                if let Some((true, on)) = cc {
+                    ui.add_space(SPACE_XS);
+                    if subtle_text_button(ui, "CC", on)
+                        .on_hover_text(if on {
+                            "Turn closed captions off"
+                        } else {
+                            "Turn closed captions on"
+                        })
+                        .clicked()
+                    {
+                        if let Some(player) = &self.player {
+                            player.set_captions(!on);
+                        }
+                    }
+                }
+
                 // Quality, for anything streamed from the server — live or a
                 // recording, both of which the DVR will transcode on request.
                 // Hidden for a downloaded file, which is already whatever it
@@ -2553,10 +2815,72 @@ impl App {
     }
 }
 
+/// Drag-to-resize handles along the window's edges and corners.
+///
+/// An undecorated window has no system frame, and the frame is what Windows
+/// hit-tests for resizing — so `with_decorations(false)` silently made the
+/// window fixed-size no matter what `resizable` said. There is nothing to grab
+/// because the operating system is no longer providing anything to grab, and
+/// the only way back is to hit-test the edges ourselves and ask the backend to
+/// take over the drag.
+///
+/// Nothing is painted. These are eight invisible strips whose whole job is to
+/// set the right cursor and hand the drag to the window manager, which then
+/// does the actual resizing at the compositor's frame rate rather than ours.
+fn resize_borders(ui: &mut egui::Ui, ctx: &egui::Context, full: egui::Rect, fullscreen: bool) {
+    use egui::viewport::ResizeDirection as Dir;
+    use egui::CursorIcon as Cursor;
+
+    // A maximized or full-screen window has no edges to drag, and offering
+    // them would resize it out of its own maximized state on a stray click.
+    if fullscreen || ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+        return;
+    }
+
+    // Wide enough to hit without aiming, narrow enough not to steal clicks
+    // from the controls that sit near the edges. The corners are larger,
+    // because a corner is what people reach for and it is the smaller target.
+    const EDGE: f32 = 6.0;
+    const CORNER: f32 = 14.0;
+
+    let (l, r, t, b) = (full.min.x, full.max.x, full.min.y, full.max.y);
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+    };
+
+    // Corners first: they overlap the edges, and whichever is registered last
+    // wins the hit test, so the edges must come after to lose it.
+    let zones = [
+        (rect(l, t, l + CORNER, t + CORNER), Dir::NorthWest, Cursor::ResizeNwSe),
+        (rect(r - CORNER, t, r, t + CORNER), Dir::NorthEast, Cursor::ResizeNeSw),
+        (rect(l, b - CORNER, l + CORNER, b), Dir::SouthWest, Cursor::ResizeNeSw),
+        (rect(r - CORNER, b - CORNER, r, b), Dir::SouthEast, Cursor::ResizeNwSe),
+        (rect(l, t, r, t + EDGE), Dir::North, Cursor::ResizeVertical),
+        (rect(l, b - EDGE, r, b), Dir::South, Cursor::ResizeVertical),
+        (rect(l, t, l + EDGE, b), Dir::West, Cursor::ResizeHorizontal),
+        (rect(r - EDGE, t, r, b), Dir::East, Cursor::ResizeHorizontal),
+    ];
+
+    // Registered in reverse so the corners, listed first, end up on top.
+    for (zone, direction, cursor) in zones.into_iter().rev() {
+        let response = ui.interact(
+            zone,
+            egui::Id::new(("resize", direction as u8)),
+            egui::Sense::drag(),
+        );
+        if response.hovered() || response.dragged() {
+            ctx.set_cursor_icon(cursor);
+        }
+        if response.drag_started() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+        }
+    }
+}
+
 /// The custom caption. Undecorated windows have to provide their own, which is
 /// what lets the Mica material run edge to edge instead of stopping below a
 /// system title bar.
-fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
+fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: bool) {
     let painter = ui.painter();
     painter.text(
         egui::pos2(rect.min.x + SPACE_L, rect.center().y),
@@ -2565,6 +2889,24 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
         egui::FontId::proportional(13.0),
         Fluent::TEXT_SECONDARY,
     );
+
+    // Say so when the server has gone.
+    //
+    // Everything on screen was fetched while it was still there, so without
+    // this an outage looks exactly like an application that simply stopped
+    // being interesting — which is how one ends up being relaunched instead of
+    // waited for.
+    if !online {
+        let at = egui::pos2(rect.min.x + SPACE_L + 68.0, rect.center().y);
+        painter.circle_filled(egui::pos2(at.x + 5.0, at.y), 4.0, Fluent::LIVE);
+        painter.text(
+            egui::pos2(at.x + 16.0, at.y),
+            egui::Align2::LEFT_CENTER,
+            "DVR unreachable — reconnecting",
+            egui::FontId::proportional(11.5),
+            Fluent::LIVE,
+        );
+    }
 
     // Dragging anywhere in the caption moves the window, as Fluent expects.
     let drag = ui.interact(rect, egui::Id::new("caption"), egui::Sense::click_and_drag());

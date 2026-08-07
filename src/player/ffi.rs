@@ -59,6 +59,16 @@ extern "C" {
         dst_width: c_int,
         dst_height: c_int,
     ) -> c_int;
+    /// Whether closed captions have been seen in the video so far.
+    ///
+    /// Only ever true after some video has been decoded: broadcast captions
+    /// ride inside the picture rather than in a stream of their own, so there
+    /// is nothing to discover at open time.
+    pub fn rd_cc_available(m: *mut RdMedia) -> c_int;
+    pub fn rd_cc_enable(m: *mut RdMedia, on: c_int);
+    /// Writes the newest caption line, returning 1 when there was one.
+    pub fn rd_cc_take(m: *mut RdMedia, out: *mut c_char, outlen: c_int) -> c_int;
+
     pub fn rd_audio_samples(m: *mut RdMedia) -> c_int;
     pub fn rd_audio_copy(m: *mut RdMedia, dst: *mut c_float, max_samples: c_int) -> c_int;
 

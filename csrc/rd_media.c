@@ -78,6 +78,26 @@ struct RdMedia {
     int have_audio;
     int audio_samples;
 
+    /* Closed captions.
+     *
+     * Broadcast captions are not a stream. CEA-608 and CEA-708 ride inside the
+     * video itself — in H.264 SEI user-data, in MPEG-2 picture user-data — and
+     * FFmpeg hands them out as A53 side data attached to each decoded video
+     * frame. So there is nothing to select with av_find_best_stream and
+     * nothing in nb_streams to find: captions exist only once pictures are
+     * being decoded, which is why nothing here saw them before.
+     *
+     * The bytes are fed to FFmpeg's own EIA-608 decoder, which is what turns
+     * control codes and roll-up positioning into lines of text. */
+    AVCodecContext *cc_dec;
+    /* Set once A53 data has actually been seen, so the interface can offer
+     * captions only where they exist rather than always. */
+    int cc_seen;
+    int cc_enabled;
+    /* The most recent caption line, waiting to be collected. */
+    char cc_text[512];
+    int cc_ready;
+
     /* Microseconds spent inside av_read_frame and inside the decoders since
      * the last time the caller read them. rd_next is one call from Rust's
      * point of view, but it contains two entirely different kinds of work —
@@ -349,6 +369,7 @@ void rd_close(RdMedia *m)
     if (!m) return;
     if (m->sws) sws_freeContext(m->sws);
     if (m->swr) swr_free(&m->swr);
+    if (m->cc_dec) avcodec_free_context(&m->cc_dec);
     if (m->frame) av_frame_free(&m->frame);
     if (m->packet) av_packet_free(&m->packet);
     if (m->video_dec) avcodec_free_context(&m->video_dec);
@@ -426,6 +447,119 @@ void rd_take_timings(RdMedia *m, int64_t *read_us, int64_t *decode_us, int64_t *
     if (read_max_us) { *read_max_us = m->read_max_us; m->read_max_us = 0; }
 }
 
+/* Strip an ASS dialogue line down to what it says.
+ *
+ * FFmpeg's caption decoder emits ASS, whose payload is the tenth
+ * comma-separated field: "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,TEXT".
+ * Everything before it is styling this player does not honour, and the
+ * inline {\an7} style overrides inside it are positioning that only means
+ * anything against a full ASS renderer. */
+static void ass_to_text(const char *ass, char *out, int outlen)
+{
+    out[0] = '\0';
+    if (!ass) return;
+
+    const char *body = ass;
+    int commas = 0;
+    for (const char *p = ass; *p; p++) {
+        if (*p == ',' && ++commas == 9) {
+            body = p + 1;
+            break;
+        }
+    }
+    if (commas < 9) body = ass;
+
+    int w = 0;
+    for (const char *p = body; *p && w < outlen - 1; p++) {
+        if (*p == '{') {                      /* {\an7} and friends */
+            while (*p && *p != '}') p++;
+            if (!*p) break;
+            continue;
+        }
+        if (p[0] == '\\' && (p[1] == 'N' || p[1] == 'n')) {
+            out[w++] = '\n';
+            p++;
+            continue;
+        }
+        if (*p == '\r') continue;
+        out[w++] = *p;
+    }
+    out[w] = '\0';
+}
+
+/* Open the EIA-608 decoder the first time captions are actually seen. */
+static void cc_open(RdMedia *m)
+{
+    if (m->cc_dec) return;
+    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_EIA_608);
+    if (!codec) return;
+    m->cc_dec = avcodec_alloc_context3(codec);
+    if (!m->cc_dec) return;
+    if (avcodec_open2(m->cc_dec, codec, NULL) < 0) {
+        avcodec_free_context(&m->cc_dec);
+    }
+}
+
+/* Pull captions out of a decoded video frame, if it carries any. */
+static void cc_from_frame(RdMedia *m)
+{
+    AVFrameSideData *sd = av_frame_get_side_data(m->frame, AV_FRAME_DATA_A53_CC);
+    if (!sd || sd->size == 0) return;
+
+    m->cc_seen = 1;
+    if (!m->cc_enabled) return;
+
+    cc_open(m);
+    if (!m->cc_dec) return;
+
+    AVPacket *packet = av_packet_alloc();
+    if (!packet) return;
+    if (av_new_packet(packet, (int)sd->size) < 0) {
+        av_packet_free(&packet);
+        return;
+    }
+    memcpy(packet->data, sd->data, sd->size);
+    packet->pts = m->frame->best_effort_timestamp;
+
+    AVSubtitle sub;
+    int got = 0;
+    if (avcodec_decode_subtitle2(m->cc_dec, &sub, &got, packet) >= 0 && got) {
+        for (unsigned i = 0; i < sub.num_rects; i++) {
+            const AVSubtitleRect *rect = sub.rects[i];
+            const char *text = rect->ass ? rect->ass : rect->text;
+            if (!text) continue;
+            ass_to_text(text, m->cc_text, (int)sizeof(m->cc_text));
+            /* An empty line is the decoder clearing the screen, which is a
+             * caption in its own right: without it the last line stays up
+             * over the silence that follows it. */
+            m->cc_ready = 1;
+        }
+        avsubtitle_free(&sub);
+    }
+    av_packet_free(&packet);
+}
+
+int rd_cc_available(RdMedia *m) { return m && m->cc_seen; }
+
+void rd_cc_enable(RdMedia *m, int on)
+{
+    if (!m) return;
+    m->cc_enabled = on ? 1 : 0;
+    if (!on) {
+        m->cc_text[0] = '\0';
+        m->cc_ready = 1;   /* so the caller clears what is on screen */
+    }
+}
+
+/* Collect the latest caption line. Returns 1 when one was written. */
+int rd_cc_take(RdMedia *m, char *out, int outlen)
+{
+    if (!m || !out || outlen <= 0 || !m->cc_ready) return 0;
+    snprintf(out, outlen, "%s", m->cc_text);
+    m->cc_ready = 0;
+    return 1;
+}
+
 static int decode_frame_from(RdMedia *m, AVCodecContext *dec, int kind, double *pts_out)
 {
     int64_t t0 = av_gettime_relative();
@@ -442,6 +576,7 @@ static int decode_frame_from(RdMedia *m, AVCodecContext *dec, int kind, double *
 
     if (kind == RD_VIDEO) {
         m->have_video = 1;
+        cc_from_frame(m);
     } else {
         m->have_audio = 1;
         /* How many output samples this will become once resampled, including

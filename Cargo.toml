@@ -45,6 +45,7 @@ raw-window-handle = "0.6"
 # preview frames are JPEG, channel logos are PNG. Pulling in the whole format
 # zoo would add compile time and attack surface for nothing.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+tray-icon = { version = "0.24.2", default-features = false }
 
 [build-dependencies]
 cc = "1"

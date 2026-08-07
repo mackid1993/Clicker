@@ -71,6 +71,17 @@ pub struct Settings {
     /// on by hand if it ever earns its place.
     #[serde(default = "yes")]
     pub dismissed_version_warning: bool,
+    /// Whether closing the window hides it to the notification area rather
+    /// than exiting.
+    ///
+    /// On by default, because the reason it exists is that closing the window
+    /// killed downloads mid-transfer, and a setting that has to be discovered
+    /// before it can help would not have prevented that. An application that
+    /// ignores its own close button is a surprise, so it is one that announces
+    /// itself: the tray icon appears before the window is ever hidden, and
+    /// turning this off removes it immediately.
+    #[serde(default = "yes")]
+    pub minimize_to_tray: bool,
 }
 
 fn yes() -> bool {
@@ -106,6 +117,7 @@ impl Default for Settings {
             last_collection: None,
             last_source: None,
             dismissed_version_warning: true,
+            minimize_to_tray: true,
         }
     }
 }

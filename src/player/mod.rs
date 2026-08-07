@@ -284,6 +284,13 @@ struct Shared {
     /// start at zero, and pretending it does makes every position wrong.
     first_pts: AtomicU64,
 
+    /// Whether captions have been seen in this stream at all.
+    cc_available: AtomicBool,
+    /// Whether they are switched on.
+    cc_enabled: AtomicBool,
+    /// The caption line currently on screen. Empty when there is none.
+    caption: Mutex<String>,
+
     /// Which timestamp is coming out of the speakers, as f64 bits, published
     /// by the audio callback. NaN when nothing is playing. Read every two
     /// seconds to trim the clock; see `audio::fill` for why this is a reading
@@ -525,6 +532,9 @@ impl Player {
             starved: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
             first_pts: AtomicU64::new(f64::NAN.to_bits()),
+            cc_available: AtomicBool::new(false),
+            cc_enabled: AtomicBool::new(false),
+            caption: Mutex::new(String::new()),
             audible_pts: AtomicU64::new(f64::NAN.to_bits()),
             output_rate: device.sample_rate as f64,
             output_channels: device.channels as usize,
@@ -634,6 +644,29 @@ impl Player {
 
     pub fn error(&self) -> Option<String> {
         self.shared.error.lock().unwrap().clone()
+    }
+
+    /// Whether this stream has been seen to carry closed captions.
+    pub fn captions_available(&self) -> bool {
+        self.shared.cc_available.load(Ordering::Relaxed)
+    }
+
+    pub fn captions_on(&self) -> bool {
+        self.shared.cc_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Turn captions on or off. Takes effect on the next decoded frame.
+    pub fn set_captions(&self, on: bool) {
+        self.shared.cc_enabled.store(on, Ordering::SeqCst);
+        if !on {
+            self.shared.caption.lock().unwrap().clear();
+        }
+    }
+
+    /// The caption line to draw, if any.
+    pub fn caption(&self) -> Option<String> {
+        let text = self.shared.caption.lock().unwrap();
+        (!text.is_empty()).then(|| text.clone())
     }
 
     pub fn stop(&self) {
@@ -915,6 +948,8 @@ fn decode_loop(
     let mut frame_bytes = (width as usize) * (height as usize) * 4;
     let mut last_facts_check = Instant::now();
     let mut failures = 0u32;
+    // Mirrors the shared flag, so the shim is only told when it changes.
+    let mut cc_on = false;
 
     let opened_at = Instant::now();
     let mut report_next_pts = false;
@@ -1158,6 +1193,33 @@ fn decode_loop(
                         "[player] resumed at {pts:.3}s (asked for {skip_until:.3}s)"
                     );
                     skip_until = f64::NEG_INFINITY;
+                }
+
+                // Captions ride inside the picture, so this is the only place
+                // they can be collected: the shim extracts the A53 side data
+                // from each decoded frame and hands back whatever the EIA-608
+                // decoder made of it.
+                let available = unsafe { ffi::rd_cc_available(handle) } != 0;
+                if available != shared.cc_available.load(Ordering::Relaxed) {
+                    shared.cc_available.store(available, Ordering::Relaxed);
+                }
+                let want_cc = shared.cc_enabled.load(Ordering::Relaxed);
+                if want_cc != cc_on {
+                    cc_on = want_cc;
+                    unsafe { ffi::rd_cc_enable(handle, cc_on as i32) };
+                }
+                if cc_on {
+                    let mut buffer = [0i8; 512];
+                    let got = unsafe {
+                        ffi::rd_cc_take(handle, buffer.as_mut_ptr(), buffer.len() as i32)
+                    };
+                    if got != 0 {
+                        let text = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+                            .to_string_lossy()
+                            .trim()
+                            .to_string();
+                        *shared.caption.lock().unwrap() = text;
+                    }
                 }
 
                 // Size the buffer to the picture that was actually decoded.
