@@ -431,9 +431,9 @@ struct App {
 
     /// The notification-area icon, present only while the setting is on.
     tray: Option<tray::Tray>,
-    /// Set when the tray's Quit was chosen, so the close it triggers is
-    /// allowed through instead of being turned back into a hide.
-    quitting: bool,
+    /// This window, so the tray thread can bring it back without going through
+    /// egui — which cannot help, because a hidden window draws no frames.
+    hwnd: Option<isize>,
 
     // ── Server health ───────────────────────────────────────────────────
     //
@@ -570,7 +570,7 @@ impl App {
             playing_local: false,
             open_generation: 0,
             tray: None,
-            quitting: false,
+            hwnd: window_handle(cc),
             online: true,
             probing_server: false,
             next_health_check: Instant::now() + Duration::from_secs(30),
@@ -1067,40 +1067,32 @@ impl App {
     fn pump_tray(&mut self, ctx: &egui::Context) {
         if self.settings.minimize_to_tray {
             if self.tray.is_none() {
+                let hwnd = self.hwnd;
                 self.tray = app_icon().and_then(|icon| {
                     tray::Tray::new(
                         icon.rgba,
                         icon.width,
                         icon.height,
                         "RustDVR — downloads keep running",
+                        hwnd,
                     )
                 });
             }
         } else {
-            // Dropping it takes the icon out of the notification area, so
-            // turning the setting off is visible immediately rather than at
-            // the next launch.
+            // Dropping it takes the icon out of the notification area and
+            // stops its watcher thread, so turning the setting off is visible
+            // immediately rather than at the next launch.
             self.tray = None;
         }
 
-        if let Some(tray) = &self.tray {
-            match tray.poll() {
-                Some(tray::TrayCommand::Show) => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                }
-                Some(tray::TrayCommand::Quit) => {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                None => {}
-            }
-        }
+        // Nothing is polled here. The tray watches itself on its own thread,
+        // because this function only runs when a frame is drawn and a hidden
+        // window is never asked to draw one — which is why the tray menu used
+        // to do nothing at all once the window had gone.
 
         // Turn the close into a hide, but only when there is somewhere to hide
-        // to and nobody has asked to quit outright.
+        // to.
         if ctx.input(|i| i.viewport().close_requested())
-            && !self.quitting
             && self.settings.minimize_to_tray
             && self.tray.is_some()
         {

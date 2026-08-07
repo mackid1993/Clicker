@@ -36,8 +36,8 @@ interface. Windows 11 only, deliberately.
 - **Closed captions** — CEA-608/708, decoded out of the picture itself
 - **Home screen** — continue watching, up next, and what was recorded recently
 - **Multiple DVRs**, switchable at any time
-- **Keeps running in the notification area** when the window is closed, so a
-  download that is nine tenths transferred survives it
+- **Can keep running in the notification area** when the window is closed, so a
+  download that is nine tenths transferred survives it — off until asked for
 - **Reconnects by itself** after sleep, a network change or a DVR restart
 - Full screen, an auto-hiding transport, and keyboard control throughout
 

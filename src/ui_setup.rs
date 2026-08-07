@@ -447,7 +447,8 @@ pub fn settings_screen(
                 if ui
                     .checkbox(&mut to_tray, "Keep running in the notification area")
                     .on_hover_text(
-                        "Off: closing the window exits, and any download in progress is lost.",
+                        "On: closing the window hides it instead, and downloads carry on. \
+                         Quit from the tray icon.",
                     )
                     .changed()
                 {
