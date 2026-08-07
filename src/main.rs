@@ -1400,6 +1400,7 @@ impl App {
         }
 
         self.captions(ui, content);
+        self.fullscreen_button(ui, ctx, content);
         self.transport(ui, ctx, full);
         self.skip_pill(ctx);
         self.quality_menu(ctx);
@@ -2372,6 +2373,75 @@ impl App {
         }
     }
 
+    /// Full screen, at the top right of the picture.
+    ///
+    /// Not in the transport: it belongs at the corner of the thing it makes
+    /// bigger, which is where every video player puts it and where the pointer
+    /// already goes. It appears and fades with the rest of the controls, so it
+    /// is there when the pointer moves and gone while watching.
+    ///
+    /// Below the caption bar, not over it — the window's own buttons live in
+    /// that corner and two things to click in one place is how the X on the
+    /// player came to be mistaken for quit.
+    fn fullscreen_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
+        let opacity = self.controls_opacity(ctx);
+        if opacity <= 0.001 {
+            return;
+        }
+        let fade = |c: egui::Color32, a: u8| with_alpha(c, (a as f32 * opacity) as u8);
+
+        const SIZE: f32 = 38.0;
+        let at = egui::Rect::from_min_size(
+            egui::pos2(rect.max.x - SIZE - SPACE_L, rect.min.y + SPACE_L),
+            egui::vec2(SIZE, SIZE),
+        );
+
+        let response = ui.interact(at, egui::Id::new("fullscreen-corner"), egui::Sense::click());
+        let hover = ctx.animate_bool_with_time(
+            egui::Id::new("fullscreen-corner-hover"),
+            response.hovered(),
+            theme::ANIM_FAST,
+        );
+
+        let painter = ui.painter();
+        painter.rect_filled(
+            at,
+            theme::RADIUS_CONTROL,
+            fade(
+                theme::mix(Fluent::LAYER_CARD, Fluent::CONTROL_HOVER, hover),
+                215,
+            ),
+        );
+        painter.rect_stroke(
+            at,
+            theme::RADIUS_CONTROL,
+            egui::Stroke::new(1.0, fade(Fluent::STROKE_CONTROL, 255)),
+        );
+        painter.text(
+            at.center(),
+            egui::Align2::CENTER_CENTER,
+            if self.fullscreen {
+                theme::icon::EXIT_FULLSCREEN
+            } else {
+                theme::icon::FULLSCREEN
+            },
+            egui::FontId::new(14.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
+            fade(Fluent::TEXT_PRIMARY, 255),
+        );
+
+        if response.hovered() {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let response = response.on_hover_text(if self.fullscreen {
+            "Leave full screen (F11)"
+        } else {
+            "Full screen (F11)"
+        });
+        if response.clicked() {
+            self.set_fullscreen(ctx, !self.fullscreen);
+        }
+    }
+
     /// Closed captions, drawn over the picture.
     ///
     /// Sat above the transport rather than behind it: a caption hidden under
@@ -2733,6 +2803,7 @@ impl App {
                 if subtle_button(ui, theme::icon::MORE, 40.0, self.show_stats).clicked() {
                     self.show_stats = !self.show_stats;
                 }
+
 
                 // Captions, offered only where they exist. Broadcast carries
                 // them and imported files generally do not, and a permanently

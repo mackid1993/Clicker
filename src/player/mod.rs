@@ -204,6 +204,24 @@ const MAX_SPARE_BUFFERS: usize = 4;
 /// nine — a bad bargain.
 const LIVE_PREROLL: Duration = Duration::from_secs(4);
 
+/// Frames queued before the clock starts, and the longest it will wait for
+/// them.
+///
+/// Both small on purpose. The queue holds twelve frames, so this is a fifth of
+/// a second of pictures, not seconds of them — the real protection against a
+/// stalling read is having fallen behind the live edge, which is the join
+/// point's job, not this one's. This exists so playback does not begin on a
+/// single frame and immediately starve.
+const PREROLL_FRAMES: usize = 10;
+const PREROLL_MAX: Duration = Duration::from_millis(1200);
+
+/// An open faster than this means the server already had the channel running.
+///
+/// Measured on a real DVR: 8.61s when it had to tune, 0.35s when the session
+/// was already up. The two are an order of magnitude apart, so where exactly
+/// the line falls between them does not matter much.
+const WARM_OPEN: Duration = Duration::from_secs(2);
+
 /// How long a caption stays up with nothing new arriving, in stream seconds.
 ///
 /// A caption decoder does not announce that a programme has stopped talking,
@@ -478,6 +496,9 @@ impl Player {
         // resamples where one will do.
         let device = audio::Device::open()?;
 
+        // Timed, because how long the server takes to answer is what says
+        // whether it had to tune. See where `preroll` is decided.
+        let opening = Instant::now();
         let url = CString::new(uri)?;
         // Falls back to a bare product string if the device name has a NUL in
         // it, which is not a reason to refuse to play anything.
@@ -559,11 +580,30 @@ impl Player {
         // Only a segmented live source can be behind its own live edge, and
         // only a live source has no duration to state. A recording has both a
         // duration and every byte already written, so it must not be delayed.
+        //
+        // How long the open took decides whether the wait is needed at all.
+        // The server does not answer with a playlist until the tuner is locked
+        // and there is something to list, so a slow open means it tuned for
+        // us: the playlist is new, it is growing in real time, and reading
+        // flat out would pin the player against the writer. A fast one means
+        // the session was already running and every segment behind the edge is
+        // already on disk, where the wait buys nothing but four seconds of
+        // spinner. Measured on this server: 8.61s tuning, 0.35s warm — far
+        // enough apart that the threshold between them is not a fine judgement.
         let preroll = if transport == Transport::Hls && facts.duration <= 0.0 {
-            LIVE_PREROLL
+            if opening.elapsed() < WARM_OPEN {
+                Duration::ZERO
+            } else {
+                LIVE_PREROLL
+            }
         } else {
             Duration::ZERO
         };
+        eprintln!(
+            "[player] opened in {:.2}s, preroll {:.0}s",
+            opening.elapsed().as_secs_f64(),
+            preroll.as_secs_f64()
+        );
 
         let mut threads = Vec::new();
         threads.push({
@@ -975,15 +1015,25 @@ fn decode_loop(
     // where it was asked to rather than at the segment boundary before it.
     let mut skip_until = f64::NEG_INFINITY;
 
-    // Fall behind the live edge before reading a single packet. See
-    // LIVE_PREROLL: this is the whole buffer, and it is bought here, once.
-    // Nothing has been shown yet, so the only cost is that the indicator the
-    // interface is already displaying stays up for another moment.
+    // Fall behind the live edge before reading a packet — but only when that
+    // is worth four seconds, which is not always.
+    //
+    // The wait exists so reads only ever ask for finished segments. On a
+    // channel the server has just tuned it earns that: the playlist starts
+    // empty and grows in real time, so a player that reads as fast as it can
+    // pins itself against the writer. Measured without the wait on a cold
+    // tune, ten seconds in: `pos 9.7s edge 9.8s`, reads stalling 368ms every
+    // second, 47 starved wake-ups and six frames dropped.
+    //
+    // On a session the server already has running it earns nothing. Those
+    // segments are written, so they arrive at LAN speed and playback races
+    // straight back to the edge regardless: `pos 2.0s edge 2.2s` either way,
+    // nothing starved, four seconds spent on a spinner for an identical
+    // result.
+    //
+    // Which of the two this is has already been measured by the time we get
+    // here — see `open_at`, where a slow open means the server was tuning.
     if !preroll.is_zero() {
-        eprintln!(
-            "[player] holding {:.0}s off the live edge before reading",
-            preroll.as_secs_f64()
-        );
         let until = Instant::now() + preroll;
         while Instant::now() < until && !shared.quit.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(50));
@@ -1441,12 +1491,23 @@ fn present_loop(shared: Arc<Shared>, repaint: impl Fn() + Send + Sync + 'static)
                 shared.starved.fetch_add(1, Ordering::Relaxed);
             }
 
-            // The first frame starts the clock, so a picture appears without
-            // waiting on anything else.
+            // Start on a cushion rather than on the very first frame.
+            //
+            // This is the buffer the four-second sleep before reading was
+            // supposed to provide and did not. Holding the clock for a few
+            // frames costs only as long as they take to arrive — a fraction of
+            // a second where segments are already written, and naturally
+            // longer where they are not, which is the case the wait existed
+            // for. The deadline is there so a source that simply cannot
+            // deliver that many frames still starts.
             if !shared.clock.started() {
-                if let Some(first) = queue.front() {
-                    shared.clock.start(first.pts);
-                    shared.align_audio.store(true, Ordering::SeqCst);
+                let deep_enough = queue.len() >= PREROLL_FRAMES;
+                let waited = shared.opened_at.elapsed() > PREROLL_MAX;
+                if deep_enough || waited {
+                    if let Some(first) = queue.front() {
+                        shared.clock.start(first.pts);
+                        shared.align_audio.store(true, Ordering::SeqCst);
+                    }
                 }
             }
 

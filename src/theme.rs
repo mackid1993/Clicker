@@ -260,6 +260,8 @@ pub mod icon {
     pub const HAMBURGER: &str = "\u{E700}";
     /// FastForward, for skipping a commercial break.
     pub const SKIP_BREAK: &str = "\u{EB9D}";
+    pub const FULLSCREEN: &str = "\u{E740}";
+    pub const EXIT_FULLSCREEN: &str = "\u{E73F}";
 }
 
 /// A label in the icon font at a given size.
