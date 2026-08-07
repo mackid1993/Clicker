@@ -2,41 +2,47 @@
 
 RustDVR is Copyright © 2026 David Brustein.
 
-RustDVR is **source available**, not open source. The source can be read, built
-and used for any noncommercial purpose. It cannot be sold, redistributed, or
-forked. The terms are the PolyForm Strict License 1.0.0, reproduced verbatim
-below.
+RustDVR is **source available**. You may read it, build it, run it, change it,
+fork it and share it — for any noncommercial purpose. You may not sell it, or
+use it to make money. The terms are the PolyForm Noncommercial License 1.0.0,
+reproduced verbatim below.
+
+Required Notice: Copyright © 2026 David Brustein
+<https://github.com/mackid1993/RustDVR>
 
 The word **software** in those terms means RustDVR itself: the source code in
-this repository and the binaries built from it. It does not mean the third
-party components RustDVR is built against, which carry their own licenses and
-are covered separately under "Third party components" at the end of this file.
+this repository and the binaries built from it. It does not mean the third party
+components RustDVR is built against, which carry their own licenses and are
+covered separately under "Third party components" at the end of this file.
 
 ## Exception required by the LGPL
 
 RustDVR is distributed together with libraries licensed under the GNU Lesser
 General Public License version 2.1. Section 6 of that license requires that
 anyone who receives the combined work be permitted to modify it for their own
-use, and to reverse engineer it in order to debug those modifications. The
-PolyForm Strict terms below would otherwise forbid exactly that.
+use, and to reverse engineer it in order to debug those modifications.
 
-Those terms are therefore granted subject to the following exception, which
-prevails over anything below that conflicts with it:
+The terms below already permit changes and new works for any noncommercial
+purpose, which satisfies that requirement for anyone using RustDVR under them.
+What they do not cover is someone whose purpose is commercial, because the terms
+below grant such a person nothing at all. So that no recipient is ever left
+holding a combined work they are not permitted to debug, those particular rights
+are granted unconditionally:
 
-> Notwithstanding the restriction on making changes or new works based on the
-> software, you are permitted to modify the software for your own use, and to
-> reverse engineer it for the purpose of debugging those modifications, solely
-> to the extent required by section 6 of the GNU Lesser General Public License
-> version 2.1 in respect of the LGPL libraries distributed with it.
+> Notwithstanding anything below, you are permitted to modify the software for
+> your own use, and to reverse engineer it for the purpose of debugging those
+> modifications, whatever your purpose, solely to the extent required by section
+> 6 of the GNU Lesser General Public License version 2.1 in respect of the LGPL
+> libraries distributed with it.
 
-This permits private modification and debugging. It does not permit
-distribution, and everything else in the terms below is unaffected.
+This permits private modification and debugging. It grants no right to use
+RustDVR commercially, and everything else in the terms below is unaffected.
 
 ---
 
-# PolyForm Strict License 1.0.0
+# PolyForm Noncommercial License 1.0.0
 
-<https://polyformproject.org/licenses/strict/1.0.0>
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
 
 ## Acceptance
 
@@ -44,7 +50,21 @@ In order to get any license under these terms, you must agree to them as both st
 
 ## Copyright License
 
-The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose, other than distributing the software or making changes or new works based on the software.
+The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose.  However, you may only distribute the software according to [Distribution License](#distribution-license) and make changes or new works based on the software according to [Changes and New Works License](#changes-and-new-works-license).
+
+## Distribution License
+
+The licensor grants you an additional copyright license to distribute copies of the software.  Your license to distribute covers distributing the software with changes and new works permitted by [Changes and New Works License](#changes-and-new-works-license).
+
+## Notices
+
+You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software.  For example:
+
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
+
+## Changes and New Works License
+
+The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
 
 ## Patent License
 
@@ -114,17 +134,17 @@ and never renamed.
 
 The LGPL requires that anyone who receives RustDVR be free to modify FFmpeg, to
 relink RustDVR against their modified version, and to reverse engineer as
-necessary to debug that relinking. Nothing in the PolyForm Strict License above
-restricts any of that, because FFmpeg is not part of "the software" as that term
-is used above. Those rights are granted by the LGPL and are not withdrawn here,
-and the exception at the top of this file exists so that they cannot be.
+necessary to debug that relinking. Nothing in the PolyForm Noncommercial License
+above restricts any of that, because FFmpeg is not part of "the software" as that
+term is used above. Those rights are granted by the LGPL and are not withdrawn
+here, and the exception at the top of this file exists so that they cannot be.
 
 The corresponding source is FFmpeg `n7.1.1`, from
 <https://github.com/FFmpeg/FFmpeg>. It is built from that source rather than
 downloaded prebuilt, because the license has to be provable: every prebuilt
 FFmpeg-bearing media binary for Windows that was examined embeds a build
-configured `--enable-gpl`, and shipping one of those inside a PolyForm Strict
-application would place the entire distribution under the GPL.
+configured `--enable-gpl`, and shipping one of those inside a noncommercially
+licensed application would place the entire distribution under the GPL.
 
 This build is configured `--disable-gpl --disable-nonfree`. The configure line
 is recorded inside the libraries themselves and can be read back at runtime

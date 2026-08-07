@@ -74,7 +74,7 @@ fn embed_icon(root: &std::path::Path) {
             .set("ProductName", "RustDVR")
             .set("FileDescription", "RustDVR")
             .set("CompanyName", "RustDVR")
-            .set("LegalCopyright", "PolyForm Strict 1.0.0");
+            .set("LegalCopyright", "PolyForm Noncommercial 1.0.0");
 
         if let Err(e) = res.compile() {
             println!("cargo:warning=could not embed the icon: {e}");

@@ -134,9 +134,16 @@ backwards at all.
 
 ## Licence
 
-RustDVR is **source available, not open source**: PolyForm Strict 1.0.0. It can
-be read, built and used for any noncommercial purpose. It cannot be sold,
-redistributed or forked. See [LICENSE.md](LICENSE.md).
+RustDVR is **source available**: PolyForm Noncommercial 1.0.0. Read it, build
+it, run it, change it, fork it and share it — for any noncommercial purpose.
+What you may not do is sell it or use it to make money. See
+[LICENSE.md](LICENSE.md).
+
+That is not "open source" in the OSI sense, and the difference is worth stating
+plainly rather than letting the badge imply otherwise: the Open Source
+Definition forbids discriminating against any field of endeavour, and a
+noncommercial restriction is exactly that. Forks, patches and redistribution are
+all fine. Making money from it is not.
 
 ### FFmpeg
 
@@ -146,8 +153,9 @@ terms above and is not owned by this project.
 
 It is built from source rather than downloaded, because the licence has to be
 provable. Every prebuilt libVLC and libmpv binary for Windows embeds an FFmpeg
-configured with `--enable-gpl`; shipping one of those inside a PolyForm Strict
-application would relicense the entire distribution under the GPL. This build is
+configured with `--enable-gpl`; shipping one of those inside a noncommercially
+licensed application would relicense the entire distribution under the GPL and
+override the terms above entirely. This build is
 configured `--disable-gpl --disable-nonfree`, the build script refuses to
 proceed if `config.h` says otherwise, and `build.ps1` re-reads the shipped DLL
 before packaging it.
@@ -155,9 +163,10 @@ before packaging it.
 The libraries ship as **separate, unmodified DLLs loaded at runtime**, never
 folded into the executable and never renamed. That is what lets anyone receiving
 a copy substitute their own build of them, as LGPL-2.1 section 6 requires.
-`LICENSE.md` carries the exception that section also requires, permitting
-private modification and reverse engineering for debugging despite PolyForm
-Strict otherwise forbidding both.
+`LICENSE.md` carries the exception that section also requires, granting private
+modification and reverse engineering for debugging unconditionally — including
+to someone whose purpose is commercial, and who therefore holds no licence to
+RustDVR itself.
 
 The corresponding source is FFmpeg `n7.1.1`, from
 <https://github.com/FFmpeg/FFmpeg>, built with the configuration recorded in

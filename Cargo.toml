@@ -3,10 +3,12 @@ name = "rustdvr"
 version = "0.0.1"
 edition = "2021"
 description = "A native Channels DVR client"
-# PolyForm Strict has no SPDX identifier, so the file is the licence of record.
+# PolyForm Noncommercial has no SPDX identifier, so the file is the licence of
+# record.
 license-file = "LICENSE.md"
-# The licence forbids redistribution, and publishing to a registry is exactly
-# that. Refusing here means it cannot happen by accident.
+# crates.io requires that anything published there be usable by anyone for any
+# purpose, which a noncommercial licence is not. Refusing here means it cannot
+# happen by accident.
 publish = false
 
 [dependencies]

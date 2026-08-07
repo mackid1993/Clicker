@@ -37,8 +37,9 @@ Three things about it are deliberate:
 
 **It is built from source rather than downloaded.** Every prebuilt FFmpeg for
 Windows — including the ones inside libVLC and libmpv — is configured with
-`--enable-gpl`. Shipping one of those inside a PolyForm Strict application
-would place the whole distribution under the GPL. This build passes
+`--enable-gpl`. Shipping one of those inside a noncommercially licensed
+application would place the whole distribution under the GPL, overriding its
+terms entirely. This build passes
 `--disable-gpl --disable-nonfree`, the script refuses to continue if
 `config.h` disagrees, and `build.ps1` re-reads the finished DLL before
 packaging it.

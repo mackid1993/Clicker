@@ -189,8 +189,8 @@ if ($avutil) {
         Fail @"
 REFUSING TO PACKAGE: $($avutil.Name) reports GPL.
 
-This application is distributed under PolyForm Strict, which is incompatible
-with the GPL. Rebuild FFmpeg with scripts\build-ffmpeg.ps1, which configures
+This application is distributed under PolyForm Noncommercial, which is
+incompatible with the GPL. Rebuild FFmpeg with scripts\build-ffmpeg.ps1, which configures
 --disable-gpl --disable-nonfree.
 "@
     }
