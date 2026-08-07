@@ -449,25 +449,48 @@ void rd_take_timings(RdMedia *m, int64_t *read_us, int64_t *decode_us, int64_t *
 
 /* Strip an ASS dialogue line down to what it says.
  *
- * FFmpeg's caption decoder emits ASS, whose payload is the tenth
- * comma-separated field: "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,TEXT".
- * Everything before it is styling this player does not honour, and the
- * inline {\an7} style overrides inside it are positioning that only means
- * anything against a full ASS renderer. */
+ * Two formats have to be handled, and getting it wrong is not a parse failure
+ * but a caption with rubbish glued to the front of it.
+ *
+ *   FFmpeg < 4.0:  "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,TEXT"
+ *   FFmpeg >= 4.0: "0,0,Default,,0,0,0,,TEXT"   (no prefix, no timestamps)
+ *
+ * Nine header commas in the first, eight in the second. Counting nine
+ * unconditionally against the modern format overruns into the text and stops
+ * at whatever comma it finds there — and the text routinely contains one,
+ * because caption positioning arrives as an inline override like
+ * {\pos(120,243)}. That is exactly how "243)}" ended up in front of a line.
+ *
+ * So: commas inside a {...} override group are not field separators and are
+ * never counted, and the number of fields is chosen by which format this is.
+ * The overrides themselves are then dropped — they are positioning that only
+ * means anything to a full ASS renderer. */
 static void ass_to_text(const char *ass, char *out, int outlen)
 {
     out[0] = '\0';
     if (!ass) return;
 
-    const char *body = ass;
+    const char *start = ass;
+    int fields = 8;
+    if (strncmp(ass, "Dialogue:", 9) == 0) {
+        start = ass + 9;
+        fields = 9;
+    }
+
+    const char *body = start;
     int commas = 0;
-    for (const char *p = ass; *p; p++) {
-        if (*p == ',' && ++commas == 9) {
+    int depth = 0;
+    for (const char *p = start; *p; p++) {
+        if (*p == '{') { depth++; continue; }
+        if (*p == '}') { if (depth > 0) depth--; continue; }
+        if (*p == ',' && depth == 0 && ++commas == fields) {
             body = p + 1;
             break;
         }
     }
-    if (commas < 9) body = ass;
+    /* Fewer separators than expected means this is not the format it claimed
+     * to be. Showing the whole thing is wrong, but showing nothing is worse. */
+    if (commas < fields) body = start;
 
     int w = 0;
     for (const char *p = body; *p && w < outlen - 1; p++) {

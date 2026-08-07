@@ -2274,7 +2274,10 @@ impl App {
         let controls_up = self.last_activity.elapsed().as_secs_f32() < 3.2;
         let lift = if controls_up { 112.0 } else { 40.0 };
 
-        let font = egui::FontId::proportional(19.0);
+        // Scaled to the window. A fixed 19pt caption is most of the picture on
+        // a small window and a whisper on a large one.
+        let size = (rect.width() / 46.0).clamp(13.0, 26.0);
+        let font = egui::FontId::proportional(size);
         let max_width = rect.width() * 0.8;
         let galley = ui.painter().layout(
             text,
@@ -2433,6 +2436,25 @@ impl App {
         let seekable = self.player.as_ref().map(|p| p.is_seekable()).unwrap_or(false);
         let behind = self.player.as_ref().and_then(|p| p.behind_live());
 
+        // What fits.
+        //
+        // Every control here used to be drawn unconditionally, so a narrow
+        // window laid the same eight of them out past its own edge and they
+        // simply overlapped: the LIVE pill on top of the quality button, the
+        // quality button on top of the volume slider. Nothing in an
+        // immediate-mode row negotiates for space, so the row has to decide.
+        //
+        // Dropped in the order of how little is lost by dropping each — the
+        // volume slider first, because the keyboard and the system mixer both
+        // still work without it. Play, the live pill and the way out are never
+        // dropped, whatever the width.
+        let width = ui.available_width();
+        let show_volume = width > 860.0;
+        let show_quality = width > 700.0;
+        let show_clock = width > 600.0;
+        let show_record = width > 520.0;
+        let show_skips = width > 440.0;
+
         ui.horizontal(|ui| {
             let play_glyph = if self.paused { theme::icon::PLAY } else { theme::icon::PAUSE };
             if subtle_button(ui, play_glyph, 40.0, false).clicked() {
@@ -2444,37 +2466,41 @@ impl App {
 
             let back = self.settings.skip_back_secs as f64;
             let forward = self.settings.skip_forward_secs as f64;
-            if subtle_button(ui, theme::icon::SKIP_BACK, 40.0, false)
-                .on_hover_text(format!("Back {back:.0} seconds"))
-                .clicked()
-            {
-                if let Some(p) = &self.player {
-                    if !p.seek_by(-back) {
-                        self.announce("This source cannot be rewound".into());
+            if show_skips {
+                if subtle_button(ui, theme::icon::SKIP_BACK, 40.0, false)
+                    .on_hover_text(format!("Back {back:.0} seconds"))
+                    .clicked()
+                {
+                    if let Some(p) = &self.player {
+                        if !p.seek_by(-back) {
+                            self.announce("This source cannot be rewound".into());
+                        }
                     }
                 }
-            }
-            if subtle_button(ui, theme::icon::SKIP_FORWARD, 40.0, false)
-                .on_hover_text(format!("Forward {forward:.0} seconds"))
-                .clicked()
-            {
-                if let Some(p) = &self.player {
-                    p.seek_by(forward);
+                if subtle_button(ui, theme::icon::SKIP_FORWARD, 40.0, false)
+                    .on_hover_text(format!("Forward {forward:.0} seconds"))
+                    .clicked()
+                {
+                    if let Some(p) = &self.player {
+                        p.seek_by(forward);
+                    }
                 }
             }
 
             // Recording the channel being watched is a first-class action, so
             // it sits in the bar rather than behind the overflow menu.
-            let recording = self.job_id.is_some();
-            let record = subtle_button(ui, theme::icon::RECORD, 40.0, recording);
-            let record = if recording {
-                record.on_hover_text("Stop recording this program")
-            } else {
-                record.on_hover_text("Record this program")
-            };
-            if record.clicked() {
-                let ctx = ui.ctx().clone();
-                self.toggle_record(&ctx);
+            if show_record {
+                let recording = self.job_id.is_some();
+                let record = subtle_button(ui, theme::icon::RECORD, 40.0, recording);
+                let record = if recording {
+                    record.on_hover_text("Stop recording this program")
+                } else {
+                    record.on_hover_text("Record this program")
+                };
+                if record.clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.toggle_record(&ctx);
+                }
             }
 
             ui.add_space(SPACE_S);
@@ -2516,7 +2542,9 @@ impl App {
             // where you are in it. "-39:37" was being shown for both, which
             // read as "39 minutes behind live" on a program that finished
             // hours ago.
-            if self.live_channel.is_some() {
+            if !show_clock {
+                // Nothing: the scrub bar above already says where playback is.
+            } else if self.live_channel.is_some() {
                 if let Some(behind) = behind.filter(|b| *b > 8.0) {
                     ui.label(
                         egui::RichText::new(format!("-{}", clock(behind)))
@@ -2599,7 +2627,7 @@ impl App {
                 // an explanation for. The flyout already marks the selection,
                 // and the hover text carries it for anyone who wants it
                 // without opening the menu.
-                if !self.playing_local {
+                if !self.playing_local && show_quality {
                     ui.add_space(SPACE_XS);
                     let current = self.effective_quality();
                     if subtle_text_button(ui, "Quality", self.show_quality)
@@ -2610,18 +2638,23 @@ impl App {
                     }
                 }
 
-                ui.add_space(SPACE_XS);
-                let mut volume = self.volume;
-                if ui
-                    .add_sized(
-                        [96.0, 18.0],
-                        egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false),
-                    )
-                    .changed()
-                {
-                    self.volume = volume;
-                    if let Some(p) = &self.player {
-                        p.set_volume(volume as f64);
+                // The slider is the first thing to go on a narrow window. The
+                // mute button beside it stays, so there is always a way to
+                // silence it without the keyboard.
+                if show_volume {
+                    ui.add_space(SPACE_XS);
+                    let mut volume = self.volume;
+                    if ui
+                        .add_sized(
+                            [96.0, 18.0],
+                            egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false),
+                        )
+                        .changed()
+                    {
+                        self.volume = volume;
+                        if let Some(p) = &self.player {
+                            p.set_volume(volume as f64);
+                        }
                     }
                 }
                 let vol_glyph = if self.volume <= 0.001 {
