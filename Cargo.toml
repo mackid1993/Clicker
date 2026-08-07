@@ -63,6 +63,11 @@ windows = { version = "0.58", features = [
   "Win32_System_Performance",
   "Win32_System_SystemInformation",
   "Win32_UI_WindowsAndMessaging",
+  # Sparse files, for recycling the live buffer without moving byte offsets.
+  # See timeshift.rs.
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  "Win32_Storage_FileSystem",
 ] }
 
 [profile.release]

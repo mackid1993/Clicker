@@ -81,6 +81,20 @@ pub struct Settings {
     /// for.
     #[serde(default)]
     pub minimize_to_tray: bool,
+    /// How much disk the live buffer may use, in gigabytes. Zero turns it off.
+    ///
+    /// Original playback comes straight from the tuner, which cannot be
+    /// rewound on its own, so the stream is written here as it arrives to give
+    /// pause and rewind back. That is real disk — roughly 2GB an hour on a
+    /// broadcast stream — and how much of it anyone is willing to spend is not
+    /// a decision to make on their behalf. Off is a legitimate answer: live
+    /// still plays, it simply cannot be rewound.
+    #[serde(default = "default_live_buffer")]
+    pub live_buffer_gb: u32,
+}
+
+fn default_live_buffer() -> u32 {
+    4
 }
 
 fn yes() -> bool {
@@ -117,6 +131,7 @@ impl Default for Settings {
             last_source: None,
             dismissed_version_warning: true,
             minimize_to_tray: false,
+            live_buffer_gb: default_live_buffer(),
         }
     }
 }

@@ -20,7 +20,10 @@ interface. Windows 11 only, deliberately.
 
 ## What it does
 
-- **Live TV** with timeshift — pause, rewind and return to live
+- **Live TV** with timeshift — pause, rewind and return to live. Original comes
+  straight from the tuner with no server-side pipeline at all, and is buffered
+  to disk here so it can still be rewound. The buffer recycles rather than
+  filling up, and how large it is allowed to get is a setting
 - **Guide** across every channel, with logos, collections, sources and search.
   Left click watches, right click records; a future programme records on left
   click

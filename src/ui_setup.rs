@@ -446,6 +446,57 @@ pub fn settings_screen(
                     });
             });
 
+            // ── Live buffer ────────────────────────────────────────────
+            ui.add_space(SPACE_L * 1.5);
+            section(
+                ui,
+                "Live buffer",
+                "Original comes straight from the tuner, which cannot be rewound on \
+                 its own. Buffering it to disk is what allows pause and rewind.",
+            );
+            control_row(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("Keep")
+                        .size(12.0)
+                        .color(Fluent::TEXT_SECONDARY),
+                );
+                egui::ComboBox::from_id_salt("live-buffer")
+                    .selected_text(match settings.live_buffer_gb {
+                        0 => "Off — no rewind".to_string(),
+                        gb => format!("{gb} GB"),
+                    })
+                    .width(190.0)
+                    .show_ui(ui, |ui| {
+                        // Roughly two gigabytes an hour on a broadcast stream,
+                        // so the sizes are shown with what they actually buy.
+                        for (gb, label) in [
+                            (0u32, "Off — no rewind".to_string()),
+                            (2, "2 GB  ·  about 1 hour".to_string()),
+                            (4, "4 GB  ·  about 2 hours".to_string()),
+                            (8, "8 GB  ·  about 4 hours".to_string()),
+                            (16, "16 GB  ·  about 8 hours".to_string()),
+                            (32, "32 GB  ·  about 16 hours".to_string()),
+                        ] {
+                            if ui
+                                .selectable_label(settings.live_buffer_gb == gb, label)
+                                .clicked()
+                            {
+                                settings.live_buffer_gb = gb;
+                                action = SetupAction::Save;
+                            }
+                        }
+                    });
+            });
+            ui.label(
+                egui::RichText::new(
+                    "The buffer recycles rather than filling up: once it reaches this \
+                     size the oldest part is released and recording continues, so a \
+                     channel can be left on all day. It is deleted when playback stops.",
+                )
+                .size(11.0)
+                .color(Fluent::TEXT_TERTIARY),
+            );
+
             // ── Closing ────────────────────────────────────────────────
             ui.add_space(SPACE_L * 1.5);
             section(

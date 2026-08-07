@@ -1284,15 +1284,7 @@ impl App {
                         ui.add_space(SPACE_XS);
                         for choice in QualityChoice::MENU {
                             let selected = choice == current;
-                            let label = if choice == QualityChoice::Original {
-                                if self.live_channel.is_some() {
-                                    "Original — straight from the tuner".to_string()
-                                } else {
-                                    "Original — no transcode".to_string()
-                                }
-                            } else {
-                                choice.label()
-                            };
+                            let label = choice.label();
                             if ui.selectable_label(selected, label).clicked() {
                                 chosen = Some(choice);
                             }
@@ -2024,6 +2016,15 @@ impl App {
             spawn_guide(&self.runtime, &self.tx, self.repaint.clone(), &server);
         }
 
+        // ── Live buffer ─────────────────────────────────────────────────
+        //
+        // Keep the seekable window in step with what the buffer still holds.
+        // It recycles as it runs, so the earliest thing that can be rewound to
+        // moves forward all the while.
+        if let (Some(buffer), Some(player)) = (&self.timeshift, &self.player) {
+            player.set_discarded(buffer.discarded_fraction());
+        }
+
         // ── Server health ───────────────────────────────────────────────
         //
         // A single cheap request, on a timer, rather than threading failure
@@ -2231,7 +2232,8 @@ impl App {
         // is why the new one is built into a variable first: doing it the
         // other way round would leave two writers on the same channel for as
         // long as the assignment took.
-        let buffer = if quality == QualityChoice::Original {
+        let keep = self.settings.live_buffer_gb as u64 * 1024 * 1024 * 1024;
+        let buffer = if quality == QualityChoice::Original && keep > 0 {
             let http = reqwest::Client::builder()
                 .user_agent(settings::user_agent())
                 .build()
@@ -2241,6 +2243,7 @@ impl App {
                 http,
                 uri.clone(),
                 channel,
+                keep,
             ) {
                 Ok(buffer) => Some(buffer),
                 Err(e) => {

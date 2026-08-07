@@ -317,6 +317,13 @@ struct Shared {
     /// start at zero, and pretending it does makes every position wrong.
     first_pts: AtomicU64,
 
+    /// How much of a live buffer has been released back to the disk, 0 to 1.
+    ///
+    /// Those bytes read as zeros now, so the seekable window has to start
+    /// after them — offering a seek into a hole would answer a scrub with
+    /// silence and a black frame.
+    discarded: AtomicU32,
+
     /// Whether captions have been seen in this stream at all.
     cc_available: AtomicBool,
     /// Whether they are switched on.
@@ -576,6 +583,7 @@ impl Player {
             starved: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
             first_pts: AtomicU64::new(f64::NAN.to_bits()),
+            discarded: AtomicU32::new(0.0f32.to_bits()),
             cc_available: AtomicBool::new(false),
             cc_enabled: AtomicBool::new(false),
             caption: Mutex::new(String::new()),
@@ -714,6 +722,13 @@ impl Player {
         self.shared.error.lock().unwrap().clone()
     }
 
+    /// Tell the player how much of its buffer has been recycled away.
+    pub fn set_discarded(&self, fraction: f64) {
+        self.shared
+            .discarded
+            .store((fraction.clamp(0.0, 1.0) as f32).to_bits(), Ordering::Relaxed);
+    }
+
     /// Whether this stream has been seen to carry closed captions.
     pub fn captions_available(&self) -> bool {
         self.shared.cc_available.load(Ordering::Relaxed)
@@ -815,6 +830,15 @@ impl Player {
         let end = stated_end.max(self.shared.edge());
 
         // A couple of seconds in, there is nothing to scrub through yet.
+        if end - start <= 1.0 {
+            return None;
+        }
+
+        // Move the start past whatever the live buffer has given back to the
+        // disk. Measured in bytes and applied as time, which is close enough
+        // on a broadcast stream whose bitrate barely moves.
+        let discarded = f32::from_bits(self.shared.discarded.load(Ordering::Relaxed)) as f64;
+        let start = start + (end - start) * discarded.clamp(0.0, 1.0);
         if end - start <= 1.0 {
             return None;
         }
