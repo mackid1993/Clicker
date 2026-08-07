@@ -31,15 +31,39 @@ interface. Windows 11 only, deliberately.
   settings — the DVR does the transcoding
 - **Commercial skip** using the DVR's own comskip markers, shown on the scrub
   bar with a skip button
-- **Downloads** for offline viewing, two at a time with the rest queued, and
-  playable with the network unplugged
+- **Downloads** for offline viewing, two at a time with the rest queued, with a
+  screen of their own — cancel, remove, and play with the network unplugged
 - **Closed captions** — CEA-608/708, decoded out of the picture itself
+- **Works offline.** The library is cached to disk, so downloads keep their
+  titles and artwork with no server to ask, and a banner says the DVR has gone
+  and offers what still plays
 - **Home screen** — continue watching, up next, and what was recorded recently
 - **Multiple DVRs**, switchable at any time
 - **Can keep running in the notification area** when the window is closed, so a
   download that is nine tenths transferred survives it — off until asked for
 - **Reconnects by itself** after sleep, a network change or a DVR restart
 - Full screen, an auto-hiding transport, and keyboard control throughout
+
+## What it cannot do
+
+Stated here rather than left to be discovered.
+
+**It will not appear in the DVR's client list by name.** Channels identifies a
+streaming client by its IP address and nothing else. That was checked against a
+real server, which keyed its activity on the address and ignored the User-Agent
+along with every one of `client`, `client_name`, `device`, `device_name`, `name`
+and `player` as query parameters — the activity key was byte-identical in all
+seven cases. Names in the client list presumably come from the Bonjour
+registration that Channels' own applications do, which is a separate,
+undocumented protocol. The device name set in Settings is therefore sent in the
+User-Agent, where it reaches the logs and stops.
+
+**Downloads do not resume.** The whole file is requested each time, so a
+cancelled or interrupted transfer starts again from the beginning. The partial
+file is deleted rather than left occupying disk.
+
+**Only Windows 11.** Mica, the custom caption and the resize handles are all
+Win32.
 
 ## Why it is native
 
