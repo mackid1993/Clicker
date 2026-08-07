@@ -447,6 +447,32 @@ void rd_take_timings(RdMedia *m, int64_t *read_us, int64_t *decode_us, int64_t *
     if (read_max_us) { *read_max_us = m->read_max_us; m->read_max_us = 0; }
 }
 
+/* Strip leading and trailing spaces from every line, in place.
+ *
+ * Those spaces are indentation: a caption row carries them to sit under the
+ * speaker it belongs to. That positioning is against the broadcaster's own
+ * 32-column grid, and it means nothing once the text is a centred block over a
+ * window of arbitrary width — it only pushes lines off-centre by an amount
+ * that looks like a bug. */
+static void trim_lines(char *s)
+{
+    char *w = s;
+    const char *p = s;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;      /* leading */
+
+        char *line_start = w;
+        while (*p && *p != '\n') *w++ = *p++;
+
+        while (w > line_start && (w[-1] == ' ' || w[-1] == '\t')) w--;  /* trailing */
+
+        if (*p == '\n') {
+            *w++ = *p++;
+        }
+    }
+    *w = '\0';
+}
+
 /* Strip an ASS dialogue line down to what it says.
  *
  * Two formats have to be handled, and getting it wrong is not a parse failure
@@ -499,8 +525,24 @@ static void ass_to_text(const char *ass, char *out, int outlen)
             if (!*p) break;
             continue;
         }
-        if (p[0] == '\\' && (p[1] == 'N' || p[1] == 'n')) {
-            out[w++] = '\n';
+        if (p[0] == '\\' && p[1]) {
+            switch (p[1]) {
+            case 'N':
+            case 'n':
+                out[w++] = '\n';
+                break;
+            /* A hard space. Caption rows are positioned against the picture
+             * with runs of them, and anything that does not know that renders
+             * the escape itself — which is where "\h\h\h\hpart, he taught"
+             * came from. */
+            case 'h':
+                out[w++] = ' ';
+                break;
+            /* An escaped literal, "\\" and the like. */
+            default:
+                out[w++] = p[1];
+                break;
+            }
             p++;
             continue;
         }
@@ -508,6 +550,8 @@ static void ass_to_text(const char *ass, char *out, int outlen)
         out[w++] = *p;
     }
     out[w] = '\0';
+
+    trim_lines(out);
 }
 
 /* Open the EIA-608 decoder the first time captions are actually seen. */
