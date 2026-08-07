@@ -448,7 +448,13 @@ fn episode_row(
                 }
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
             }
-            Some(crate::downloads::Status::Failed(_)) | None => {
+            // Paused looks like "not downloaded" here on purpose: the button
+            // starts it, and `start` continues from what is on disk rather
+            // than beginning again. The Downloads screen is where a paused
+            // transfer is managed as one.
+            Some(crate::downloads::Status::Paused(_))
+            | Some(crate::downloads::Status::Failed(_))
+            | None => {
                 let dl = ui.interact(
                     corner,
                     egui::Id::new(("dl", &item.id)),
@@ -615,9 +621,11 @@ pub enum RecordingsAction {
 /// them meant scrolling past fifty scheduled jobs to reach a recording.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum RecordingsTab {
+    /// First, and the default. What has been recorded is what people come here
+    /// to watch; what is scheduled is what they came here to check.
     #[default]
-    Scheduled,
     Recorded,
+    Scheduled,
 }
 
 /// A Fluent tab strip: label, count, and an accent underline on the selected
@@ -627,8 +635,8 @@ fn tab_strip(ui: &mut egui::Ui, current: &mut RecordingsTab, counts: (usize, usi
     ui.horizontal(|ui| {
         ui.add_space(SPACE_L * 2.0);
         for (tab, label, count) in [
-            (RecordingsTab::Scheduled, "Scheduled", counts.0),
             (RecordingsTab::Recorded, "Recorded", counts.1),
+            (RecordingsTab::Scheduled, "Scheduled", counts.0),
         ] {
             let selected = *current == tab;
             let text = format!("{label}  {count}");

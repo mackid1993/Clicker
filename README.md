@@ -32,7 +32,10 @@ interface. Windows 11 only, deliberately.
 - **Commercial skip** using the DVR's own comskip markers, shown on the scrub
   bar with a skip button
 - **Downloads** for offline viewing, two at a time with the rest queued, with a
-  screen of their own — cancel, remove, and play with the network unplugged
+  screen of their own — pause, resume, cancel, remove, and play with the
+  network unplugged. A transfer survives a pause, a failure, a crash or a quit:
+  the partial file is kept and picked up with a `Range` request rather than
+  started again
 - **Closed captions** — CEA-608/708, decoded out of the picture itself
 - **Works offline.** The library is cached to disk, so downloads keep their
   titles and artwork with no server to ask, and a banner says the DVR has gone
@@ -57,10 +60,6 @@ seven cases. Names in the client list presumably come from the Bonjour
 registration that Channels' own applications do, which is a separate,
 undocumented protocol. The device name set in Settings is therefore sent in the
 User-Agent, where it reaches the logs and stops.
-
-**Downloads do not resume.** The whole file is requested each time, so a
-cancelled or interrupted transfer starts again from the beginning. The partial
-file is deleted rather than left occupying disk.
 
 **Only Windows 11.** Mica, the custom caption and the resize handles are all
 Win32.

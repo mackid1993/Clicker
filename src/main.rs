@@ -1603,6 +1603,17 @@ impl App {
                             ),
                         }
                     }
+                    ui_downloads::DownloadAction::Pause(id) => {
+                        self.downloads.pause(&id);
+                    }
+                    ui_downloads::DownloadAction::Resume(id) => {
+                        // The same call that starts one. Whether it begins or
+                        // continues is decided by what is on disk, not here.
+                        let url = self.lib.stream_url(&id);
+                        let repaint = self.repaint.clone();
+                        self.downloads
+                            .start(&id, url, move || repaint.request_repaint());
+                    }
                     ui_downloads::DownloadAction::Remove(id) => {
                         self.downloads.remove(&id);
                         self.announce("Removed the local copy".into());

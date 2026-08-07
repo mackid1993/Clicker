@@ -17,7 +17,11 @@ pub enum DownloadAction {
     None,
     /// Play a finished download, from the local file.
     Play(String),
-    /// Stop a running download, or delete a finished one's local file.
+    /// Stop a transfer, keeping what has arrived so it can be picked up again.
+    Pause(String),
+    /// Start one, or continue one that was stopped.
+    Resume(String),
+    /// Abandon a running download, or delete a finished one's local file.
     Remove(String),
     /// Delete the local files of everything that has finished or failed.
     ClearFinished,
@@ -275,8 +279,20 @@ fn row(
             };
             (text, Fluent::ACCENT)
         }
+        // A negative fraction is one recovered from disk at startup: the bytes
+        // are there but nothing has asked the server how big the whole file is
+        // since the process restarted, so claiming a percentage would be
+        // inventing one.
+        Status::Paused(fraction) => {
+            let text = if *fraction >= 0.0 {
+                format!("Paused at {:.0}%", fraction * 100.0)
+            } else {
+                "Paused — resumes where it stopped".to_string()
+            };
+            (text, Fluent::CAUTION)
+        }
         Status::Done(_) => ("Downloaded".to_string(), Fluent::SUCCESS),
-        Status::Failed(e) => (e.clone(), Fluent::LIVE),
+        Status::Failed(e) => (format!("{e} — resumes where it stopped"), Fluent::LIVE),
     };
     ui.painter().text(
         egui::pos2(text_x, line_y),
@@ -303,8 +319,53 @@ fn row(
         }
     }
 
-    // One button, because from the outside stopping and deleting are the same
-    // wish and which applies depends on timing nobody can see.
+    // Pause or resume, for anything still on its way. Separate from remove,
+    // because these two are opposites and one deletes: stopping for now and
+    // giving up entirely must not be a single ambiguous button.
+    let stoppable = matches!(status, Status::Active(_) | Status::Queued);
+    if stoppable || status.is_resumable() {
+        let toggle = egui::Rect::from_center_size(
+            egui::pos2(rect.max.x - 64.0, rect.center().y),
+            egui::vec2(34.0, 34.0),
+        );
+        let response = ui.interact(toggle, egui::Id::new(("dl-hold", id)), egui::Sense::click());
+        let hover = ui.ctx().animate_bool_with_time(
+            egui::Id::new(("dl-hold-h", id)),
+            response.hovered(),
+            theme::ANIM_FAST,
+        );
+        if hover > 0.0 {
+            ui.painter().rect_filled(
+                toggle,
+                theme::RADIUS_CONTROL,
+                with_alpha(Fluent::CONTROL_HOVER, (hover * 200.0) as u8),
+            );
+        }
+        ui.painter().text(
+            toggle.center(),
+            egui::Align2::CENTER_CENTER,
+            if stoppable { "\u{E769}" } else { "\u{E768}" }, // Pause / Play
+            egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
+            Fluent::TEXT_SECONDARY,
+        );
+        let response = response.on_hover_text(if stoppable {
+            "Pause — what has arrived is kept"
+        } else {
+            "Resume where it stopped"
+        });
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            action = Some(if stoppable {
+                DownloadAction::Pause(id.to_string())
+            } else {
+                DownloadAction::Resume(id.to_string())
+            });
+        }
+    }
+
+    // Remove: abandons a transfer, or deletes a finished file.
     let button = egui::Rect::from_center_size(
         egui::pos2(rect.max.x - 26.0, rect.center().y),
         egui::vec2(34.0, 34.0),

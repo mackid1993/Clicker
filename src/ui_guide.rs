@@ -271,20 +271,11 @@ fn filter_bar(
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "All collections".into());
 
-    // Favorites first, in the order they were starred, then the rest as the
-    // server sent them.
-    let mut ordered: Vec<&crate::guide::Collection> = Vec::new();
-    for slug in &settings.favorite_collections {
-        if let Some(c) = data.collections.iter().find(|c| &c.slug == slug) {
-            ordered.push(c);
-        }
-    }
-    for c in &data.collections {
-        if !settings.is_favorite_collection(&c.slug) {
-            ordered.push(c);
-        }
-    }
-
+    // In the server's own order. There used to be a star on each row that
+    // sorted favorites to the top, and it earned nothing: the guide already
+    // reopens on the collection last picked, so the one that matters is
+    // already selected when the menu is opened, and a second mechanism for
+    // saying which collection matters was two ways to express one preference.
     let collection_id = egui::Id::new("chip-collection");
     let collection_chip = chip(ui, collection_id, &label, state.collection.is_some(), 196.0);
     if collection_chip.clicked() {
@@ -306,45 +297,20 @@ fn filter_bar(
                 changed = true;
             }
             ui.separator();
-            for collection in ordered {
-                ui.horizontal(|ui| {
-                    // The star lives on the row itself. Clicking it toggles the
-                    // favorite without selecting the collection, so curating
-                    // the order does not keep changing what the guide shows.
-                    let favorite = settings.is_favorite_collection(&collection.slug);
-                    let star = ui
-                        .add(
-                            egui::Label::new(
-                                egui::RichText::new(if favorite { "\u{E735}" } else { "\u{E734}" })
-                                    .family(egui::FontFamily::Name(theme::ICON_FONT.into()))
-                                    .size(12.0)
-                                    .color(if favorite {
-                                        Fluent::CAUTION
-                                    } else {
-                                        Fluent::TEXT_TERTIARY
-                                    }),
-                            )
-                            .sense(egui::Sense::click()),
-                        )
-                        .on_hover_text(if favorite { "Unfavorite" } else { "Favorite" });
-                    if star.clicked() {
-                        settings.toggle_favorite_collection(&collection.slug);
-                        changed = true;
-                    }
-
-                    let selected = state.collection.as_deref() == Some(collection.slug.as_str());
-                    if ui
-                        .selectable_label(
-                            selected,
-                            format!("{}  ({})", collection.name, collection.items.len()),
-                        )
-                        .clicked()
-                    {
-                        state.collection = Some(collection.slug.clone());
-                        settings.last_collection = Some(collection.slug.clone());
-                        changed = true;
-                    }
-                });
+            for collection in &data.collections {
+                let selected = state.collection.as_deref() == Some(collection.slug.as_str());
+                if ui
+                    .selectable_label(
+                        selected,
+                        format!("{}  ({})", collection.name, collection.items.len()),
+                    )
+                    .clicked()
+                {
+                    state.collection = Some(collection.slug.clone());
+                    // Saved, which is what makes the guide reopen here.
+                    settings.last_collection = Some(collection.slug.clone());
+                    changed = true;
+                }
             }
         },
     );

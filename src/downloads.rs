@@ -7,19 +7,30 @@
 //!
 //! Downloads live in `%LOCALAPPDATA%\RustDVR\Downloads`, named by recording
 //! id. The id is the join key back to the library's metadata, so nothing else
-//! needs to be stored alongside the file: title, artwork and progress all come
-//! from the server's records when online, and from nothing when offline — an
-//! offline library listing is a problem for another day, stated honestly.
+//! needs to be stored alongside the file.
 //!
 //! Two run at once and the rest wait. Asking a DVR for eight files at once
 //! does not make any of them arrive sooner — it divides the same link eight
 //! ways and makes the one being waited on the slowest of the eight — and the
 //! DVR is also the thing serving live TV to the same household while it does
 //! it.
+//!
+//! ## Resuming
+//!
+//! A transfer can be stopped and picked up again, including across a crash or
+//! a quit. The partial file is kept, and the next attempt asks for the rest of
+//! it with a `Range` header. Channels supports this properly — it answers
+//! `206 Partial Content` with `Accept-Ranges: bytes` and the full length in
+//! `Content-Range`, which was verified against a real server rather than
+//! assumed, because the whole design rests on it.
+//!
+//! A three-gigabyte recording is twenty minutes of transfer on a good link.
+//! Losing all of it to a closed lid, and having no way to do anything about it
+//! but start again, is the difference between a feature and a nuisance.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -27,12 +38,23 @@ use anyhow::{Context, Result};
 /// How many downloads run at once. The rest queue.
 const MAX_ACTIVE: usize = 2;
 
+/// What a running transfer has been asked to do.
+const RUN: u8 = 0;
+const PAUSE: u8 = 1;
+const CANCEL: u8 = 2;
+
 #[derive(Clone)]
 pub enum Status {
     /// Accepted, waiting for a slot.
     Queued,
     /// Fraction complete, 0 to 1, or negative when the size is unknown.
     Active(f32),
+    /// Stopped, with the partial file kept and resumable.
+    ///
+    /// The fraction is negative for one recovered at startup: the bytes on
+    /// disk are known but the total is not, because nothing has asked the
+    /// server how long the whole recording is since the process restarted.
+    Paused(f32),
     Done(PathBuf),
     Failed(String),
 }
@@ -41,6 +63,20 @@ impl Status {
     pub fn is_finished(&self) -> bool {
         matches!(self, Status::Done(_) | Status::Failed(_))
     }
+
+    /// Whether starting it again would continue rather than begin.
+    pub fn is_resumable(&self) -> bool {
+        matches!(self, Status::Paused(_) | Status::Failed(_))
+    }
+}
+
+/// How a transfer ended.
+enum Outcome {
+    Done(PathBuf),
+    /// Stopped on request, partial file kept. Carries the fraction reached.
+    Paused(f32),
+    /// Abandoned on request, partial file deleted.
+    Cancelled,
 }
 
 /// Everything the background tasks share. Held behind one `Arc` so a task can
@@ -49,9 +85,9 @@ impl Status {
 struct Inner {
     dir: PathBuf,
     states: Mutex<HashMap<String, Status>>,
-    /// Raised to make a running download give up. Kept apart from `states` so
-    /// the flag survives the state being replaced.
-    cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Set to make a running transfer pause or give up. Kept apart from
+    /// `states` so the signal survives the state being replaced.
+    signals: Mutex<HashMap<String, Arc<AtomicU8>>>,
     /// Waiting for a slot, oldest first.
     queue: Mutex<VecDeque<(String, String)>>,
     /// Ask the interface to redraw. Stored because the queue is pumped from a
@@ -74,24 +110,21 @@ impl Downloads {
             .join("Downloads");
 
         let mut states = HashMap::new();
-        // Anything already on disk from an earlier session is a finished
-        // download; the directory is the source of truth, not a manifest that
-        // could disagree with it.
+        // The directory is the source of truth, not a manifest that could
+        // disagree with it.
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                // A .part is the remains of a download interrupted by the
-                // process going away. It is not resumable — the server is
-                // asked for the whole file — so leaving it would only occupy
-                // disk that nothing would ever claim.
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+
+                // A .part is a transfer the process did not live to finish.
+                // Kept, not swept: it is most of a file, the server serves
+                // ranges, and throwing it away would mean starting a
+                // three-gigabyte download again because a lid closed.
                 if path.extension().is_some_and(|e| e == "part") {
-                    let _ = std::fs::remove_file(&path);
-                    continue;
-                }
-                if path.extension().is_some_and(|e| e == "mpg") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        states.insert(stem.to_string(), Status::Done(path.clone()));
-                    }
+                    states.insert(stem.to_string(), Status::Paused(-1.0));
+                } else if path.extension().is_some_and(|e| e == "mpg") {
+                    states.insert(stem.to_string(), Status::Done(path.clone()));
                 }
             }
         }
@@ -100,13 +133,13 @@ impl Downloads {
             inner: Arc::new(Inner {
                 dir,
                 states: Mutex::new(states),
-                cancels: Mutex::new(HashMap::new()),
+                signals: Mutex::new(HashMap::new()),
                 queue: Mutex::new(VecDeque::new()),
                 repaint: Mutex::new(None),
                 http: reqwest::Client::builder()
-                .user_agent(crate::settings::user_agent())
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                    .user_agent(crate::settings::user_agent())
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new()),
                 runtime,
             }),
         }
@@ -129,8 +162,8 @@ impl Downloads {
         self.inner.active()
     }
 
-    /// Everything known about, newest activity first: running, then waiting,
-    /// then finished.
+    /// Everything known about: running, then waiting, then paused, then
+    /// finished.
     pub fn entries(&self) -> Vec<(String, Status)> {
         let states = self.inner.states.lock().unwrap();
         let mut all: Vec<(String, Status)> =
@@ -141,8 +174,9 @@ impl Downloads {
             match status {
                 Status::Active(_) => 0,
                 Status::Queued => 1,
-                Status::Failed(_) => 2,
-                Status::Done(_) => 3,
+                Status::Paused(_) => 2,
+                Status::Failed(_) => 3,
+                Status::Done(_) => 4,
             }
         }
         all.sort_by(|a, b| rank(&a.1).cmp(&rank(&b.1)).then_with(|| a.0.cmp(&b.0)));
@@ -153,17 +187,41 @@ impl Downloads {
         self.inner.states.lock().unwrap().is_empty()
     }
 
+    /// Stop a transfer but keep what has arrived.
+    ///
+    /// A queued one is paused outright rather than being left to start and
+    /// stop again the moment a slot frees.
+    pub fn pause(&self, id: &str) {
+        if let Some(signal) = self.inner.signals.lock().unwrap().get(id) {
+            signal.store(PAUSE, Ordering::SeqCst);
+        }
+        let mut queued = false;
+        self.inner.queue.lock().unwrap().retain(|(waiting, _)| {
+            let keep = waiting != id;
+            queued |= !keep;
+            keep
+        });
+        if queued {
+            self.inner
+                .states
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), Status::Paused(-1.0));
+            self.inner.pump();
+        }
+    }
+
     /// Delete a finished download, or abandon one still running.
     ///
     /// One entry point for both because from the outside they are the same
     /// wish — "I do not want this" — and which of the two applies depends on
     /// timing the person clicking cannot see.
     pub fn remove(&self, id: &str) {
-        // Raise the flag first. A running task checks it between chunks, and
+        // Raise the signal first. A running task checks it between chunks, and
         // deleting the state without it would leave the task writing to a file
         // nothing is tracking.
-        if let Some(flag) = self.inner.cancels.lock().unwrap().get(id) {
-            flag.store(true, Ordering::SeqCst);
+        if let Some(signal) = self.inner.signals.lock().unwrap().get(id) {
+            signal.store(CANCEL, Ordering::SeqCst);
         }
         self.inner.queue.lock().unwrap().retain(|(queued, _)| queued != id);
 
@@ -171,7 +229,8 @@ impl Downloads {
         if let Some(Status::Done(path)) = previous {
             let _ = std::fs::remove_file(path);
         }
-        // A partial file belongs to nothing now.
+        // A partial file belongs to nothing now. Removing is the one place
+        // that deletes one; pausing and crashing both keep it.
         let _ = std::fs::remove_file(self.inner.dir.join(format!("{id}.part")));
 
         self.inner.pump();
@@ -193,8 +252,11 @@ impl Downloads {
         }
     }
 
-    /// Start fetching a recording. Does nothing if it is already local or
-    /// already on its way.
+    /// Start fetching a recording, or continue one that was stopped.
+    ///
+    /// The same call for both: whether this begins or resumes is decided by
+    /// what is on disk, not by which button was pressed, so a caller cannot
+    /// get it wrong.
     pub fn start(&self, id: &str, url: String, repaint: impl Fn() + Send + Sync + 'static) {
         {
             let mut states = self.inner.states.lock().unwrap();
@@ -239,13 +301,13 @@ impl Inner {
             }
             let Some((id, url)) = self.queue.lock().unwrap().pop_front() else { break };
 
-            // Cancelled between being queued and being reached.
+            // Cancelled or paused between being queued and being reached.
             if !matches!(self.states.lock().unwrap().get(&id), Some(Status::Queued)) {
                 continue;
             }
 
-            let flag = Arc::new(AtomicBool::new(false));
-            self.cancels.lock().unwrap().insert(id.clone(), Arc::clone(&flag));
+            let signal = Arc::new(AtomicU8::new(RUN));
+            self.signals.lock().unwrap().insert(id.clone(), Arc::clone(&signal));
             self.states
                 .lock()
                 .unwrap()
@@ -253,8 +315,8 @@ impl Inner {
 
             let inner = Arc::clone(self);
             self.runtime.spawn(async move {
-                let result = fetch(&inner, &url, &id, &flag).await;
-                inner.cancels.lock().unwrap().remove(&id);
+                let result = fetch(&inner, &url, &id, &signal).await;
+                inner.signals.lock().unwrap().remove(&id);
 
                 {
                     let mut states = inner.states.lock().unwrap();
@@ -262,11 +324,14 @@ impl Inner {
                     // `remove`, and must not be resurrected as Failed.
                     if states.contains_key(&id) {
                         match result {
-                            Ok(Some(path)) => states.insert(id.clone(), Status::Done(path)),
-                            Ok(None) => states.remove(&id),
-                            Err(e) => {
-                                states.insert(id.clone(), Status::Failed(format!("{e:#}")))
+                            Ok(Outcome::Done(path)) => states.insert(id.clone(), Status::Done(path)),
+                            Ok(Outcome::Paused(done)) => {
+                                states.insert(id.clone(), Status::Paused(done))
                             }
+                            Ok(Outcome::Cancelled) => states.remove(&id),
+                            // Failed, not lost: whatever arrived is still on
+                            // disk and pressing resume picks it up.
+                            Err(e) => states.insert(id.clone(), Status::Failed(format!("{e:#}"))),
                         };
                     }
                 }
@@ -279,13 +344,13 @@ impl Inner {
     }
 }
 
-/// Fetch one recording. `Ok(None)` means it was cancelled.
+/// Fetch one recording, continuing from whatever is already on disk.
 async fn fetch(
     inner: &Arc<Inner>,
     url: &str,
     id: &str,
-    cancelled: &Arc<AtomicBool>,
-) -> Result<Option<PathBuf>> {
+    signal: &Arc<AtomicU8>,
+) -> Result<Outcome> {
     use tokio::io::AsyncWriteExt;
 
     std::fs::create_dir_all(&inner.dir).context("creating the downloads directory")?;
@@ -296,31 +361,65 @@ async fn fetch(
     let partial = inner.dir.join(format!("{id}.part"));
     let done = inner.dir.join(format!("{id}.mpg"));
 
-    let response = inner
-        .http
-        .get(url)
+    let have = std::fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
+
+    let mut request = inner.http.get(url);
+    if have > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
+    }
+    let response = request
         .send()
         .await
         .with_context(|| format!("GET {url}"))?
         .error_for_status()
         .with_context(|| format!("GET {url}"))?;
 
-    let total = response.content_length();
-    let mut file = tokio::fs::File::create(&partial)
+    // Whether the server honoured the range decides both where writing starts
+    // and what the total is. A server that ignores it answers 200 with the
+    // whole file, and appending that to what is already there would produce a
+    // corrupt file the size of one and a half recordings — so the only safe
+    // reading of a 200 is "start again".
+    let resumed = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let (mut received, total) = if resumed {
+        (have, content_range_total(&response).or_else(|| {
+            response.content_length().map(|len| len + have)
+        }))
+    } else {
+        (0, response.content_length())
+    };
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(resumed)
+        .truncate(!resumed)
+        .open(&partial)
         .await
-        .with_context(|| format!("creating {}", partial.display()))?;
+        .with_context(|| format!("opening {}", partial.display()))?;
 
     let mut stream = response;
-    let mut received: u64 = 0;
     let mut last_report = std::time::Instant::now();
+    let fraction = |received: u64| {
+        total
+            .map(|t| (received as f32 / t as f32).clamp(0.0, 1.0))
+            .unwrap_or(-1.0)
+    };
 
     while let Some(chunk) = stream.chunk().await.context("reading the download")? {
-        // Checked per chunk rather than per progress report: a cancel should
+        // Checked per chunk rather than per progress report: stopping should
         // stop the transfer, not finish the current quarter-second of it.
-        if cancelled.load(Ordering::SeqCst) {
-            drop(file);
-            let _ = tokio::fs::remove_file(&partial).await;
-            return Ok(None);
+        match signal.load(Ordering::SeqCst) {
+            PAUSE => {
+                file.flush().await.ok();
+                drop(file);
+                return Ok(Outcome::Paused(fraction(received)));
+            }
+            CANCEL => {
+                drop(file);
+                let _ = tokio::fs::remove_file(&partial).await;
+                return Ok(Outcome::Cancelled);
+            }
+            _ => {}
         }
 
         file.write_all(&chunk).await.context("writing the download")?;
@@ -330,12 +429,9 @@ async fn fetch(
         // interface hundreds of times a second for no visible benefit.
         if last_report.elapsed().as_millis() >= 250 {
             last_report = std::time::Instant::now();
-            let fraction = total
-                .map(|t| (received as f32 / t as f32).clamp(0.0, 1.0))
-                .unwrap_or(-1.0);
             let mut states = inner.states.lock().unwrap();
             if states.contains_key(id) {
-                states.insert(id.to_string(), Status::Active(fraction));
+                states.insert(id.to_string(), Status::Active(fraction(received)));
             }
             drop(states);
             inner.notify();
@@ -345,13 +441,31 @@ async fn fetch(
     file.flush().await.ok();
     drop(file);
 
-    if cancelled.load(Ordering::SeqCst) {
-        let _ = tokio::fs::remove_file(&partial).await;
-        return Ok(None);
+    match signal.load(Ordering::SeqCst) {
+        PAUSE => return Ok(Outcome::Paused(fraction(received))),
+        CANCEL => {
+            let _ = tokio::fs::remove_file(&partial).await;
+            return Ok(Outcome::Cancelled);
+        }
+        _ => {}
     }
 
     tokio::fs::rename(&partial, &done)
         .await
         .context("finishing the download")?;
-    Ok(Some(done))
+    Ok(Outcome::Done(done))
+}
+
+/// The whole file's length, from `Content-Range: bytes 12-99/100`.
+///
+/// `Content-Length` on a partial response is the length of the *part*, so it
+/// cannot be used as the total without adding back what was already held —
+/// and this header states the answer outright.
+fn content_range_total(response: &reqwest::Response) -> Option<u64> {
+    let value = response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)?
+        .to_str()
+        .ok()?;
+    value.rsplit('/').next()?.trim().parse().ok()
 }
