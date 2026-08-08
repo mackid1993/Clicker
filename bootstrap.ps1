@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Get a machine ready to build RustDVR, then build the vendored FFmpeg.
+    Get a machine ready to build Clicker, then build the vendored FFmpeg.
 
 .DESCRIPTION
     Checks every build prerequisite, reports what is missing, and — with
@@ -9,7 +9,7 @@
 
     Run once per machine. Afterwards, .\build.ps1 is all that is needed.
 
-    Nothing here is required to *run* RustDVR; the installer carries its own
+    Nothing here is required to *run* Clicker; the installer carries its own
     FFmpeg. These are build-time tools only.
 
 .PARAMETER Install
@@ -40,7 +40,7 @@ function Miss($text) { Write-Host "  [need] $text" -ForegroundColor Yellow }
 function Bad($text)  { Write-Host "  [fail] $text" -ForegroundColor Red }
 
 Write-Host ''
-Write-Host 'RustDVR build prerequisites' -ForegroundColor Cyan
+Write-Host 'Clicker build prerequisites' -ForegroundColor Cyan
 Write-Host ''
 
 $missing = @()

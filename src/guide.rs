@@ -140,6 +140,15 @@ pub struct GuideData {
     pub schedule: Schedule,
     /// The window the listings cover.
     pub start: i64,
+    /// How far past `start` there is anything to show, in hours.
+    ///
+    /// Measured from the listings that arrived, not from the duration that was
+    /// asked for. Those are not the same number: a request for twelve hours
+    /// comes back with airings running to twenty-one, because the server
+    /// returns whole programs and a good many of them start inside the window
+    /// and end well outside it. Clamping the scroll to the *requested* twelve
+    /// threw away nine hours of listings that were already in memory — which
+    /// is what "the guide will not go any further forward" was.
     pub hours: i64,
 }
 
@@ -323,13 +332,23 @@ impl GuideApi {
         // be drawn from.
         let aligned_start = now - now.rem_euclid(1800);
 
+        // How far the listings actually reach. The requested duration is a
+        // floor on this, never the answer: see the note on `GuideData::hours`.
+        let furthest = rows
+            .iter()
+            .flat_map(|row| row.airings.iter())
+            .map(Airing::end)
+            .max()
+            .unwrap_or(aligned_start);
+        let span = ((furthest - aligned_start) as f64 / 3600.0).ceil() as i64;
+
         Ok(GuideData {
             rows,
             collections,
             sources,
             schedule: build_schedule(jobs.ok(), rules.ok()),
             start: aligned_start,
-            hours,
+            hours: span.max(hours),
         })
     }
 }

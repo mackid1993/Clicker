@@ -61,10 +61,8 @@ impl Timeshift {
         channel: &str,
         keep_bytes: u64,
     ) -> std::io::Result<Self> {
-        let dir = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
+        let dir = crate::paths::data_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("RustDVR")
             .join("Timeshift");
         std::fs::create_dir_all(&dir)?;
 
@@ -272,8 +270,7 @@ fn release(_file: &tokio::fs::File, _from: u64, _len: u64) -> bool {
 /// Called at startup. A crash mid-watch can leave gigabytes in this directory,
 /// and nothing else will ever claim them.
 pub fn sweep() {
-    let Some(base) = std::env::var_os("LOCALAPPDATA") else { return };
-    let dir = PathBuf::from(base).join("RustDVR").join("Timeshift");
+    let Some(dir) = crate::paths::data_dir().map(|d| d.join("Timeshift")) else { return };
     let Ok(entries) = std::fs::read_dir(&dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();

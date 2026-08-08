@@ -91,6 +91,81 @@ pub struct Settings {
     /// still plays, it simply cannot be rewound.
     #[serde(default = "default_live_buffer")]
     pub live_buffer_gb: u32,
+    /// Where the window was when it was last closed.
+    ///
+    /// None until it has been opened once, which is what makes the first launch
+    /// use the default size rather than something remembered from nowhere.
+    #[serde(default)]
+    pub window: Option<Window>,
+}
+
+/// A remembered window.
+///
+/// The rectangle is always the *restored* one — where the window sits when it
+/// is not maximized. Storing the maximized rectangle instead would work until
+/// someone un-maximized, at which point the window would restore to exactly
+/// the size it already was and the button would appear to do nothing.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Window {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+impl Window {
+    /// Whether this is worth restoring.
+    ///
+    /// A saved position is only good while the monitor it was on still exists.
+    /// Unplug the second screen and the remembered rectangle is somewhere the
+    /// desktop no longer covers — Windows will place a window there quite
+    /// happily, and the application starts up invisible with a taskbar button
+    /// and no way to find it. So the rectangle has to overlap the desktop as it
+    /// is *now*, by enough to grab.
+    pub fn is_reachable(&self) -> bool {
+        if !(self.width.is_finite() && self.height.is_finite()) || self.width < 200.0 || self.height < 150.0 {
+            return false;
+        }
+        if !(self.x.is_finite() && self.y.is_finite()) {
+            return false;
+        }
+        let Some((left, top, right, bottom)) = desktop_bounds() else {
+            // No idea what the desktop looks like; assume it is fine rather
+            // than throwing away a good position.
+            return true;
+        };
+        // A title bar's worth of overlap in both directions. Enough to drag the
+        // window back into view, which is all "reachable" has to mean.
+        const GRAB: f32 = 48.0;
+        self.x + self.width - GRAB > left
+            && self.x + GRAB < right
+            && self.y + self.height - GRAB > top
+            && self.y + GRAB < bottom
+    }
+}
+
+/// The bounding box of every monitor together, in logical pixels.
+#[cfg(windows)]
+fn desktop_bounds() -> Option<(f32, f32, f32, f32)> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
+    };
+    unsafe {
+        let (x, y) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
+        let (w, h) = (GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        Some((x as f32, y as f32, (x + w) as f32, (y + h) as f32))
+    }
+}
+
+#[cfg(not(windows))]
+fn desktop_bounds() -> Option<(f32, f32, f32, f32)> {
+    None
 }
 
 fn default_live_buffer() -> u32 {
@@ -132,6 +207,7 @@ impl Default for Settings {
             dismissed_version_warning: true,
             minimize_to_tray: false,
             live_buffer_gb: default_live_buffer(),
+            window: None,
         }
     }
 }
@@ -225,8 +301,7 @@ impl Settings {
 }
 
 fn config_path() -> Option<PathBuf> {
-    let base = std::env::var_os("APPDATA").map(PathBuf::from)?;
-    Some(base.join("RustDVR").join("settings.json"))
+    Some(crate::paths::config_dir()?.join("settings.json"))
 }
 
 /// This machine's name, as the default client name.
@@ -237,7 +312,7 @@ pub fn hostname() -> String {
     std::env::var("COMPUTERNAME")
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "RustDVR".to_string())
+        .unwrap_or_else(|| crate::APP_NAME.to_string())
 }
 
 /// What a server said when asked to identify itself.
@@ -309,7 +384,7 @@ pub fn normalize(input: &str) -> String {
 /// setting and settings change while the program is running.
 static USER_AGENT: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
-/// `RustDVR/0.0.1 (Living Room PC)`.
+/// `Clicker/0.0.2 (Living Room PC)`.
 ///
 /// The device name is here and nowhere else because this is the only place the
 /// server will take one. Channels identifies a streaming client by its IP
@@ -323,7 +398,7 @@ pub fn user_agent() -> String {
         .read()
         .ok()
         .and_then(|held| held.clone())
-        .unwrap_or_else(|| format!("RustDVR/{}", env!("CARGO_PKG_VERSION")))
+        .unwrap_or_else(|| format!("{}/{}", crate::APP_NAME, env!("CARGO_PKG_VERSION")))
 }
 
 /// Rebuild it from the settings. Called at startup and whenever they are saved.
@@ -337,10 +412,11 @@ pub fn set_user_agent(client_name: &str) {
         .filter(|c| !c.is_control() && *c != '(' && *c != ')')
         .collect();
 
+    let app = crate::APP_NAME;
     let agent = if name.is_empty() {
-        format!("RustDVR/{version}")
+        format!("{app}/{version}")
     } else {
-        format!("RustDVR/{version} ({name})")
+        format!("{app}/{version} ({name})")
     };
     if let Ok(mut held) = USER_AGENT.write() {
         *held = Some(agent);

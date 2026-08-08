@@ -319,8 +319,11 @@ pub fn settings_screen(
             section(
                 ui,
                 "This device",
-                "Identifies RustDVR in the DVR's logs. Channels lists connected \
-                 clients by IP address, so this will not change what appears there.",
+                &format!(
+                    "Identifies {} in the DVR's logs. Channels lists connected \
+                     clients by IP address, so this will not change what appears there.",
+                    crate::APP_NAME
+                ),
             );
             control_row(ui, |ui| {
                 let name = field(ui, &mut settings.client_name, FIELD_W);
@@ -535,6 +538,26 @@ pub fn settings_screen(
                     .size(12.0)
                     .color(Fluent::TEXT_TERTIARY),
             );
+
+            // Who this is not.
+            //
+            // In the application and not only in the README, because the
+            // person who needs to read it is the one about to ask Channels'
+            // support why their DVR client is misbehaving — and they are
+            // looking at this window, not at a repository.
+            ui.add_space(SPACE_S);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} is not affiliated with Fancy Bits, LLC and is an unofficial \
+                     client to Channels DVR Server. It is not endorsed or supported \
+                     by them, so please do not ask them about it — anything wrong \
+                     with this program is wrong with this program.",
+                    crate::APP_NAME
+                ))
+                .size(11.0)
+                .color(Fluent::TEXT_TERTIARY),
+            );
+
             ui.add_space(SPACE_S / 2.0);
             ui.label(
                 egui::RichText::new(

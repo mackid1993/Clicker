@@ -1,7 +1,7 @@
 //! Screens, and the chrome around them.
 //!
-//! Everything here draws with the Fluent tokens in `theme`, over the Mica
-//! backdrop the window provides. The rule the whole interface follows: the
+//! Everything here draws with the Fluent tokens in `theme`, over the backdrop
+//! the window paints for itself. The rule the whole interface follows: the
 //! picture is the subject, and anything that is not the picture gets out of
 //! the way.
 
@@ -195,13 +195,23 @@ pub enum Action {
     Delete(Recording),
 }
 
+/// How many of the unfinished recordings the hero is drawn from.
+///
+/// Not the whole list. Something abandoned four months ago is not what anyone
+/// opened the application to carry on with, and putting it under the largest
+/// image on the screen makes the home screen look stale rather than varied.
+const HERO_POOL: usize = 5;
+
 /// The home screen.
+///
+/// `launch` varies the hero. See where it is used.
 pub fn home(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     data: &Home,
     images: &mut Images,
     loading: bool,
+    launch: u64,
 ) -> Action {
     let mut action = Action::None;
 
@@ -221,29 +231,53 @@ pub fn home(
         .show(&mut content, |ui| {
             ui.add_space(SPACE_L);
 
-            // The hero: whatever was most recently left unfinished. A DVR is
-            // almost always opened to carry on with something, so that is the
-            // thing to put a single large button on rather than making someone
-            // hunt for it.
-            if let Some(top) = data.continue_watching.first() {
-                if let Some(a) = hero(ui, top, images) {
+            // The hero: something left unfinished, because a DVR is almost
+            // always opened to carry on with something, and that is worth a
+            // single large button rather than a hunt.
+            //
+            // Which one rotates per launch. It used to be `first()`, which is
+            // stable, defensible, and meant the home screen showed the same
+            // picture every single time the program started — for as long as
+            // one series went unfinished, which for a DVR is months. The pool
+            // is still the few most recent, so this varies the face of the
+            // screen without offering up something forgotten.
+            //
+            // Nothing that has arrived since launch changes the choice: the
+            // index comes from the launch stamp alone, so the hero does not
+            // swap out underneath a click when the library finishes loading.
+            let pool = data.continue_watching.len().min(HERO_POOL);
+            let hero_index = (pool > 0).then(|| (launch % pool as u64) as usize);
+
+            if let Some(index) = hero_index {
+                if let Some(a) = hero(ui, &data.continue_watching[index], images) {
                     action = a;
                 }
                 ui.add_space(SPACE_L * 1.5);
             }
 
-            if data.continue_watching.len() > 1 {
-                if let Some(a) = row(ui, "Continue watching", &data.continue_watching[1..], images) {
+            // Everything unfinished except whichever one is already the hero.
+            let rest: Vec<&Recording> = data
+                .continue_watching
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| Some(*i) != hero_index)
+                .map(|(_, item)| item)
+                .collect();
+            if !rest.is_empty() {
+                if let Some(a) = row(ui, "Continue watching", &rest, images) {
                     action = a;
                 }
             }
             if !data.up_next.is_empty() {
-                if let Some(a) = row(ui, "Up next", &data.up_next, images) {
+                if let Some(a) = row(ui, "Up next", &data.up_next.iter().collect::<Vec<_>>(), images)
+                {
                     action = a;
                 }
             }
             if !data.recent.is_empty() {
-                if let Some(a) = row(ui, "Recently recorded", &data.recent, images) {
+                if let Some(a) =
+                    row(ui, "Recently recorded", &data.recent.iter().collect::<Vec<_>>(), images)
+                {
                     action = a;
                 }
             }
@@ -415,7 +449,7 @@ const CARD_W: f32 = 232.0;
 const CARD_H: f32 = 130.0;
 
 /// A titled, horizontally scrolling row of cards.
-fn row(ui: &mut egui::Ui, title: &str, items: &[Recording], images: &mut Images) -> Option<Action> {
+fn row(ui: &mut egui::Ui, title: &str, items: &[&Recording], images: &mut Images) -> Option<Action> {
     let mut action = None;
 
     ui.horizontal(|ui| {

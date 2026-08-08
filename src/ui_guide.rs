@@ -507,20 +507,12 @@ fn draw_row(
         // what is airing now. Stroking every cell turns the grid into graph
         // paper.
         if hover > 0.01 {
-            // How bright that hairline is depends on the edition. `with_alpha`
-            // multiplies in linear space, which turns white at alpha 26 into
-            // bytes near (90, 90, 90, 26) — several times the control hairline
-            // the theme uses everywhere else. Over Mica, with the wallpaper
-            // moving through the surface, that reads as a lit edge. Over the
-            // win10 build's opaque base there is nothing to soften it and the
-            // same stroke reads as a hard white outline, so that edition eases
-            // in STROKE_CONTROL itself and tops out exactly where every other
-            // control's outline does.
-            let stroke = if cfg!(feature = "win10") {
-                theme::mix(egui::Color32::TRANSPARENT, Fluent::STROKE_CONTROL, hover)
-            } else {
-                with_alpha(egui::Color32::WHITE, (26.0 * hover) as u8)
-            };
+            // The theme's own control hairline, eased in, rather than white at
+            // an alpha chosen to match it. `with_alpha` multiplies in linear
+            // space, which turns white at alpha 26 into bytes near
+            // (90, 90, 90, 26) — several times the hairline every other
+            // control wears, and a visible white outline against the backdrop.
+            let stroke = theme::mix(egui::Color32::TRANSPARENT, Fluent::STROKE_CONTROL, hover);
             painter.rect_stroke(cell, 6.0, egui::Stroke::new(1.0, stroke));
         } else if live {
             painter.rect_stroke(
@@ -713,7 +705,7 @@ fn draw_channel_cell(
             let target = egui::Rect::from_center_size(logo_box.center(), size * scale);
             // A dark mark on this column is a logo-shaped hole, so give those
             // — and only those — something light to sit on. Slightly off
-            // white: pure white next to the Mica surface reads as a cut-out.
+            // white: pure white next to the material reads as a cut-out.
             if dark_ink {
                 painter.rect_filled(
                     target.expand(3.0),

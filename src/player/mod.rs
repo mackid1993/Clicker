@@ -516,7 +516,7 @@ impl Player {
         // Falls back to a bare product string if the device name has a NUL in
         // it, which is not a reason to refuse to play anything.
         let agent = CString::new(crate::settings::user_agent())
-            .unwrap_or_else(|_| CString::new("RustDVR").unwrap());
+            .unwrap_or_else(|_| CString::new(crate::APP_NAME).unwrap());
         let mut err = vec![0i8; 512];
         // Created before the open, because opening a live playlist is itself a
         // blocking network operation and dropping a player that is still
@@ -631,13 +631,13 @@ impl Player {
         threads.push({
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
-                .name("rustdvr-decode".into())
+                .name("clicker-decode".into())
                 .spawn(move || decode_loop(media, shared, rx, preroll, transport))?
         });
         threads.push({
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
-                .name("rustdvr-present".into())
+                .name("clicker-present".into())
                 .spawn(move || present_loop(shared, repaint))?
         });
 
@@ -675,7 +675,7 @@ impl Player {
         // stream only exists in real time, only arrives at 1x, and the failure
         // being chased takes tens of seconds to develop. This runs the pipeline
         // headless against a real URL and prints what it measured. It does
-        // nothing at all unless RUSTDVR_SELFTEST is set, and it is called from
+        // nothing at all unless CLICKER_SELFTEST is set, and it is called from
         // here because this is the one player entry point the application
         // already touches before it builds any interface.
         self_test();
@@ -923,19 +923,19 @@ impl Drop for Player {
 ///
 /// Driven entirely by the environment so it can never affect a normal run:
 ///
-/// * `RUSTDVR_SELFTEST`      — the URL to open. Nothing happens without it.
-/// * `RUSTDVR_SELFTEST_SECS` — how long to watch for. Default 60.
-/// * `RUSTDVR_SEEK_TEST`     — seconds in at which to press skip-back.
+/// * `CLICKER_SELFTEST`      — the URL to open. Nothing happens without it.
+/// * `CLICKER_SELFTEST_SECS` — how long to watch for. Default 60.
+/// * `CLICKER_SEEK_TEST`     — seconds in at which to press skip-back.
 ///
 /// Exits the process when it finishes, because there is no interface behind it
 /// and leaving a window open would only confuse whoever is reading the numbers.
 fn self_test() {
-    let Ok(url) = std::env::var("RUSTDVR_SELFTEST") else { return };
-    let secs: f64 = std::env::var("RUSTDVR_SELFTEST_SECS")
+    let Ok(url) = std::env::var("CLICKER_SELFTEST") else { return };
+    let secs: f64 = std::env::var("CLICKER_SELFTEST_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(60.0);
-    let seek_at: Option<f64> = std::env::var("RUSTDVR_SEEK_TEST")
+    let seek_at: Option<f64> = std::env::var("CLICKER_SEEK_TEST")
         .ok()
         .and_then(|v| v.parse().ok());
 

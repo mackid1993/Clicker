@@ -1,4 +1,4 @@
-//! RustDVR — a native Channels DVR client.
+//! Clicker — a native Channels DVR client.
 //!
 //! Video is decoded by FFmpeg and drawn as a texture, so the picture and the
 //! interface share one render pass. That is what makes a media app pleasant to
@@ -8,11 +8,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod backdrop;
 mod downloads;
 mod fluent;
 mod guide;
 mod images;
 mod library;
+mod paths;
 mod player;
 mod settings;
 mod theme;
@@ -32,26 +34,34 @@ use eframe::egui;
 use theme::{Fluent, RADIUS_SURFACE, SPACE_L, SPACE_M, SPACE_S, SPACE_XS, TITLEBAR_HEIGHT};
 use ui::Screen;
 
-/// What this binary calls itself on screen: the title bar, the tray, the
-/// welcome card. The Windows 10 build is the same application compiled with
-/// the `win10` feature, and it ships as RustVCR — the recording technology of
-/// an earlier generation, for the operating system of one.
-///
-/// Only the visible name changes. Settings, data directories and the
-/// User-Agent stay "RustDVR" in both builds: it is the same program, and a
-/// machine upgraded from one edition to the other keeps its state.
-pub const APP_NAME: &str = if cfg!(feature = "win10") { "RustVCR" } else { "RustDVR" };
+/// What the program calls itself on screen: the title bar, the tray, the
+/// welcome card, the About line. One place, so it cannot be half-renamed.
+pub const APP_NAME: &str = "Clicker";
 
 /// Width of the navigation rail, collapsed and expanded. Both are Fluent's own
 /// values, so it lines up with every other Windows application that uses one.
 const RAIL_COLLAPSED: f32 = 48.0;
 const RAIL_EXPANDED: f32 = 200.0;
 
-/// How many hours of listings to load. Half a day: enough to plan tonight and
-/// tomorrow morning, without pulling a week of data for every channel on the
-/// server. Measured against a real server, twelve hours across 446 channels is
-/// still a single sub-second request.
-const GUIDE_HOURS: i64 = 12;
+/// How many hours of listings to ask for.
+///
+/// A full day, so tomorrow evening is reachable rather than just tonight. This
+/// is the *requested* duration; what arrives reaches further, because the
+/// server returns whole programs and the last of them run past the end of the
+/// window. Measured against a real server with 446 channels:
+///
+/// | asked | airings | listings reach | request |
+/// |-------|---------|----------------|---------|
+/// | 12h   |   6,454 |          +21h  |   1.5s  |
+/// | 24h   |  13,042 |          +32h  |   3.3s  |
+/// | 48h   |  25,750 |          +55h  |   6.7s  |
+///
+/// Twenty-four is the knee: it doubles the reach of twelve for two seconds
+/// that nobody waits through, because the guide loads in the background while
+/// the home screen is already up. Forty-eight costs another three and a half
+/// seconds and four times the memory of twelve to reach a day nobody is
+/// planning yet.
+const GUIDE_HOURS: i64 = 24;
 
 /// Where to fetch a live channel.
 ///
@@ -211,27 +221,41 @@ fn main() -> eframe::Result<()> {
     timeshift::sweep();
     // Before anything can make a request, so every one of them carries the
     // device name from the first.
-    settings::set_user_agent(&settings::Settings::load().client_name);
+    let saved = settings::Settings::load();
+    settings::set_user_agent(&saved.client_name);
     prefer_integrated_gpu();
 
     // The build's own licence, from the binary rather than from a claim in a
     // text file. This application may only be distributed if FFmpeg was built
     // without GPL components, so it is worth being able to check.
-    eprintln!("[rustdvr] {}", player::Player::backend());
+    eprintln!("[clicker] {}", player::Player::backend());
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 760.0])
         .with_min_inner_size([420.0, 280.0])
         .with_title(APP_NAME)
-        // Mica is drawn by the desktop compositor behind the window, so the
-        // window has to be transparent for it to show, and the system caption
-        // has to go so the app can draw its own. The win10 build has no Mica
-        // to reveal — transparency there would show the desktop through the
-        // app — so it stays opaque and paints its own base.
-        .with_transparent(cfg!(not(feature = "win10")))
+        // Opaque, and the system caption goes so the app can draw its own.
+        //
+        // The window used to be transparent, because Mica is drawn by the
+        // desktop compositor *behind* the window and only shows through one
+        // that lets it. That is what made this Windows 11 only. The material
+        // is painted here now (see `backdrop`), which needs a surface to paint
+        // on rather than a hole to look through.
+        .with_transparent(false)
         .with_decorations(false);
     if let Some(icon) = app_icon() {
         viewport = viewport.with_icon(icon);
+    }
+
+    // Reopen where it was left, at the size it was left, maximized if it was
+    // maximized. The position is only honored while it still lands on a
+    // desktop that exists — see `Window::is_reachable`.
+    if let Some(window) = saved.window.filter(settings::Window::is_reachable) {
+        viewport = viewport.with_inner_size([window.width, window.height]);
+        viewport = viewport.with_position([window.x, window.y]);
+        if window.maximized {
+            viewport = viewport.with_maximized(true);
+        }
     }
 
     let options = eframe::NativeOptions {
@@ -277,7 +301,7 @@ fn install_panic_log() {
         let thread = thread.name().unwrap_or("unnamed").to_string();
         let line = format!("panic on the {thread} thread at {where_}: {what}\n");
 
-        eprint!("[rustdvr] {line}");
+        eprint!("[clicker] {line}");
         if let Some(path) = crash_log_path() {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -296,8 +320,7 @@ fn install_panic_log() {
 }
 
 fn crash_log_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(std::path::PathBuf::from(base).join("RustDVR").join("crash.log"))
+    Some(paths::data_dir()?.join("crash.log"))
 }
 
 /// The icon the running window carries.
@@ -312,7 +335,7 @@ fn crash_log_path() -> Option<std::path::PathBuf> {
 /// The PNG rather than the .ico because the .ico is a container of several
 /// sizes and `image` would only hand back one of them anyway.
 fn app_icon() -> Option<egui::IconData> {
-    const PNG: &[u8] = include_bytes!("../assets/rustdvr.png");
+    const PNG: &[u8] = include_bytes!("../assets/clicker.png");
     let image = image::load_from_memory(PNG).ok()?.into_rgba8();
     let (width, height) = image.dimensions();
     Some(egui::IconData {
@@ -511,6 +534,18 @@ struct App {
     /// Kept so a player opened later can still ask for repaints. The context is
     /// cheap to clone and is the only handle the decoder threads need.
     repaint: egui::Context,
+    /// The Mica-alike the window is painted on.
+    backdrop: backdrop::Backdrop,
+    /// This run, as a number. Fixed for the life of the process and used where
+    /// something should differ between launches but hold still within one —
+    /// the home screen's hero, so far.
+    launch: u64,
+    /// The window's geometry as last written to settings, and when it last
+    /// moved. Dragging a window produces a position every frame, and writing
+    /// the settings file at sixty hertz for the length of a drag is not
+    /// something to do to someone's disk — so it is written once the window
+    /// has been still for a moment. See `remember_window`.
+    window_settled: Option<Instant>,
 
     error: Option<String>,
 }
@@ -518,7 +553,7 @@ struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         if let Some(handle) = window_handle(cc) {
-            fluent::apply_mica(handle, true);
+            fluent::apply_chrome(handle, true);
         }
 
         // Four workers rather than two: artwork downloads and decodes run here
@@ -578,6 +613,13 @@ impl App {
             rail_expanded: false,
             fullscreen: false,
             watching: false,
+            backdrop: backdrop::Backdrop::new(&cc.egui_ctx),
+            // Seconds since the epoch. Coarse on purpose: two launches a
+            // second apart are not something anyone is trying to tell apart,
+            // and this only has to differ between one opening of the program
+            // and the next.
+            launch: now_unix() as u64,
+            window_settled: None,
             images: images::Images::new(runtime_handle.clone()),
             downloads: downloads::Downloads::new(runtime_handle),
             lib,
@@ -988,15 +1030,11 @@ impl App {
 }
 
 impl eframe::App for App {
-    /// Transparent, so Mica is what fills the window. The win10 build has no
-    /// Mica and clears to the Fluent solid instead, the same surface the theme
-    /// uses as its base there.
+    /// The base the backdrop is painted over. Only ever visible for the first
+    /// frame, before there is a texture to draw, so it is the same solid the
+    /// material is mixed down to.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        if cfg!(feature = "win10") {
-            Fluent::SOLID.to_normalized_gamma_f32()
-        } else {
-            [0.0, 0.0, 0.0, 0.0]
-        }
+        Fluent::SOLID.to_normalized_gamma_f32()
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -1011,6 +1049,12 @@ impl eframe::App for App {
         self.images.pump(ctx);
         self.handle_keys(ctx);
         self.housekeeping();
+        self.remember_window(ctx);
+
+        // The material, before anything else is drawn over it. Every surface
+        // in the theme is translucent by design and needs something behind it;
+        // this is that something, and it used to come from the compositor.
+        self.backdrop.paint(ctx, ctx.screen_rect());
 
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(Fluent::LAYER_BASE))
@@ -1607,6 +1651,7 @@ impl App {
                     &self.home,
                     &mut self.images,
                     self.home_loading,
+                    self.launch,
                 );
                 self.handle_item(action);
             }
@@ -2015,6 +2060,85 @@ impl App {
     /// Everything that has to happen on a clock rather than on a click:
     /// telling the server where playback is, keeping the guide from going
     /// stale, and noticing that the stream has died.
+    /// Keep the settings file's idea of the window in step with the real one.
+    ///
+    /// Sampled every frame, written rarely. A drag reports a new position on
+    /// every one of them, and a settings file rewritten sixty times a second
+    /// for the length of a drag is a lot of disk for a rectangle — so a change
+    /// starts a short timer and the write happens once the window has been
+    /// still for it. Closing the window is not a special case: the last move
+    /// before it settles for good is the one that gets written.
+    ///
+    /// Maximizing is deliberately not a move. The rectangle stored is always
+    /// the restored one, so un-maximizing after a restart gives back the window
+    /// someone actually sized, not the full screen they last saw.
+    fn remember_window(&mut self, ctx: &egui::Context) {
+        const SETTLE: Duration = Duration::from_millis(700);
+
+        let (rect, maximized) = ctx.input(|i| {
+            let info = i.viewport();
+            (info.outer_rect, info.maximized.unwrap_or(false))
+        });
+
+        let mut wanted = self.settings.window;
+        if maximized {
+            // Only the flag. Where a maximized window "is" is a property of the
+            // monitor, not of anything worth remembering.
+            match wanted.as_mut() {
+                Some(window) => window.maximized = true,
+                // Maximized before it was ever restored: nothing to keep but
+                // the flag, and the default size to come back to.
+                None => {
+                    wanted = Some(settings::Window {
+                        x: f32::NAN,
+                        y: f32::NAN,
+                        width: 1280.0,
+                        height: 760.0,
+                        maximized: true,
+                    })
+                }
+            }
+        } else if let Some(rect) = rect {
+            wanted = Some(settings::Window {
+                x: rect.min.x,
+                y: rect.min.y,
+                width: rect.width(),
+                height: rect.height(),
+                maximized: false,
+            });
+        }
+
+        let changed = match (wanted, self.settings.window) {
+            (Some(new), Some(old)) => {
+                // A pixel of jitter is not a move. Without this, a window that
+                // reports 900.0001 forever rewrites the file forever.
+                new.maximized != old.maximized
+                    || (new.x - old.x).abs() > 1.0
+                    || (new.y - old.y).abs() > 1.0
+                    || (new.width - old.width).abs() > 1.0
+                    || (new.height - old.height).abs() > 1.0
+            }
+            (Some(_), None) => true,
+            _ => false,
+        };
+
+        if changed {
+            self.settings.window = wanted;
+            self.window_settled = Some(Instant::now());
+            // Nothing else asks for a repaint while the window sits still, so
+            // without this the write would wait for whatever redraws next.
+            ctx.request_repaint_after(SETTLE);
+        } else if self
+            .window_settled
+            .is_some_and(|since| since.elapsed() >= SETTLE)
+        {
+            self.window_settled = None;
+            if let Err(e) = self.settings.save() {
+                eprintln!("[clicker] could not save the window position: {e:#}");
+            }
+        }
+    }
+
     fn housekeeping(&mut self) {
         // ── Position, every 20 seconds ──────────────────────────────────
         //
@@ -3264,8 +3388,8 @@ fn resize_borders(ui: &mut egui::Ui, ctx: &egui::Context, full: egui::Rect, full
 }
 
 /// The custom caption. Undecorated windows have to provide their own, which is
-/// what lets the Mica material run edge to edge instead of stopping below a
-/// system title bar.
+/// what lets the material run edge to edge instead of stopping below a system
+/// title bar.
 fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: bool) {
     let painter = ui.painter();
     painter.text(
@@ -3600,11 +3724,11 @@ fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
-/// The app's own window handle, needed to ask DWM for Mica.
+/// The app's own window handle, for the DWM attributes and for the tray.
 ///
 /// Taken from the window itself rather than GetForegroundWindow: the app is not
 /// necessarily foreground when it first paints, and asking the OS for whatever
-/// happens to be in front applied Mica to a terminal instead.
+/// happens to be in front once applied dark chrome to a terminal instead.
 fn window_handle(cc: &eframe::CreationContext<'_>) -> Option<isize> {
     #[cfg(windows)]
     {

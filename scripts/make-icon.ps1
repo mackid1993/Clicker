@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Draw the RustDVR icon and pack it into assets\rustdvr.ico.
+    Draw the Clicker icon and pack it into assets\clicker.ico.
 
 .DESCRIPTION
     A TV remote, seen straight on: a rounded body, an accent-colored power
@@ -20,7 +20,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Out = (Join-Path (Split-Path -Parent $PSScriptRoot) 'assets\rustdvr.ico')
+    [string]$Out = (Join-Path (Split-Path -Parent $PSScriptRoot) 'assets\clicker.ico')
 )
 
 $ErrorActionPreference = 'Stop'

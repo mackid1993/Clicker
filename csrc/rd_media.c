@@ -1,5 +1,5 @@
 /*
- * rd_media — a flat C surface over FFmpeg for RustDVR.
+ * rd_media — a flat C surface over FFmpeg for Clicker.
  *
  * This exists so that Rust never has to know the layout of an AVFrame. Binding
  * FFmpeg's structs directly means either bindgen (which drags in libclang) or
@@ -230,7 +230,7 @@ RdMedia *rd_open(const char *url, int out_rate, int out_channels,
      * activity on the address regardless. The name cannot reach the DVR's
      * client list from here, but it does reach its logs. */
     av_dict_set(&opts, "user_agent",
-                (user_agent && *user_agent) ? user_agent : "RustDVR", 0);
+                (user_agent && *user_agent) ? user_agent : "Clicker", 0);
 
     /*
      * Start at the head of the playlist, not three segments from its end.

@@ -4,9 +4,9 @@
 //! ramp, the accent, the layer fills, the corner radii and the type ramp are
 //! Fluent's, so the app sits naturally beside Settings and File Explorer.
 //!
-//! Layer fills are deliberately semi-transparent. Mica is a system material
-//! drawn behind the window, and surfaces have to let it through or the effect
-//! is lost and everything looks flat.
+//! Layer fills are deliberately semi-transparent. The window paints its own
+//! Mica-like material (see `backdrop`), and surfaces have to let it through or
+//! the effect is lost and everything looks flat.
 
 use egui::{Color32, Margin, Rounding, Shadow, Stroke, Visuals};
 
@@ -35,15 +35,10 @@ pub struct Fluent;
 impl Fluent {
     // ── Layers ──────────────────────────────────────────────────────────
     // Fluent builds depth from translucent layers over the backdrop rather
-    // than opaque panels. Alpha is what lets Mica read through.
-    /// The window base. Fully transparent so Mica shows. The win10 build has
-    /// no Mica behind the window — transparency there is a hole to the
-    /// desktop — so its base is the solid, which is also what Windows 11
-    /// itself falls back to when the material is unavailable.
-    #[cfg(not(feature = "win10"))]
+    // than opaque panels. Alpha is what lets the material read through.
+    /// The window base. Fully transparent, so the painted backdrop shows: the
+    /// panel is a pane of glass over the material, not a surface of its own.
     pub const LAYER_BASE: Color32 = Color32::TRANSPARENT;
-    #[cfg(feature = "win10")]
-    pub const LAYER_BASE: Color32 = Self::SOLID;
     /// LayerFillColorDefault: cards and flyouts.
     pub const LAYER_CARD: Color32 = rgba(28, 30, 36, 210);
     /// ControlFillColorDefault.
@@ -116,7 +111,7 @@ pub fn apply(ctx: &egui::Context) {
 
     let mut visuals = Visuals::dark();
 
-    // Transparent, so what shows through is the Mica backdrop.
+    // Transparent, so what shows through is the painted backdrop.
     visuals.panel_fill = Fluent::LAYER_BASE;
     visuals.window_fill = Fluent::LAYER_CARD;
     visuals.extreme_bg_color = Fluent::SOLID;
@@ -196,7 +191,8 @@ pub fn apply(ctx: &egui::Context) {
 }
 
 /// Segoe UI Variable is the Windows 11 face; plain Segoe UI keeps it native on
-/// Windows 10.
+/// Windows 10. Both are tried, in that order, so one build looks right on
+/// either — which is the whole approach this program takes to the two.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 

@@ -17,7 +17,7 @@ mod player;
 /// from the real client.
 mod settings {
     pub fn user_agent() -> String {
-        "RustDVR-quality-switch-harness".to_string()
+        "Clicker-quality-switch-harness".to_string()
     }
 }
 

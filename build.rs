@@ -62,29 +62,18 @@ fn main() {
 fn embed_icon(root: &std::path::Path) {
     #[cfg(windows)]
     {
-        let icon = root.join("assets").join("rustdvr.ico");
+        let icon = root.join("assets").join("clicker.ico");
         println!("cargo:rerun-if-changed={}", icon.display());
         if !icon.exists() {
-            println!("cargo:warning=assets/rustdvr.ico not found; run scripts\\make-icon.ps1");
+            println!("cargo:warning=assets/clicker.ico not found; run scripts\\make-icon.ps1");
             return;
         }
 
-        // Which edition this compile is. Cargo tells the build script about
-        // enabled features through the environment, and `--features win10` is
-        // how the rustvcr binary — and only that binary — is built. The name
-        // in the version resource is what Task Manager and the file's
-        // Properties dialog show, so it has to match the product installed.
-        let product = if std::env::var_os("CARGO_FEATURE_WIN10").is_some() {
-            "RustVCR"
-        } else {
-            "RustDVR"
-        };
-
         let mut res = winresource::WindowsResource::new();
         res.set_icon(&icon.to_string_lossy())
-            .set("ProductName", product)
-            .set("FileDescription", product)
-            .set("CompanyName", "RustDVR")
+            .set("ProductName", "Clicker")
+            .set("FileDescription", "Clicker")
+            .set("CompanyName", "Clicker")
             .set("LegalCopyright", "PolyForm Noncommercial 1.0.0");
 
         if let Err(e) = res.compile() {

@@ -1,30 +1,26 @@
-# RustDVR
+# Clicker
 
-> **Not affiliated with Channels or Fancy Bits, LLC.**
-> RustDVR is an independent, unofficial client that speaks to a Channels DVR
-> server over its public HTTP API. It is not endorsed by, sponsored by,
-> supported by, or associated with Fancy Bits, LLC in any way, it contains no
-> Channels code, and it is not derived from any Channels application. "Channels"
-> and "Channels DVR" are the property of their respective owners and are used
-> here only to say what this program talks to. Do not ask Fancy Bits to support
-> it — anything wrong with it is wrong with this project.
+> **Clicker is not affiliated with Fancy Bits, LLC and is an unofficial client
+> to Channels DVR Server.**
+> It speaks to a Channels DVR server over its public HTTP API. It is not
+> endorsed by, sponsored by, supported by, or associated with Fancy Bits, LLC
+> in any way, it contains no Channels code, and it is not derived from any
+> Channels application. "Channels" and "Channels DVR" are the property of their
+> respective owners and are used here only to say what this program talks to.
+> Do not ask Fancy Bits to support it — anything wrong with it is wrong with
+> this project.
 
 A native Windows client for [Channels DVR](https://getchannels.com/).
 
 Live TV, recordings and a guide, in a single Rust binary with a Fluent
-interface. Windows 11 gets RustDVR, Mica backdrop and all. Windows 10 gets
-**RustVCR** — the identical application built without the material, named for
-the recording technology of an earlier generation, running on the operating
-system of one.
+interface. Windows 10 1809 and up, Windows 11 included.
 
 > **Status: 0.0.2, pre-release.** It plays live TV and recordings, schedules,
-> downloads and seeks. It has not been run anywhere except the machine it was
+> downloads and seeks. It has not been run anywhere except the machines it was
 > written on, and there will be rough edges.
 
 Installers are on the
-[Releases page](https://github.com/mackid1993/RustDVR/releases):
-`RustDVR-Setup` on Windows 11, `RustVCR-Setup` on Windows 10 — or on
-Windows 11, if the opaque edition is the one wanted.
+[Releases page](https://github.com/mackid1993/Clicker/releases).
 
 ## What it does
 
@@ -72,15 +68,25 @@ registration that Channels' own applications do, which is a separate,
 undocumented protocol. The device name set in Settings is therefore sent in the
 User-Agent, where it reaches the logs and stops.
 
-**RustDVR proper is Windows 11 only.** The interface is drawn over Mica, a
-system material that does not exist before build 22000 — on Windows 10 a
-Mica-shaped window is a transparent hole to the desktop. Windows 10 machines
-run RustVCR instead: the same source compiled with the `win10` feature, which
-paints an opaque Fluent base where the material would have been. Same logic,
-same player, same guide. The RustDVR installer refuses Windows 10, because the
-result would be a window with a hole where Mica should be; RustVCR installs on
-Windows 10 or anything newer, since needing nothing Windows 11 has is no
-reason to refuse Windows 11.
+**Windows only, and Windows 10 1809 at the oldest.** The custom caption, the
+resize handles and the dark window chrome are all Win32, and 1809 is the
+release that added the dark-mode attribute — below it a light system border is
+drawn around an application that is entirely dark.
+
+## The backdrop
+
+The interface is translucent over a Mica-like material, which on Windows 11 is
+something an application can simply ask the compositor for. Asking is also what
+made this Windows 11 only: the material does not exist before build 22000, and
+a window shaped to reveal it on Windows 10 is a transparent hole to the
+desktop.
+
+So it is painted instead — a soft, dark, slightly blue-lifted gradient,
+brightest at the top left and falling away across the window. Four pixels,
+stretched across the whole window with linear filtering: the hardware
+interpolates between them, which is a perfectly smooth gradient for the cost of
+a four-pixel texture and no per-frame work at all. Every translucent surface in
+the theme reads against it exactly as it read against the real material.
 
 ## Why it is native
 
@@ -112,15 +118,13 @@ the repository.
 ```powershell
 git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg.git third_party\ffmpeg-src
 scripts\build-ffmpeg.ps1     # vendors FFmpeg, about ten minutes
-.\build.ps1                  # both apps, staged runtimes, both installers
+.\build.ps1                  # app, staged runtime, installer
 ```
 
-Every run builds both editions and produces two installers:
-`RustDVR-Setup-<version>.exe` for Windows 11 and `RustVCR-Setup-<version>.exe`
-for Windows 10 — or for anywhere, if the opaque edition is the one wanted.
+The installer lands in `dist\` as `Clicker-Setup-<version>.exe`.
 
-`build.ps1 -Target App` builds only the executables; `-Target Stage` stops
-before the installers.
+`build.ps1 -Target App` builds only the executable; `-Target Stage` stops
+before the installer.
 
 Requires Visual Studio 2022 build tools with the C++ workload, Git for Windows
 (FFmpeg's `configure` is a shell script), nasm, and Inno Setup 6 for the
@@ -191,7 +195,7 @@ backwards at all.
 
 ## Licence
 
-RustDVR is **source available**: PolyForm Noncommercial 1.0.0. Read it, build
+Clicker is **source available**: PolyForm Noncommercial 1.0.0. Read it, build
 it, run it, change it, fork it and share it — for any noncommercial purpose.
 What you may not do is sell it or use it to make money. See
 [LICENSE.md](LICENSE.md).
@@ -204,7 +208,7 @@ all fine. Making money from it is not.
 
 ### FFmpeg
 
-RustDVR uses [FFmpeg](https://ffmpeg.org/), licensed under the **GNU Lesser
+Clicker uses [FFmpeg](https://ffmpeg.org/), licensed under the **GNU Lesser
 General Public License version 2.1 or later**. FFmpeg is not covered by the
 terms above and is not owned by this project.
 
@@ -223,7 +227,7 @@ a copy substitute their own build of them, as LGPL-2.1 section 6 requires.
 `LICENSE.md` carries the exception that section also requires, granting private
 modification and reverse engineering for debugging unconditionally — including
 to someone whose purpose is commercial, and who therefore holds no licence to
-RustDVR itself.
+Clicker itself.
 
 The corresponding source is FFmpeg `n7.1.1`, from
 <https://github.com/FFmpeg/FFmpeg>, built with the configuration recorded in
@@ -235,6 +239,6 @@ Rust dependencies are licensed by their own authors, predominantly MIT and
 Apache-2.0. Segoe UI Variable and Segoe Fluent Icons are Microsoft fonts read
 from the operating system at runtime and are not redistributed.
 
-RustDVR is an independent client that speaks to a Channels DVR server over its
+Clicker is an independent client that speaks to a Channels DVR server over its
 HTTP API. It is not affiliated with, endorsed by, or derived from Channels or
 Fancy Bits LLC, and contains no Channels code.

@@ -1,5 +1,5 @@
 [package]
-name = "rustdvr"
+name = "clicker"
 version = "0.0.2"
 edition = "2021"
 description = "A native Channels DVR client"
@@ -10,29 +10,6 @@ license-file = "LICENSE.md"
 # purpose, which a noncommercial licence is not. Refusing here means it cannot
 # happen by accident.
 publish = false
-# Two [[bin]] targets share src/main.rs, so a bare `cargo run` needs telling
-# which one it means.
-default-run = "rustdvr"
-
-[features]
-# The Windows 10 build. Same logic, same source: the only thing this feature
-# changes is that the window paints its own opaque base instead of asking DWM
-# for Mica, because on Windows 10 there is no material behind the window to
-# reveal — a transparent base there shows the desktop through the app.
-win10 = []
-
-[[bin]]
-name = "rustdvr"
-path = "src/main.rs"
-
-# The Windows 10 edition, under the only name it could have: the VCR to
-# RustDVR's DVR. Built with `--features win10`; build.ps1 builds both.
-#
-# Cargo warns that main.rs is present in multiple build targets. That is not
-# an accident it caught — sharing the file is the entire design.
-[[bin]]
-name = "rustvcr"
-path = "src/main.rs"
 
 [dependencies]
 # UI. Immediate mode suits a guide that redraws constantly, and the wgpu

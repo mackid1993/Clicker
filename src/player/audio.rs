@@ -68,7 +68,7 @@ impl Device {
         let (ready, started) = std::sync::mpsc::channel::<Result<(), String>>();
 
         let thread = std::thread::Builder::new()
-            .name("rustdvr-audio".into())
+            .name("clicker-audio".into())
             .spawn(move || {
                 let built = self
                     .device

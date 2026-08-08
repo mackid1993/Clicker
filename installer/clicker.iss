@@ -1,31 +1,16 @@
-; RustDVR / RustVCR installer.
+; Clicker installer.
 ;
-; Packages whatever build.ps1 staged into dist. It deliberately does not know
-; how that directory was assembled: the licence vetting of the media plugins
-; happens during staging, so anything that reaches this point has already been
-; checked.
-;
-; One script, two editions. Compiled plain it produces the RustDVR installer
-; for Windows 11; compiled with ISCC /DWin10 it produces the RustVCR installer
-; for Windows 10 — the same application built without Mica, named for the
-; recording technology its operating system deserves. Separate AppIds, so the
-; two register as distinct products and neither hijacks the other's uninstall
-; entry.
+; Packages whatever build.ps1 staged into dist\Clicker. It deliberately does
+; not know how that directory was assembled: the licence vetting of the media
+; plugins happens during staging, so anything that reaches this point has
+; already been checked.
 ;
 ; Per-user by default. A DVR client is a personal application and there is no
 ; reason to demand an administrator prompt to install one.
 
-#ifdef Win10
-  #define AppName      "RustVCR"
-  #define AppExeName   "rustvcr.exe"
-  #define AppIdValue   "{{0267B8DD-4FC2-4738-9E97-BF0D51FC1620}"
-  #define StageDir     "..\dist\RustVCR"
-#else
-  #define AppName      "RustDVR"
-  #define AppExeName   "rustdvr.exe"
-  #define AppIdValue   "{{7B1E4C2A-9D3F-4A18-9C6E-5F2A7D8B0E41}"
-  #define StageDir     "..\dist\RustDVR"
-#endif
+#define AppName        "Clicker"
+#define AppExeName     "clicker.exe"
+#define StageDir       "..\dist\Clicker"
 ; Overridable from the command line: ISCC /DAppVersion=0.0.1
 ; build.ps1 passes whatever Cargo.toml says, so the installer, its filename and
 ; the executable's own version resource cannot drift apart.
@@ -35,7 +20,10 @@
 #define AppPublisher   "David Brustein"
 
 [Setup]
-AppId={#AppIdValue}
+; Clicker's own identity, and it must never change: this GUID is what Windows
+; matches an upgrade against, and a new one turns every future version into a
+; second entry in Add or Remove Programs beside the first.
+AppId={{3F9A6C41-8E27-4B5D-A0F3-6D14C97B2E85}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
@@ -54,25 +42,19 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-#ifdef Win10
-; RustVCR is built for Windows 10. The floor is 1809: current enough for the
-; dark-mode DWM attribute and a working D3D12, old enough to cover anything
-; still receiving updates. There is deliberately no ceiling: an edition that
-; needs nothing Windows 11 has also runs fine on it, and whoever prefers the
-; opaque look — or wants to test this edition without a second machine — is
-; allowed to have it.
+; Windows 10 1809 and up, Windows 11 included. The floor is that release
+; because it is the one that added the dark-mode window attribute, below which
+; a light system border is drawn around an application that is entirely dark.
+; Nothing above the floor is required: the interface draws its own backdrop
+; rather than asking the compositor for one, which is what used to make this
+; Windows 11 only.
 MinVersion=10.0.17763
-#else
-; Windows 11 only: this edition draws its own Mica-backed chrome, and Mica
-; does not exist before build 22000. Windows 10 machines get RustVCR instead.
-MinVersion=10.0.22000
-#endif
 
 LicenseFile={#StageDir}\LICENSE.md
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
 
-SetupIconFile=..\assets\rustdvr.ico
+SetupIconFile=..\assets\clicker.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -83,7 +65,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "{#StageDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\LICENSE.md";    DestDir: "{app}"; Flags: ignoreversion
-Source: "{#StageDir}\rustdvr.ico";   DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\clicker.ico";   DestDir: "{app}"; Flags: ignoreversion
 ; The LGPL text and third-party notices, next to the libraries they cover.
 Source: "{#StageDir}\licenses\*";    DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
 
@@ -100,8 +82,8 @@ Source: "{#StageDir}\*.dll";         DestDir: "{app}"; Flags: ignoreversion
 ; executable. The exe now carries the icon as a Win32 resource, so inheriting
 ; would work — but a shortcut that names its icon keeps the right one even if
 ; the resource is ever stripped, and costs nothing.
-Name: "{group}\{#AppName}";        Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\rustdvr.ico"
-Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\rustdvr.ico"; Tasks: desktopicon
+Name: "{group}\{#AppName}";        Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\clicker.ico"
+Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\clicker.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent

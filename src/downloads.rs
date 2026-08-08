@@ -5,7 +5,7 @@
 //! plays on a plane exactly as it would at home — same player, same file
 //! format, no server in the loop.
 //!
-//! Downloads live in `%LOCALAPPDATA%\RustDVR\Downloads`, named by recording
+//! Downloads live in `%LOCALAPPDATA%\Clicker\Downloads`, named by recording
 //! id. The id is the join key back to the library's metadata, so nothing else
 //! needs to be stored alongside the file.
 //!
@@ -103,10 +103,8 @@ pub struct Downloads {
 
 impl Downloads {
     pub fn new(runtime: tokio::runtime::Handle) -> Self {
-        let dir = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
+        let dir = crate::paths::data_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("RustDVR")
             .join("Downloads");
 
         let mut states = HashMap::new();

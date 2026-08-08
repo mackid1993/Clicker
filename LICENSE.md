@@ -1,29 +1,29 @@
 # License
 
-RustDVR is Copyright © 2026 David Brustein.
+Clicker is Copyright © 2026 David Brustein.
 
-RustDVR is **source available**. You may read it, build it, run it, change it,
+Clicker is **source available**. You may read it, build it, run it, change it,
 fork it and share it — for any noncommercial purpose. You may not sell it, or
 use it to make money. The terms are the PolyForm Noncommercial License 1.0.0,
 reproduced verbatim below.
 
 Required Notice: Copyright © 2026 David Brustein
-<https://github.com/mackid1993/RustDVR>
+<https://github.com/mackid1993/Clicker>
 
-The word **software** in those terms means RustDVR itself: the source code in
+The word **software** in those terms means Clicker itself: the source code in
 this repository and the binaries built from it. It does not mean the third party
-components RustDVR is built against, which carry their own licenses and are
+components Clicker is built against, which carry their own licenses and are
 covered separately under "Third party components" at the end of this file.
 
 ## Exception required by the LGPL
 
-RustDVR is distributed together with libraries licensed under the GNU Lesser
+Clicker is distributed together with libraries licensed under the GNU Lesser
 General Public License version 2.1. Section 6 of that license requires that
 anyone who receives the combined work be permitted to modify it for their own
 use, and to reverse engineer it in order to debug those modifications.
 
 The terms below already permit changes and new works for any noncommercial
-purpose, which satisfies that requirement for anyone using RustDVR under them.
+purpose, which satisfies that requirement for anyone using Clicker under them.
 What they do not cover is someone whose purpose is commercial, because the terms
 below grant such a person nothing at all. So that no recipient is ever left
 holding a combined work they are not permitted to debug, those particular rights
@@ -36,7 +36,7 @@ are granted unconditionally:
 > libraries distributed with it.
 
 This permits private modification and debugging. It grants no right to use
-RustDVR commercially, and everything else in the terms below is unaffected.
+Clicker commercially, and everything else in the terms below is unaffected.
 
 ---
 
@@ -118,22 +118,22 @@ The **licensor** is the individual or entity offering these terms, and the **sof
 
 # Third party components
 
-RustDVR is built against and ships alongside software written by other people.
+Clicker is built against and ships alongside software written by other people.
 Those components are **not** licensed under the terms above. Each is governed by
 its own license, and where those licenses conflict with the terms above, the
 component's own license prevails for that component.
 
 ## FFmpeg
 
-RustDVR decodes all audio and video using FFmpeg, which is licensed under the
+Clicker decodes all audio and video using FFmpeg, which is licensed under the
 GNU Lesser General Public License version 2.1 or later. FFmpeg is **dynamically
 linked and shipped unmodified as separate shared libraries** — `avcodec`,
 `avformat`, `avfilter`, `avutil`, `swscale` and `swresample` — placed beside the
-executable and loaded at runtime. It is never folded into RustDVR's own binary
+executable and loaded at runtime. It is never folded into Clicker's own binary
 and never renamed.
 
-The LGPL requires that anyone who receives RustDVR be free to modify FFmpeg, to
-relink RustDVR against their modified version, and to reverse engineer as
+The LGPL requires that anyone who receives Clicker be free to modify FFmpeg, to
+relink Clicker against their modified version, and to reverse engineer as
 necessary to debug that relinking. Nothing in the PolyForm Noncommercial License
 above restricts any of that, because FFmpeg is not part of "the software" as that
 term is used above. Those rights are granted by the LGPL and are not withdrawn
@@ -148,7 +148,7 @@ licensed application would place the entire distribution under the GPL.
 
 This build is configured `--disable-gpl --disable-nonfree`. The configure line
 is recorded inside the libraries themselves and can be read back at runtime
-through `av_license()` and `FFMPEG_CONFIGURATION`; RustDVR prints it on startup.
+through `av_license()` and `FFMPEG_CONFIGURATION`; Clicker prints it on startup.
 `scripts/build-ffmpeg.ps1` reproduces the build from the pinned tag, and
 `build.ps1` re-reads the shipped library and refuses to package it if it reports
 GPL.
@@ -162,12 +162,12 @@ Their terms apply to them, not the terms above.
 ## Fonts and system components
 
 Segoe UI Variable and Segoe Fluent Icons are Microsoft fonts installed as part
-of Windows. RustDVR reads them from the operating system at runtime and does not
+of Windows. Clicker reads them from the operating system at runtime and does not
 redistribute them.
 
 ## Channels DVR
 
-RustDVR is an independent, unofficial client that talks to a Channels DVR server
+Clicker is an independent, unofficial client that talks to a Channels DVR server
 over its public HTTP API. It is not affiliated with, endorsed by, sponsored by,
 supported by, or derived from Channels or Fancy Bits, LLC. No Channels code is
 used. "Channels" and "Channels DVR" are the property of their respective owners

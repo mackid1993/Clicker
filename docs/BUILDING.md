@@ -1,4 +1,4 @@
-# Building RustDVR on a new machine
+# Building Clicker on a new machine
 
 Two commands, once you have the prerequisites:
 
@@ -74,17 +74,17 @@ None of this is guesswork carried in someone's head — it is all in
 | Changed FFmpeg's configuration | `scripts\build-ffmpeg.ps1 -Reconfigure` |
 | FFmpeg build is confused | `scripts\build-ffmpeg.ps1 -Clean -Reconfigure` |
 
-`build.ps1` also accepts `-Target Stage` to assemble `dist\RustDVR` without
+`build.ps1` also accepts `-Target Stage` to assemble `dist\Clicker` without
 compiling an installer, which is the fastest way to test a real layout.
 
 ## Running from the build tree
 
-`dist\RustDVR` is a complete, runnable copy. To run `target\release\rustdvr.exe`
+`dist\Clicker` is a complete, runnable copy. To run `target\release\clicker.exe`
 directly instead, the FFmpeg DLLs have to be findable:
 
 ```powershell
 $env:PATH = "$PWD\third_party\ffmpeg\bin;$env:PATH"
-.\target\release\rustdvr.exe
+.\target\release\clicker.exe
 ```
 
 It prints its FFmpeg version and license to stderr on startup — that line is
@@ -94,7 +94,7 @@ read out of the binary, not a claim in a config file.
 
 Build paths and your username are kept out of the shipped binaries:
 
-- FFmpeg is configured with a neutral `--prefix=/rustdvr` (the real
+- FFmpeg is configured with a neutral `--prefix=/clicker` (the real
   destination goes to `make install`), because FFmpeg records its entire
   configure line inside the binary where anyone can read it
 - `--extra-cflags=/d1trimfile:` strips the source prefix MSVC otherwise bakes
@@ -107,8 +107,8 @@ Build paths and your username are kept out of the shipped binaries:
 ## Reproducing on a clean machine
 
 ```powershell
-git clone <repo> RustDVR
-cd RustDVR
+git clone <repo> Clicker
+cd Clicker
 .\bootstrap.ps1 -Install
 .\build.ps1
 ```

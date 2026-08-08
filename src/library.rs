@@ -278,12 +278,7 @@ impl Home {
     /// Beside the downloads rather than in the settings file: this is a cache,
     /// not a preference, and deleting it costs nothing but one refresh.
     fn cache_path() -> Option<std::path::PathBuf> {
-        let base = std::env::var_os("LOCALAPPDATA")?;
-        Some(
-            std::path::PathBuf::from(base)
-                .join("RustDVR")
-                .join("library.json"),
-        )
+        Some(crate::paths::data_dir()?.join("library.json"))
     }
 
     /// Keep a copy on disk, so the next launch has something to show before —

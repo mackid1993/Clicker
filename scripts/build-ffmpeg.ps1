@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build FFmpeg from source for RustDVR.
+    Build FFmpeg from source for Clicker.
 
 .DESCRIPTION
     FFmpeg is built rather than downloaded because the licence has to be
@@ -190,7 +190,7 @@ if ($Reconfigure -or -not (Test-Path $ConfigMak)) {
         # anyone with a copy, so a real build path would ship the developer's
         # user directory and name inside every DLL. The real destination is
         # supplied to `make install` instead, where it is not recorded.
-        '--prefix=/rustdvr'
+        '--prefix=/clicker'
         '--toolchain=msvc'
         '--target-os=win64'
         '--arch=x86_64'
