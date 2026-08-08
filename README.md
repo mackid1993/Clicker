@@ -17,9 +17,14 @@ interface. Windows 11 gets RustDVR, Mica backdrop and all. Windows 10 gets
 the recording technology of an earlier generation, running on the operating
 system of one.
 
-> **Status: 0.0.1, pre-release.** It plays live TV and recordings, schedules,
+> **Status: 0.0.2, pre-release.** It plays live TV and recordings, schedules,
 > downloads and seeks. It has not been run anywhere except the machine it was
 > written on, and there will be rough edges.
+
+Installers are on the
+[Releases page](https://github.com/mackid1993/RustDVR/releases):
+`RustDVR-Setup` on Windows 11, `RustVCR-Setup` on Windows 10 — or on
+Windows 11, if the opaque edition is the one wanted.
 
 ## What it does
 
