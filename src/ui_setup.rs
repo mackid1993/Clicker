@@ -69,7 +69,7 @@ pub fn onboarding(
     inner.spacing_mut().item_spacing.y = 0.0;
 
     inner.label(
-        egui::RichText::new("Welcome to RustDVR")
+        egui::RichText::new(format!("Welcome to {}", crate::APP_NAME))
             .size(26.0)
             .color(Fluent::TEXT_PRIMARY),
     );
@@ -502,7 +502,7 @@ pub fn settings_screen(
             section(
                 ui,
                 "When the window is closed",
-                "Downloads only continue while RustDVR is running.",
+                &format!("Downloads only continue while {} is running.", crate::APP_NAME),
             );
             control_row(ui, |ui| {
                 let mut to_tray = settings.minimize_to_tray;
@@ -526,7 +526,7 @@ pub fn settings_screen(
             ui.add_space(SPACE_L * 1.5);
             section(ui, "About", "");
             ui.label(
-                egui::RichText::new(format!("RustDVR {}", env!("CARGO_PKG_VERSION")))
+                egui::RichText::new(format!("{} {}", crate::APP_NAME, env!("CARGO_PKG_VERSION")))
                     .size(13.0)
                     .color(Fluent::TEXT_PRIMARY),
             );

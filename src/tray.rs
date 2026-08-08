@@ -55,8 +55,8 @@ impl Tray {
         let hwnd = hwnd?;
         let icon = Icon::from_rgba(rgba, width, height).ok()?;
 
-        let open_item = MenuItem::new("Open RustDVR", true, None);
-        let quit_item = MenuItem::new("Quit RustDVR", true, None);
+        let open_item = MenuItem::new(format!("Open {}", crate::APP_NAME), true, None);
+        let quit_item = MenuItem::new(format!("Quit {}", crate::APP_NAME), true, None);
         let menu = Menu::new();
         menu.append(&open_item).ok()?;
         menu.append(&PredefinedMenuItem::separator()).ok()?;

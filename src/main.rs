@@ -32,6 +32,16 @@ use eframe::egui;
 use theme::{Fluent, RADIUS_SURFACE, SPACE_L, SPACE_M, SPACE_S, SPACE_XS, TITLEBAR_HEIGHT};
 use ui::Screen;
 
+/// What this binary calls itself on screen: the title bar, the tray, the
+/// welcome card. The Windows 10 build is the same application compiled with
+/// the `win10` feature, and it ships as RustVCR — the recording technology of
+/// an earlier generation, for the operating system of one.
+///
+/// Only the visible name changes. Settings, data directories and the
+/// User-Agent stay "RustDVR" in both builds: it is the same program, and a
+/// machine upgraded from one edition to the other keeps its state.
+pub const APP_NAME: &str = if cfg!(feature = "win10") { "RustVCR" } else { "RustDVR" };
+
 /// Width of the navigation rail, collapsed and expanded. Both are Fluent's own
 /// values, so it lines up with every other Windows application that uses one.
 const RAIL_COLLAPSED: f32 = 48.0;
@@ -212,11 +222,13 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 760.0])
         .with_min_inner_size([420.0, 280.0])
-        .with_title("RustDVR")
+        .with_title(APP_NAME)
         // Mica is drawn by the desktop compositor behind the window, so the
         // window has to be transparent for it to show, and the system caption
-        // has to go so the app can draw its own.
-        .with_transparent(true)
+        // has to go so the app can draw its own. The win10 build has no Mica
+        // to reveal — transparency there would show the desktop through the
+        // app — so it stays opaque and paints its own base.
+        .with_transparent(cfg!(not(feature = "win10")))
         .with_decorations(false);
     if let Some(icon) = app_icon() {
         viewport = viewport.with_icon(icon);
@@ -228,7 +240,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "RustDVR",
+        APP_NAME,
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
@@ -976,9 +988,15 @@ impl App {
 }
 
 impl eframe::App for App {
-    /// Transparent, so Mica is what fills the window.
+    /// Transparent, so Mica is what fills the window. The win10 build has no
+    /// Mica and clears to the Fluent solid instead, the same surface the theme
+    /// uses as its base there.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        if cfg!(feature = "win10") {
+            Fluent::SOLID.to_normalized_gamma_f32()
+        } else {
+            [0.0, 0.0, 0.0, 0.0]
+        }
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -1115,7 +1133,7 @@ impl App {
                         icon.rgba,
                         icon.width,
                         icon.height,
-                        "RustDVR — downloads keep running",
+                        &format!("{APP_NAME} — downloads keep running"),
                         hwnd,
                     )
                 });
@@ -3253,7 +3271,7 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: b
     painter.text(
         egui::pos2(rect.min.x + SPACE_L, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        "RustDVR",
+        APP_NAME,
         egui::FontId::proportional(13.0),
         Fluent::TEXT_SECONDARY,
     );

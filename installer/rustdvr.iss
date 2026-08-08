@@ -1,14 +1,31 @@
-; RustDVR installer.
+; RustDVR / RustVCR installer.
 ;
-; Packages whatever build.bat staged into dist\RustDVR. It deliberately does
-; not know how that directory was assembled: the licence vetting of the media
-; plugins happens during staging, so anything that reaches this point has
-; already been checked.
+; Packages whatever build.ps1 staged into dist. It deliberately does not know
+; how that directory was assembled: the licence vetting of the media plugins
+; happens during staging, so anything that reaches this point has already been
+; checked.
+;
+; One script, two editions. Compiled plain it produces the RustDVR installer
+; for Windows 11; compiled with ISCC /DWin10 it produces the RustVCR installer
+; for Windows 10 — the same application built without Mica, named for the
+; recording technology its operating system deserves. Separate AppIds, so the
+; two register as distinct products and neither hijacks the other's uninstall
+; entry.
 ;
 ; Per-user by default. A DVR client is a personal application and there is no
 ; reason to demand an administrator prompt to install one.
 
-#define AppName        "RustDVR"
+#ifdef Win10
+  #define AppName      "RustVCR"
+  #define AppExeName   "rustvcr.exe"
+  #define AppIdValue   "{{0267B8DD-4FC2-4738-9E97-BF0D51FC1620}"
+  #define StageDir     "..\dist\RustVCR"
+#else
+  #define AppName      "RustDVR"
+  #define AppExeName   "rustdvr.exe"
+  #define AppIdValue   "{{7B1E4C2A-9D3F-4A18-9C6E-5F2A7D8B0E41}"
+  #define StageDir     "..\dist\RustDVR"
+#endif
 ; Overridable from the command line: ISCC /DAppVersion=0.0.1
 ; build.ps1 passes whatever Cargo.toml says, so the installer, its filename and
 ; the executable's own version resource cannot drift apart.
@@ -16,11 +33,9 @@
   #define AppVersion   "0.0.1"
 #endif
 #define AppPublisher   "David Brustein"
-#define AppExeName     "rustdvr.exe"
-#define StageDir       "..\dist\RustDVR"
 
 [Setup]
-AppId={{7B1E4C2A-9D3F-4A18-9C6E-5F2A7D8B0E41}
+AppId={#AppIdValue}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
@@ -29,18 +44,29 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableDirPage=no
-OutputBaseFilename=RustDVR-Setup-{#AppVersion}
+OutputBaseFilename={#AppName}-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 
-; Per-user, so no elevation prompt. Windows 11 only: the app draws its own
-; Mica-backed chrome and there is no fallback path for older releases.
+; Per-user, so no elevation prompt.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+#ifdef Win10
+; RustVCR is built for Windows 10. The floor is 1809: current enough for the
+; dark-mode DWM attribute and a working D3D12, old enough to cover anything
+; still receiving updates. There is deliberately no ceiling: an edition that
+; needs nothing Windows 11 has also runs fine on it, and whoever prefers the
+; opaque look — or wants to test this edition without a second machine — is
+; allowed to have it.
+MinVersion=10.0.17763
+#else
+; Windows 11 only: this edition draws its own Mica-backed chrome, and Mica
+; does not exist before build 22000. Windows 10 machines get RustVCR instead.
 MinVersion=10.0.22000
+#endif
 
 LicenseFile={#StageDir}\LICENSE.md
 UninstallDisplayName={#AppName}

@@ -12,7 +12,10 @@
 A native Windows client for [Channels DVR](https://getchannels.com/).
 
 Live TV, recordings and a guide, in a single Rust binary with a Fluent
-interface. Windows 11 only, deliberately.
+interface. Windows 11 gets RustDVR, Mica backdrop and all. Windows 10 gets
+**RustVCR** — the identical application built without the material, named for
+the recording technology of an earlier generation, running on the operating
+system of one.
 
 > **Status: 0.0.1, pre-release.** It plays live TV and recordings, schedules,
 > downloads and seeks. It has not been run anywhere except the machine it was
@@ -64,8 +67,15 @@ registration that Channels' own applications do, which is a separate,
 undocumented protocol. The device name set in Settings is therefore sent in the
 User-Agent, where it reaches the logs and stops.
 
-**Only Windows 11.** Mica, the custom caption and the resize handles are all
-Win32.
+**RustDVR proper is Windows 11 only.** The interface is drawn over Mica, a
+system material that does not exist before build 22000 — on Windows 10 a
+Mica-shaped window is a transparent hole to the desktop. Windows 10 machines
+run RustVCR instead: the same source compiled with the `win10` feature, which
+paints an opaque Fluent base where the material would have been. Same logic,
+same player, same guide. The RustDVR installer refuses Windows 10, because the
+result would be a window with a hole where Mica should be; RustVCR installs on
+Windows 10 or anything newer, since needing nothing Windows 11 has is no
+reason to refuse Windows 11.
 
 ## Why it is native
 
@@ -97,11 +107,15 @@ the repository.
 ```powershell
 git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg.git third_party\ffmpeg-src
 scripts\build-ffmpeg.ps1     # vendors FFmpeg, about ten minutes
-.\build.ps1                  # app, staged runtime, installer
+.\build.ps1                  # both apps, staged runtimes, both installers
 ```
 
-`build.ps1 -Target App` builds only the executable; `-Target Stage` stops before
-the installer.
+Every run builds both editions and produces two installers:
+`RustDVR-Setup-<version>.exe` for Windows 11 and `RustVCR-Setup-<version>.exe`
+for Windows 10 — or for anywhere, if the opaque edition is the one wanted.
+
+`build.ps1 -Target App` builds only the executables; `-Target Stage` stops
+before the installers.
 
 Requires Visual Studio 2022 build tools with the C++ workload, Git for Windows
 (FFmpeg's `configure` is a shell script), nasm, and Inno Setup 6 for the

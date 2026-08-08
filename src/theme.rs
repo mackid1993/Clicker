@@ -36,8 +36,14 @@ impl Fluent {
     // ── Layers ──────────────────────────────────────────────────────────
     // Fluent builds depth from translucent layers over the backdrop rather
     // than opaque panels. Alpha is what lets Mica read through.
-    /// The window base. Fully transparent so Mica shows.
+    /// The window base. Fully transparent so Mica shows. The win10 build has
+    /// no Mica behind the window — transparency there is a hole to the
+    /// desktop — so its base is the solid, which is also what Windows 11
+    /// itself falls back to when the material is unavailable.
+    #[cfg(not(feature = "win10"))]
     pub const LAYER_BASE: Color32 = Color32::TRANSPARENT;
+    #[cfg(feature = "win10")]
+    pub const LAYER_BASE: Color32 = Self::SOLID;
     /// LayerFillColorDefault: cards and flyouts.
     pub const LAYER_CARD: Color32 = rgba(28, 30, 36, 210);
     /// ControlFillColorDefault.
