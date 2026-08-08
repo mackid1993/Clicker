@@ -120,7 +120,7 @@ pub fn nav_rail(
         let selected = *current == screen;
 
         // Hover eases in and out; the selection bar grows from the middle.
-        // Both are WinUI's own motions for this exact control.
+        // Both are Fluent's own motions for this exact control.
         let hover = ui
             .ctx()
             .animate_bool_with_time(id.with("h"), response.hovered(), theme::ANIM_FAST);
@@ -317,23 +317,9 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     // of text.
     let art = item.art().to_string();
     if let Some(texture) = images.get(&art) {
-        let size = texture.size_vec2();
-        // Cover, not contain: crop to fill rather than letterbox, because a
-        // hero with bars down the sides looks like a mistake.
-        let scale = (card.width() / size.x).max(card.height() / size.y);
-        let scaled = size * scale;
-        let uv_w = (card.width() / scaled.x).min(1.0);
-        let uv_h = (card.height() / scaled.y).min(1.0);
-        let uv = egui::Rect::from_min_size(
-            egui::pos2((1.0 - uv_w) * 0.5, (1.0 - uv_h) * 0.25),
-            egui::vec2(uv_w, uv_h),
-        );
-        ui.painter().with_clip_rect(card).image(
-            texture.id(),
-            card,
-            uv,
-            egui::Color32::WHITE,
-        );
+        // Focused above centre: a wide crop of a 4:3 still keeps the faces if
+        // it favours the top, and loses them if it takes the middle.
+        theme::image_cover(ui.painter(), card, RADIUS_SURFACE, texture, 0.25);
     } else {
         ui.painter().rect_filled(card, RADIUS_SURFACE, Fluent::LAYER_CARD);
     }
@@ -341,15 +327,27 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     // Darken the left half so the text is legible over any image. Drawn as a
     // handful of wide bands rather than a true gradient, which egui has no
     // primitive for; at this width the steps are not visible.
+    //
+    // The outermost bands carry the card's corner radius on their outer side.
+    // Square bands painted over rounded artwork put the corners straight back
+    // — which is exactly what they did, most visibly on the left where this is
+    // nearly opaque.
     let bands = 24;
     for i in 0..bands {
         let t = i as f32 / bands as f32;
         let x0 = card.min.x + card.width() * t;
         let x1 = card.min.x + card.width() * (t + 1.0 / bands as f32);
         let alpha = ((1.0 - t).powf(1.6) * 225.0) as u8;
+        let rounding = if i == 0 {
+            egui::Rounding { nw: RADIUS_SURFACE, sw: RADIUS_SURFACE, ne: 0.0, se: 0.0 }
+        } else if i == bands - 1 {
+            egui::Rounding { ne: RADIUS_SURFACE, se: RADIUS_SURFACE, nw: 0.0, sw: 0.0 }
+        } else {
+            egui::Rounding::ZERO
+        };
         ui.painter().rect_filled(
             egui::Rect::from_min_max(egui::pos2(x0, card.min.y), egui::pos2(x1, card.max.y)),
-            0.0,
+            rounding,
             egui::Color32::from_rgba_unmultiplied(10, 11, 14, alpha),
         );
     }
@@ -500,18 +498,7 @@ fn card(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
 
     let art = item.art().to_string();
     if let Some(texture) = images.get(&art) {
-        let size = texture.size_vec2();
-        let scale = (art_rect.width() / size.x).max(art_rect.height() / size.y);
-        let scaled = size * scale;
-        let uv_w = (art_rect.width() / scaled.x).min(1.0);
-        let uv_h = (art_rect.height() / scaled.y).min(1.0);
-        let uv = egui::Rect::from_min_size(
-            egui::pos2((1.0 - uv_w) * 0.5, (1.0 - uv_h) * 0.5),
-            egui::vec2(uv_w, uv_h),
-        );
-        ui.painter()
-            .with_clip_rect(art_rect)
-            .image(texture.id(), art_rect, uv, egui::Color32::WHITE);
+        theme::image_cover(ui.painter(), art_rect, RADIUS_SURFACE, texture, 0.5);
     } else {
         // A placeholder that is a surface, not an empty hole, so a row does
         // not visibly assemble itself as images arrive.
@@ -536,15 +523,20 @@ fn card(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     );
 
     // How far in, drawn on the artwork itself.
+    //
+    // Inset by the width of the corner arc at this height, so a full-width bar
+    // does not poke out through the rounded corners it sits between. Two pixels
+    // at an 8px radius: invisible as a bar, and the difference between a clean
+    // corner and a black nub in it.
     if item.progress() > 0.0 {
         let track = egui::Rect::from_min_size(
-            egui::pos2(art_rect.min.x, art_rect.max.y - 3.0),
-            egui::vec2(art_rect.width(), 3.0),
+            egui::pos2(art_rect.min.x + 2.0, art_rect.max.y - 3.0),
+            egui::vec2(art_rect.width() - 4.0, 3.0),
         );
-        ui.painter().rect_filled(track, 0.0, with_alpha(egui::Color32::BLACK, 150));
+        ui.painter().rect_filled(track, 1.5, with_alpha(egui::Color32::BLACK, 150));
         ui.painter().rect_filled(
             egui::Rect::from_min_size(track.min, egui::vec2(track.width() * item.progress(), 3.0)),
-            0.0,
+            1.5,
             Fluent::ACCENT,
         );
     }

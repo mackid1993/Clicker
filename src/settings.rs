@@ -136,12 +136,18 @@ impl Window {
             // than throwing away a good position.
             return true;
         };
-        // A title bar's worth of overlap in both directions. Enough to drag the
-        // window back into view, which is all "reachable" has to mean.
+        // Horizontally, a title bar's worth of overlap is enough: the window
+        // can be dragged back into view from either side.
+        //
+        // Vertically it is not, and the two are not symmetric. This window
+        // draws its own caption across its top forty pixels, and that caption
+        // is the only thing that can drag it — so a window whose top edge is
+        // above the desktop has nothing left to grab and cannot be moved at
+        // all. The top edge has to be on the desktop, not merely near it.
         const GRAB: f32 = 48.0;
         self.x + self.width - GRAB > left
             && self.x + GRAB < right
-            && self.y + self.height - GRAB > top
+            && self.y >= top
             && self.y + GRAB < bottom
     }
 }

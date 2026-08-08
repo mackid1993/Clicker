@@ -1,6 +1,6 @@
 //! Fluent design tokens.
 //!
-//! These follow the WinUI 3 system rather than being invented: the neutral
+//! These follow the Fluent system rather than being invented: the neutral
 //! ramp, the accent, the layer fills, the corner radii and the type ramp are
 //! Fluent's, so the app sits naturally beside Settings and File Explorer.
 //!
@@ -8,7 +8,7 @@
 //! Mica-like material (see `backdrop`), and surfaces have to let it through or
 //! the effect is lost and everything looks flat.
 
-use egui::{Color32, Margin, Rounding, Shadow, Stroke, Visuals};
+use egui::{Color32, FontId, Margin, Rounding, Shadow, Stroke, Visuals};
 
 /// Build a color from ordinary RGBA, premultiplying at compile time.
 ///
@@ -79,11 +79,129 @@ pub const RADIUS_CONTROL: f32 = 4.0;
 pub const RADIUS_SURFACE: f32 = 8.0;
 
 /// Fluent's motion durations, in seconds. Fast controls, slower surfaces —
-/// WinUI's own guidance. Nothing here should ever bounce or overshoot; motion
+/// Fluent's own guidance. Nothing here should ever bounce or overshoot; motion
 /// exists to explain a state change, not to decorate it.
 pub const ANIM_FAST: f32 = 0.10;
 pub const ANIM_NORMAL: f32 = 0.16;
 pub const ANIM_SURFACE: f32 = 0.22;
+
+/// Draw artwork into a rounded rectangle, cropped to fill it.
+///
+/// `Painter::image` draws a square-cornered quad, and clipping it to the tile
+/// does not round it either — a clip rectangle has no radius. So artwork drawn
+/// that way sat square inside the rounded stroke around it, with the corners of
+/// the picture poking out past the border on all four sides. The fix is to draw
+/// the texture *as* the rounded rectangle: `RectShape` carries a texture and UV
+/// alongside its rounding, so the rounding applies to the picture itself.
+///
+/// Cover rather than contain: the picture is scaled to fill the tile and the
+/// overflow is cropped, because artwork letterboxed into a tile is mostly empty
+/// box. `focus_y` picks what survives the crop vertically — 0.5 keeps the
+/// middle, lower values keep more of the top, which is where faces usually are.
+pub fn image_cover(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    rounding: f32,
+    texture: &egui::TextureHandle,
+    focus_y: f32,
+) {
+    let size = texture.size_vec2();
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return;
+    }
+
+    let scaled = size * (rect.width() / size.x).max(rect.height() / size.y);
+    let width = (rect.width() / scaled.x).min(1.0);
+    let height = (rect.height() / scaled.y).min(1.0);
+
+    let mut shape = egui::epaint::RectShape::filled(
+        rect,
+        Rounding::same(rounding),
+        Color32::WHITE,
+    );
+    shape.fill_texture_id = texture.id();
+    shape.uv = egui::Rect::from_min_size(
+        egui::pos2((1.0 - width) * 0.5, (1.0 - height) * focus_y),
+        egui::vec2(width, height),
+    );
+    painter.add(shape);
+}
+
+/// The Fluent search field: a pill with a magnifier in it.
+///
+/// Shared rather than drawn per screen. The guide had this and the library had
+/// a stock `TextEdit`, so the same control appeared as a rounded pill on one
+/// screen and a hard-edged box on the next — the kind of inconsistency that
+/// reads as two different applications stitched together.
+///
+/// Returns the field's response so a caller can tell when it was interacted
+/// with.
+///
+/// The height is the caller's because it depends on what the field sits beside:
+/// see [`SEARCH_H`].
+pub fn search_field(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    width: f32,
+    height: f32,
+) -> egui::Response {
+    let (field, response) =
+        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+
+    ui.painter().rect_filled(
+        field,
+        height / 2.0,
+        Color32::from_rgba_unmultiplied(
+            Fluent::LAYER_CARD.r(),
+            Fluent::LAYER_CARD.g(),
+            Fluent::LAYER_CARD.b(),
+            150,
+        ),
+    );
+    ui.painter().rect_stroke(
+        field,
+        height / 2.0,
+        Stroke::new(1.0, Fluent::STROKE_CONTROL),
+    );
+    ui.painter().text(
+        egui::pos2(field.min.x + SPACE_M + 2.0, field.center().y),
+        egui::Align2::LEFT_CENTER,
+        "\u{E721}", // Search
+        FontId::new(12.0, egui::FontFamily::Name(ICON_FONT.into())),
+        Fluent::TEXT_TERTIARY,
+    );
+
+    // The text gets a rect exactly one line tall, centered on the pill.
+    //
+    // Handing the TextEdit the whole 36px pill is what left the text sitting
+    // against the top edge, out of line with the magnifier beside it: a
+    // TextEdit lays its galley out from the top of whatever rect it is given,
+    // and stretching it to the full height on the cross axis leaves spare room
+    // for it to sit at the top of. Giving it only the height it needs means
+    // there is none.
+    let font = FontId::proportional(13.0);
+    let line = ui.fonts(|f| f.row_height(&font));
+    let inner = egui::Rect::from_min_max(
+        egui::pos2(field.min.x + 34.0, field.center().y - line / 2.0),
+        egui::pos2(field.max.x - SPACE_M, field.center().y + line / 2.0),
+    );
+    let mut text_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    text_ui.add(
+        egui::TextEdit::singleline(text)
+            .hint_text("Search")
+            .font(font)
+            .desired_width(inner.width())
+            .text_color(Fluent::TEXT_PRIMARY)
+            .frame(false)
+            .margin(Margin::ZERO),
+    );
+
+    response
+}
 
 /// Linear blend between two colors, for hover and selection animation.
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -103,7 +221,16 @@ pub const SPACE_S: f32 = 8.0;
 pub const SPACE_M: f32 = 12.0;
 pub const SPACE_L: f32 = 16.0;
 
-/// Custom caption height. WinUI uses 32px; a little more suits a media app.
+/// The height of a search field that stands on its own, rather than in a row
+/// of chips sized to match it.
+///
+/// egui's default `interact_size` is 18px. That is right in the guide, where
+/// the pill is one of a row of controls that all use it and the row reads as a
+/// set — and wrong on its own beside a heading, where an 18px control next to
+/// 24pt type looks like it failed to load. 32 is the Fluent standard.
+pub const SEARCH_H: f32 = 32.0;
+
+/// Custom caption height. Fluent uses 32px; a little more suits a media app.
 pub const TITLEBAR_HEIGHT: f32 = 40.0;
 
 pub fn apply(ctx: &egui::Context) {

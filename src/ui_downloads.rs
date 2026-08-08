@@ -194,17 +194,7 @@ fn row(
     ui.painter()
         .rect_filled(thumb, theme::RADIUS_CONTROL, with_alpha(Fluent::CONTROL, 90));
     if let Some(texture) = art {
-        let size = texture.size_vec2();
-        if size.x > 0.0 && size.y > 0.0 {
-            let scale = (thumb.width() / size.x).max(thumb.height() / size.y);
-            let target = egui::Rect::from_center_size(thumb.center(), size * scale);
-            ui.painter().with_clip_rect(thumb).image(
-                texture.id(),
-                target,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-        }
+        theme::image_cover(ui.painter(), thumb, theme::RADIUS_CONTROL, &texture, 0.5);
     }
 
     // A play glyph over the artwork, so "this one is watchable" is visible

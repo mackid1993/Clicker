@@ -151,7 +151,7 @@ pub fn guide(
     {
         state.scroll_minutes -= scroll.x / PX_PER_MIN;
     }
-    let max_minutes = (data.hours as f32 * 60.0) - (ruler.width() / PX_PER_MIN);
+    let max_minutes = data.minutes as f32 - (ruler.width() / PX_PER_MIN);
     state.scroll_minutes = state.scroll_minutes.clamp(0.0, max_minutes.max(0.0));
 
     draw_ruler(ui, ruler, data.start, state.scroll_minutes, now);
@@ -346,55 +346,12 @@ fn filter_bar(
         },
     );
 
-    // Search, drawn to the same pill geometry so the row reads as one set of
-    // controls rather than three widgets that happen to be adjacent.
+    // Search, drawn to the same pill geometry as the chips so the row reads as
+    // one set of controls rather than three widgets that happen to be adjacent
+    // — which is why this takes the chips' height rather than the standalone
+    // one the library uses.
     let height = ui.spacing().interact_size.y;
-    let (field, _) =
-        ui.allocate_exact_size(egui::vec2(300.0, height), egui::Sense::hover());
-    ui.painter()
-        .rect_filled(field, height / 2.0, with_alpha(Fluent::LAYER_CARD, 150));
-    ui.painter().rect_stroke(
-        field,
-        height / 2.0,
-        egui::Stroke::new(1.0, Fluent::STROKE_CONTROL),
-    );
-    ui.painter().text(
-        egui::pos2(field.min.x + SPACE_M + 2.0, field.center().y),
-        egui::Align2::LEFT_CENTER,
-        "\u{E721}", // Search
-        egui::FontId::new(12.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
-        Fluent::TEXT_TERTIARY,
-    );
-
-    // The text gets a rect exactly one line tall, centered on the pill, and
-    // the same 13pt face as the chips.
-    //
-    // Handing the TextEdit the whole 36px pill is what left the text sitting
-    // against the top edge, out of line with the magnifier beside it and the
-    // two chips either side of it: a TextEdit lays its galley out from the top
-    // of whatever rect it is given, and `add_sized` stretches it to the full
-    // height on the cross axis. Giving it only the height it needs means there
-    // is no spare room for it to sit at the top of.
-    let font = egui::FontId::proportional(13.0);
-    let line = ui.fonts(|f| f.row_height(&font));
-    let inner = egui::Rect::from_min_max(
-        egui::pos2(field.min.x + 34.0, field.center().y - line / 2.0),
-        egui::pos2(field.max.x - SPACE_M, field.center().y + line / 2.0),
-    );
-    let mut text_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(inner)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    text_ui.add(
-        egui::TextEdit::singleline(&mut state.search)
-            .hint_text("Search")
-            .font(font)
-            .desired_width(inner.width())
-            .text_color(Fluent::TEXT_PRIMARY)
-            .frame(false)
-            .margin(egui::Margin::ZERO),
-    );
+    theme::search_field(ui, &mut state.search, 300.0, height);
 
     changed
 }

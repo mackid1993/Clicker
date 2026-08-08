@@ -128,6 +128,10 @@ impl Schedule {
     }
 }
 
+/// Empty minutes left past the last listing, so the end of the guide is
+/// somewhere to arrive at rather than a wall.
+const TAIL_PADDING: i64 = 60;
+
 pub fn key(channel: &str, start: i64) -> String {
     format!("{}|{}", channel.trim().to_lowercase(), start)
 }
@@ -140,16 +144,13 @@ pub struct GuideData {
     pub schedule: Schedule,
     /// The window the listings cover.
     pub start: i64,
-    /// How far past `start` there is anything to show, in hours.
+    /// How far past `start` the grid may be scrolled, in minutes.
     ///
-    /// Measured from the listings that arrived, not from the duration that was
-    /// asked for. Those are not the same number: a request for twelve hours
-    /// comes back with airings running to twenty-one, because the server
-    /// returns whole programs and a good many of them start inside the window
-    /// and end well outside it. Clamping the scroll to the *requested* twelve
-    /// threw away nine hours of listings that were already in memory — which
-    /// is what "the guide will not go any further forward" was.
-    pub hours: i64,
+    /// Minutes rather than hours because listings do not end on the hour. The
+    /// last programs of the window run to the half hour, and measuring this in
+    /// whole hours rounded that away — the guide stopped half an hour short of
+    /// listings it was holding. See where it is computed.
+    pub minutes: i64,
 }
 
 pub struct GuideApi {
@@ -332,15 +333,35 @@ impl GuideApi {
         // be drawn from.
         let aligned_start = now - now.rem_euclid(1800);
 
-        // How far the listings actually reach. The requested duration is a
-        // floor on this, never the answer: see the note on `GuideData::hours`.
-        let furthest = rows
+        // How far the grid may be scrolled: the point up to which most channels
+        // still have something to show.
+        //
+        // Not the furthest airing. One channel showing a twelve-hour infomercial
+        // block reaches days past everything else, and scrolling to meet it
+        // crosses a widening band of empty rows — the whole guide blank but for
+        // one lonely cell. Not the requested duration either, because the server
+        // may simply have less than that.
+        //
+        // So: the last airing on each channel, and a quarter of the way up that
+        // list. Three quarters of the channels still have listings at the right
+        // edge, and the long tail belonging to a handful of them is left off the
+        // end rather than dragging the scroll out for everyone.
+        //
+        // Not capped at the requested duration either. What comes back reaches
+        // past what was asked for — a request for a day answers with listings
+        // to a day and a half — and those are real programs on real channels,
+        // so stopping the grid at the request would hide listings already in
+        // memory. The quartile is what keeps the far edge honest; the request
+        // only decides how much to fetch.
+        let mut ends: Vec<i64> = rows
             .iter()
-            .flat_map(|row| row.airings.iter())
-            .map(Airing::end)
-            .max()
-            .unwrap_or(aligned_start);
-        let span = ((furthest - aligned_start) as f64 / 3600.0).ceil() as i64;
+            .filter_map(|row| row.airings.iter().map(Airing::end).max())
+            .collect();
+        ends.sort_unstable();
+        let covered = ends
+            .get(ends.len() / 4)
+            .copied()
+            .unwrap_or(aligned_start + hours * 3600);
 
         Ok(GuideData {
             rows,
@@ -348,7 +369,11 @@ impl GuideApi {
             sources,
             schedule: build_schedule(jobs.ok(), rules.ok()),
             start: aligned_start,
-            hours: span.max(hours),
+            // To the minute — half an hour of listings is two programs — plus
+            // an hour of room past the end. Scrolling to a hard stop with the
+            // last cell jammed against the right edge reads as the guide
+            // having been cut off rather than having ended.
+            minutes: ((covered - aligned_start) / 60).max(30) + TAIL_PADDING,
         })
     }
 }

@@ -556,6 +556,20 @@ impl App {
             fluent::apply_chrome(handle, true);
         }
 
+        // Maximize by command rather than by `ViewportBuilder::with_maximized`.
+        //
+        // The builder is told to maximize *and* given the restored position and
+        // size, and on Windows the position wins: the window came back the
+        // right size, in the right place, and not maximized. The size and
+        // position still have to be set — they are where un-maximizing returns
+        // to — so the maximize is asked for separately, here, where nothing
+        // undoes it. Queued before the first frame, so there is no flash of an
+        // unmaximized window.
+        if settings::Settings::load().window.is_some_and(|w| w.maximized) {
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        }
+
         // Four workers rather than two: artwork downloads and decodes run here
         // alongside the API calls, and a home screen asks for a dozen images at
         // once. Two threads made the first paint visibly crawl in.
@@ -3557,7 +3571,7 @@ fn tuning_indicator(ui: &egui::Ui, area: egui::Rect, what: &Loading) {
         egui::Stroke::new(3.0, with_alpha(Fluent::TEXT_PRIMARY, 28)),
     );
 
-    // WinUI's ring is an arc of roughly a third of the circle, easing as it
+    // Fluent's ring is an arc of roughly a third of the circle, easing as it
     // goes rather than sweeping at a constant rate.
     let sweep = std::f32::consts::TAU * 0.34;
     let start = spin % std::f32::consts::TAU;

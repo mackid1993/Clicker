@@ -75,11 +75,11 @@ pub fn library_screen(
                         .color(Fluent::TEXT_PRIMARY),
                 );
                 ui.add_space(SPACE_L);
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.search)
-                        .hint_text("Search")
-                        .desired_width(260.0),
-                );
+                // The same pill the guide draws, at the same width, but full
+                // height: this one stands beside a heading rather than in a row
+                // of chips, and the chips' height on its own looks like a
+                // control that failed to load.
+                theme::search_field(ui, &mut state.search, 300.0, theme::SEARCH_H);
             });
             ui.add_space(SPACE_S);
 
@@ -282,39 +282,26 @@ fn episode_row(
         );
         let url = item.art().to_string();
         if let Some(texture) = images.get(&url) {
-            let size = texture.size_vec2();
-            let scale = (art.width() / size.x).max(art.height() / size.y);
-            let scaled = size * scale;
-            let uv = egui::Rect::from_min_size(
-                egui::pos2(
-                    (1.0 - (art.width() / scaled.x).min(1.0)) * 0.5,
-                    (1.0 - (art.height() / scaled.y).min(1.0)) * 0.5,
-                ),
-                egui::vec2(
-                    (art.width() / scaled.x).min(1.0),
-                    (art.height() / scaled.y).min(1.0),
-                ),
-            );
-            ui.painter()
-                .with_clip_rect(art)
-                .image(texture.id(), art, uv, egui::Color32::WHITE);
+            theme::image_cover(ui.painter(), art, 4.0, texture, 0.5);
         } else {
             ui.painter().rect_filled(art, 4.0, Fluent::LAYER_CARD);
         }
 
         if item.progress() > 0.0 {
+            // Inset, so a full-width bar does not poke out through the rounded
+            // corners of the artwork it is drawn on.
             let track = egui::Rect::from_min_size(
-                egui::pos2(art.min.x, art.max.y - 3.0),
-                egui::vec2(art.width(), 3.0),
+                egui::pos2(art.min.x + 1.5, art.max.y - 3.0),
+                egui::vec2(art.width() - 3.0, 3.0),
             );
             ui.painter()
-                .rect_filled(track, 0.0, egui::Color32::from_black_alpha(150));
+                .rect_filled(track, 1.5, egui::Color32::from_black_alpha(150));
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(
                     track.min,
                     egui::vec2(track.width() * item.progress(), 3.0),
                 ),
-                0.0,
+                1.5,
                 Fluent::ACCENT,
             );
         }
@@ -533,22 +520,7 @@ fn poster(
 
     let owned = url.to_string();
     if let Some(texture) = images.get(&owned) {
-        let size = texture.size_vec2();
-        let scale = (art.width() / size.x).max(art.height() / size.y);
-        let scaled = size * scale;
-        let uv = egui::Rect::from_min_size(
-            egui::pos2(
-                (1.0 - (art.width() / scaled.x).min(1.0)) * 0.5,
-                (1.0 - (art.height() / scaled.y).min(1.0)) * 0.5,
-            ),
-            egui::vec2(
-                (art.width() / scaled.x).min(1.0),
-                (art.height() / scaled.y).min(1.0),
-            ),
-        );
-        ui.painter()
-            .with_clip_rect(art)
-            .image(texture.id(), art, uv, egui::Color32::WHITE);
+        theme::image_cover(ui.painter(), art, RADIUS_SURFACE, texture, 0.5);
     } else {
         ui.painter().rect_filled(art, RADIUS_SURFACE, Fluent::LAYER_CARD);
     }
@@ -838,19 +810,7 @@ fn upcoming_row(
         ui.painter()
             .rect_filled(thumb, theme::RADIUS_CONTROL, Fluent::CONTROL);
         if let Some(texture) = art {
-            let size = texture.size_vec2();
-            if size.x > 0.0 && size.y > 0.0 {
-                // Cover, then clip: a poster letterboxed into a wide thumbnail
-                // is mostly empty box.
-                let scale = (thumb.width() / size.x).max(thumb.height() / size.y);
-                let target = egui::Rect::from_center_size(thumb.center(), size * scale);
-                ui.painter().with_clip_rect(thumb).image(
-                    texture.id(),
-                    target,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
+            theme::image_cover(ui.painter(), thumb, theme::RADIUS_CONTROL, &texture, 0.5);
         }
 
         let text_x = thumb.max.x + SPACE_M;

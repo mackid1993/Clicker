@@ -15,9 +15,9 @@ A native Windows client for [Channels DVR](https://getchannels.com/).
 Live TV, recordings and a guide, in a single Rust binary with a Fluent
 interface. Windows 10 1809 and up, Windows 11 included.
 
-> **Status: 0.0.2, pre-release.** It plays live TV and recordings, schedules,
-> downloads and seeks. It has not been run anywhere except the machines it was
-> written on, and there will be rough edges.
+> **Status: 1.0.0.** It plays live TV and recordings, schedules, downloads and
+> seeks. It has been run on the machines it was written on and not much else,
+> so expect the occasional rough edge.
 
 Installers are on the
 [Releases page](https://github.com/mackid1993/Clicker/releases).
