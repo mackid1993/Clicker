@@ -6,7 +6,7 @@
 
 **A Unoffical native Windows client for [Channels DVR](https://getchannels.com/) Server.**
 <br>
-**Not affiliated or supported by Fancy Bits, LLC, don't go to them with issues related to this tool.**
+**Not affiliated or supported by Fancy Bits, LLC.**
 
 Live TV, recordings and a guide, in a single Rust binary.
 
