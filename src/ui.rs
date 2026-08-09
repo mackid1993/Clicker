@@ -250,10 +250,17 @@ pub fn home(
                 data.all.iter().collect()
             };
             if !pool.is_empty() {
-                // The launch stamp, so it holds still for the session: a hero
-                // that changed while the library finished loading would swap
-                // out from under a click.
-                let pick = (launch % pool.len() as u64) as usize;
+                // Scattered, not stepped.
+                //
+                // The counter behind this goes up by one per visit, and the
+                // library arrives grouped by series, so taking it modulo the
+                // length walked one place along a shelf: leave the home screen,
+                // come back, and get the next episode of the programme that was
+                // already showing. It was changing and it looked identical.
+                //
+                // Mixing the counter first decorrelates consecutive visits, so
+                // one step of the counter is a jump to somewhere unrelated.
+                let pick = (scatter(launch) % pool.len() as u64) as usize;
                 if let Some(a) = hero(ui, pool[pick], images) {
                     action = a;
                 }
@@ -706,6 +713,18 @@ pub fn centered_message(ui: &mut egui::Ui, rect: egui::Rect, title: &str, detail
         egui::FontId::proportional(12.0),
         Fluent::TEXT_TERTIARY,
     );
+}
+
+/// Spread consecutive numbers across the whole range.
+///
+/// SplitMix64's finalizer. Adjacent inputs come out entirely unrelated, which
+/// is the only property needed here: it turns "the next visit" into "somewhere
+/// else in the library" rather than "the next item on the shelf".
+fn scatter(n: u64) -> u64 {
+    let mut z = n.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Break text into lines that fit a width, on word boundaries.
