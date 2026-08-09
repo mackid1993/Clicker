@@ -575,11 +575,21 @@ pub fn settings_screen(
                 ),
             ] {
                 control_row(ui, |ui| {
+                    // A fixed column rather than however wide the word is.
+                    // "Downloads" and "Live buffer" are not the same width, so
+                    // laying the row out after the label put the two fields,
+                    // and the two Browse buttons under them, a couple of pixels
+                    // apart — which is exactly the kind of misalignment that is
+                    // impossible to unsee.
+                    let start = ui.cursor().min.x;
                     ui.label(
                         egui::RichText::new(label)
                             .size(12.0)
                             .color(Fluent::TEXT_SECONDARY),
                     );
+                    let used = ui.cursor().min.x - start;
+                    ui.add_space((LABEL_COLUMN - used).max(0.0));
+
                     let entry = field(ui, value, FIELD_W - 110.0).hint_text(hint);
                     let typed = ui.add(entry);
                     // The dialog first, typing as the fallback. A path someone
@@ -856,6 +866,10 @@ const ROW_H: f32 = 34.0;
 
 /// How far in the description column of the keyboard list starts.
 const KEY_COLUMN: f32 = 150.0;
+
+/// How wide the label before a folder field is, so the fields below each other
+/// start at the same place whatever their labels say.
+const LABEL_COLUMN: f32 = 96.0;
 
 /// How wide a single-line setting field is.
 ///
