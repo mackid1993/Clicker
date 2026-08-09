@@ -574,6 +574,44 @@ pub fn settings_screen(
                 "https://ffmpeg.org/",
             );
 
+            // ── Reporting a problem ────────────────────────────────────
+            //
+            // The player writes what it is doing to a file, and this is how
+            // someone finds it without being talked through a terminal. That
+            // conversation is the reason a stutter reported from another
+            // machine could not be diagnosed at all: the numbers that identify
+            // the cause were produced at the moment it happened and written to
+            // a console that a windowed build does not have.
+            ui.add_space(SPACE_L * 1.5);
+            section(
+                ui,
+                "Reporting a problem",
+                "Playback writes a log. If something stutters or will not play, \
+                 send this file with the report.",
+            );
+            control_row(ui, |ui| {
+                if ui
+                    .add(egui::Button::new("Open the log folder").min_size(egui::vec2(0.0, ROW_H)))
+                    .clicked()
+                {
+                    if let Some(path) = crate::log::path() {
+                        // Explorer selects the file rather than merely opening
+                        // the directory, so there is no second step of finding
+                        // it among the settings and the crash log.
+                        let _ = std::process::Command::new("explorer")
+                            .arg(format!("/select,{}", path.display()))
+                            .spawn();
+                    }
+                }
+                if let Some(path) = crate::log::path() {
+                    ui.label(
+                        egui::RichText::new(path.display().to_string())
+                            .size(11.0)
+                            .color(Fluent::TEXT_TERTIARY),
+                    );
+                }
+            });
+
             // There is deliberately no "warn about unapproved server versions"
             // toggle. Everyone runs the beta, the warning is noise, and a
             // setting whose only sensible value is off is not a choice worth

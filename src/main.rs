@@ -14,6 +14,7 @@ mod fluent;
 mod guide;
 mod images;
 mod library;
+mod log;
 mod paths;
 mod player;
 mod settings;
@@ -228,7 +229,7 @@ fn main() -> eframe::Result<()> {
     // The build's own licence, from the binary rather than from a claim in a
     // text file. This application may only be distributed if FFmpeg was built
     // without GPL components, so it is worth being able to check.
-    eprintln!("[clicker] {}", player::Player::backend());
+    log::logline!("[clicker] {}", player::Player::backend());
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 760.0])
@@ -302,6 +303,10 @@ fn install_panic_log() {
         let line = format!("panic on the {thread} thread at {where_}: {what}\n");
 
         eprint!("[clicker] {line}");
+        // Into the player log as well as the crash log. A panic is the last
+        // thing that happened before the numbers above it stopped, and reading
+        // them together is what makes either of them mean anything.
+        log::line(&format!("[panic] {}", line.trim_end()));
         if let Some(path) = crash_log_path() {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);

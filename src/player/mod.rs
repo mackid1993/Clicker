@@ -648,7 +648,7 @@ impl Player {
         } else {
             Duration::ZERO
         };
-        eprintln!(
+        crate::log::logline!(
             "[player] opened in {:.2}s, preroll {:.0}s",
             opening.elapsed().as_secs_f64(),
             preroll.as_secs_f64()
@@ -677,7 +677,7 @@ impl Player {
                     // A picture with no sound beats no picture. The clock falls
                     // back to wall time, which is what a silent stream would
                     // have used anyway.
-                    eprintln!("[player] no audio output: {e:#}");
+                    crate::log::logline!("[player] no audio output: {e:#}");
                     shared.facts.lock().unwrap().has_audio = false;
                     None
                 }
@@ -1303,7 +1303,7 @@ fn decode_loop(
                 shared.observe_first(pts);
                 if report_next_pts {
                     report_next_pts = false;
-                    eprintln!("[player] first frame after seek lands at {pts:.3}s");
+                    crate::log::logline!("[player] first frame after seek lands at {pts:.3}s");
                 }
                 // A timestamp that jumps is not a decode fault but it looks
                 // exactly like one downstream, so it has to be visible.
