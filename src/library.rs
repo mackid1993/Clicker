@@ -51,7 +51,10 @@ pub struct Recording {
     pub favorited: bool,
     #[serde(default)]
     pub completed: bool,
-    #[serde(default)]
+    /// The API spells this with two Ls. Without the rename the field never
+    /// matched, so it was always false and `playable` never excluded anything
+    /// on account of it.
+    #[serde(default, rename = "cancelled")]
     pub canceled: bool,
     #[serde(default)]
     pub corrupted: bool,
@@ -497,7 +500,16 @@ impl Library {
             .cloned()
             .collect();
         // Most recently touched first: that is the one someone came back for.
-        continue_watching.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
+        //
+        // With `created_at` behind it, because `updated_at` alone is not a
+        // total order in practice. The server bumps it for its own reasons as
+        // well as for playback: on a real library, twenty of the twenty-four
+        // part-watched recordings share three minutes on one night, which is a
+        // maintenance pass and not twenty things somebody watched at 4am. Ties
+        // that large left the row in whatever order the API returned, which
+        // changes between requests, so the same screen reordered itself for no
+        // reason anyone could see.
+        continue_watching.sort_by_key(|r| std::cmp::Reverse((r.updated_at, r.created_at)));
         continue_watching.truncate(12);
 
         // "Up next" is the server's own answer, resolved from ids back to
@@ -541,8 +553,20 @@ impl Library {
             all.iter().filter(|r| r.from_dvr()).cloned().collect();
         recorded.sort_by_key(|r| std::cmp::Reverse(r.created_at));
 
-        let imported: Vec<Recording> =
+        // Sorted, which it was not. This is the imported library, seven
+        // thousand items on a real server, and it was being handed to the
+        // screen in whatever order the API happened to return — which is not
+        // stable between requests, so the Library reshuffled itself on every
+        // refresh. By title, because that is how anyone looks for a film.
+        let mut imported: Vec<Recording> =
             all.iter().filter(|r| !r.from_dvr()).cloned().collect();
+        imported.sort_by(|a, b| {
+            a.title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase())
+                .then_with(|| a.season_number.cmp(&b.season_number))
+                .then_with(|| a.episode_number.cmp(&b.episode_number))
+        });
 
         // Series with nothing playable behind them would be dead tiles.
         let have: std::collections::HashSet<&str> =

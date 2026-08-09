@@ -268,6 +268,17 @@ impl GuideApi {
             }
         }
 
+        // Past this, a listing is not a listing.
+        //
+        // Guide data occasionally carries dates that are jokes or mistakes: a
+        // Paramount recording of a Star Trek episode is timed July 21, 2185.
+        // An airing that far out is harmless to the scroll limit, which is set
+        // from a quartile rather than a maximum, but it is still a cell laid
+        // out hundreds of millions of pixels to the right, and it is never
+        // something anyone meant to schedule. A month is far past anything a
+        // guide is asked for and far short of a century.
+        let horizon = now + 30 * 24 * 3600;
+
         // Channels come back as an object keyed by number, not a list.
         let mut by_number: HashMap<String, Channel> = HashMap::new();
         if let Ok(Value::Object(map)) = channels {
@@ -339,6 +350,7 @@ impl GuideApi {
                                 is_movie: has_tag(a, "Categories", "Movie"),
                                 raw: a.clone(),
                             })
+                            .filter(|airing: &Airing| airing.start < horizon)
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();

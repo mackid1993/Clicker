@@ -39,6 +39,28 @@ use ui::Screen;
 /// welcome card, the About line. One place, so it cannot be half-renamed.
 pub const APP_NAME: &str = "Clicker";
 
+/// Every keyboard shortcut, and what it does.
+///
+/// One table, read by both the code that handles the keys and the settings
+/// page that documents them. Two lists would disagree within a month, and the
+/// one that disagrees is always the documentation.
+///
+/// The letters only do anything when no text field has the keyboard, so typing
+/// "guide" into the search box does not walk through five screens. See
+/// `handle_keys`.
+pub const SHORTCUTS: &[(&str, &str)] = &[
+    ("H  G  L  R  D  S", "Home, Guide, Library, Recordings, Downloads, Settings"),
+    ("Tab", "Show or hide the labels on the navigation rail"),
+    ("Space  or  K", "Play or pause"),
+    ("Left  Right", "Skip back or forward"),
+    ("Up  Down", "Volume"),
+    ("M", "Mute"),
+    ("Page Up  Page Down", "Previous or next channel, while watching live"),
+    ("F  or  F11", "Full screen"),
+    ("Escape", "Leave full screen, then stop playback"),
+    ("Backspace", "Stop playback"),
+];
+
 /// Width of the navigation rail, collapsed and expanded. Both are Fluent's own
 /// values, so it lines up with every other Windows application that uses one.
 const RAIL_COLLAPSED: f32 = 48.0;
@@ -219,10 +241,12 @@ fn prefer_integrated_gpu() {
 fn main() -> eframe::Result<()> {
     install_panic_log();
     // Buffers left by a process that did not live to clean up after itself.
-    timeshift::sweep();
     // Before anything can make a request, so every one of them carries the
     // device name from the first.
     let saved = settings::Settings::load();
+    // Swept from wherever the buffer is configured to live, which is not
+    // necessarily where it lived last time somebody changed the setting.
+    timeshift::sweep(&saved.buffer_path());
     settings::set_user_agent(&saved.client_name);
     prefer_integrated_gpu();
 
@@ -640,7 +664,7 @@ impl App {
             launch: now_unix() as u64,
             window_settled: None,
             images: images::Images::new(runtime_handle.clone()),
-            downloads: downloads::Downloads::new(runtime_handle),
+            downloads: downloads::Downloads::new(runtime_handle, settings.download_path()),
             lib,
             // Last session's library, so downloaded recordings have a title
             // and a poster from the first frame, server or no server. It is
@@ -1274,11 +1298,82 @@ impl App {
             self.stop_playback();
         }
 
+        // Letters, for driving this from across a room without a mouse.
+        //
+        // Only while not watching. A letter that switched screens mid-programme
+        // would tear the picture away on a mistyped key, and the transport is
+        // what the keyboard should be reaching during playback.
         if !self.watching {
+            let (h, g, l, r, d, s, tab) = ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::H),
+                    i.key_pressed(egui::Key::G),
+                    i.key_pressed(egui::Key::L),
+                    i.key_pressed(egui::Key::R),
+                    i.key_pressed(egui::Key::D),
+                    i.key_pressed(egui::Key::S),
+                    i.key_pressed(egui::Key::Tab),
+                )
+            });
+            let screen = if h {
+                Some(Screen::Home)
+            } else if g {
+                Some(Screen::Guide)
+            } else if l {
+                Some(Screen::Library)
+            } else if r {
+                Some(Screen::Recordings)
+            } else if d {
+                Some(Screen::Downloads)
+            } else if s {
+                Some(Screen::Settings)
+            } else {
+                None
+            };
+            if let Some(screen) = screen {
+                if self.screen != screen {
+                    self.screen = screen;
+                    self.screen_changed = Instant::now();
+                }
+            }
+            if tab {
+                self.rail_expanded = !self.rail_expanded;
+            }
             return;
         }
 
-        if space {
+        // Volume, and muting, which is the one control a remote always has.
+        let (up_arrow, down_arrow, mute, k, f) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::M),
+                i.key_pressed(egui::Key::K),
+                i.key_pressed(egui::Key::F),
+            )
+        });
+        if f {
+            self.set_fullscreen(ctx, !self.fullscreen);
+        }
+        if up_arrow || down_arrow {
+            let step = if up_arrow { 0.05 } else { -0.05 };
+            self.volume = (self.volume + step).clamp(0.0, 1.0);
+            if let Some(p) = &self.player {
+                p.set_volume(self.volume as f64);
+            }
+            self.announce(format!("Volume {:.0}%", self.volume * 100.0));
+        }
+        if mute {
+            self.volume = if self.volume <= 0.001 { 1.0 } else { 0.0 };
+            if let Some(p) = &self.player {
+                p.set_volume(self.volume as f64);
+            }
+            self.announce(
+                if self.volume <= 0.001 { "Muted" } else { "Unmuted" }.into(),
+            );
+        }
+
+        if space || k {
             self.paused = !self.paused;
             if let Some(p) = &self.player {
                 p.set_paused(self.paused);
@@ -2412,6 +2507,7 @@ impl App {
                 uri.clone(),
                 channel,
                 keep,
+                self.settings.buffer_path(),
             ) {
                 Ok(buffer) => Some(buffer),
                 Err(e) => {

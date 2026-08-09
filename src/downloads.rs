@@ -102,10 +102,7 @@ pub struct Downloads {
 }
 
 impl Downloads {
-    pub fn new(runtime: tokio::runtime::Handle) -> Self {
-        let dir = crate::paths::data_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Downloads");
+    pub fn new(runtime: tokio::runtime::Handle, dir: PathBuf) -> Self {
 
         let mut states = HashMap::new();
         // The directory is the source of truth, not a manifest that could

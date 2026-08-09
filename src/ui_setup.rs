@@ -31,6 +31,13 @@ pub struct SetupState {
     pub probing: bool,
     /// The result of the last probe, good or bad.
     pub message: Option<(String, bool)>,
+    /// Why the configured folders were refused, if they were.
+    ///
+    /// Held rather than recomputed, because finding out means writing a file
+    /// to the directory and a settings screen redraws sixty times a second.
+    /// Checked when the field is left, which is when the answer can change.
+    pub download_dir_error: Option<String>,
+    pub buffer_dir_error: Option<String>,
 }
 
 /// First run: no server configured yet.
@@ -522,6 +529,97 @@ pub fn settings_screen(
                 }
             });
 
+            // ── Where things are kept ──────────────────────────────────
+            //
+            // Both default to the user profile, which is on C: on almost every
+            // machine, and neither is small: a download is an entire recording
+            // and the live buffer can be 32GB. A second drive is exactly what
+            // people have them for.
+            ui.add_space(SPACE_L * 1.5);
+            section(
+                ui,
+                "Where things are kept",
+                "Leave either blank to keep it beside the application's own data. \
+                 Changing one applies to what happens next; anything already \
+                 downloaded stays where it is.",
+            );
+
+            for (label, value, error, hint) in [
+                (
+                    "Downloads",
+                    &mut settings.download_dir,
+                    &mut state.download_dir_error,
+                    "e.g. M:\\Clicker\\Downloads",
+                ),
+                (
+                    "Live buffer",
+                    &mut settings.buffer_dir,
+                    &mut state.buffer_dir_error,
+                    "e.g. M:\\Clicker\\Buffer",
+                ),
+            ] {
+                control_row(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(label)
+                            .size(12.0)
+                            .color(Fluent::TEXT_SECONDARY),
+                    );
+                    let entry = field(ui, value, FIELD_W).hint_text(hint);
+                    if ui.add(entry).lost_focus() {
+                        // Checked by writing to it. A path can exist, be
+                        // readable, and still refuse a write for reasons no
+                        // attribute reports, and finding that out when a
+                        // recording is half downloaded is too late.
+                        *error = if value.trim().is_empty() {
+                            None
+                        } else {
+                            crate::settings::writable(std::path::Path::new(value.trim()))
+                                .err()
+                                .map(|e| format!("{e:#}"))
+                        };
+                        action = SetupAction::Save;
+                    }
+                });
+                if let Some(message) = error {
+                    ui.label(
+                        egui::RichText::new(message.as_str())
+                            .size(11.0)
+                            .color(Fluent::LIVE),
+                    );
+                }
+            }
+
+            // ── Keyboard ───────────────────────────────────────────────
+            //
+            // Documented here because an undocumented shortcut may as well not
+            // exist: nobody discovers a key by pressing every key.
+            ui.add_space(SPACE_L * 1.5);
+            section(
+                ui,
+                "Keyboard",
+                "The whole application can be driven without a mouse.",
+            );
+            for (keys, what) in crate::SHORTCUTS {
+                ui.horizontal(|ui| {
+                    ui.add_space(SPACE_S / 2.0);
+                    ui.label(
+                        egui::RichText::new(*keys)
+                            .size(12.0)
+                            .monospace()
+                            .color(Fluent::TEXT_PRIMARY),
+                    );
+                    // A fixed column, so the descriptions line up into a list
+                    // rather than stepping in and out with the key names.
+                    let used = ui.min_rect().width();
+                    ui.add_space((KEY_COLUMN - used).max(SPACE_S));
+                    ui.label(
+                        egui::RichText::new(*what)
+                            .size(12.0)
+                            .color(Fluent::TEXT_SECONDARY),
+                    );
+                });
+            }
+
             // ── About ──────────────────────────────────────────────────
             //
             // The in-app third-party notice the LGPL asks for, alongside the
@@ -626,6 +724,9 @@ pub fn settings_screen(
 
 /// The height every control in a settings row is forced to.
 const ROW_H: f32 = 34.0;
+
+/// How far in the description column of the keyboard list starts.
+const KEY_COLUMN: f32 = 150.0;
 
 /// How wide a single-line setting field is.
 ///

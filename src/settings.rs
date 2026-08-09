@@ -91,6 +91,19 @@ pub struct Settings {
     /// still plays, it simply cannot be rewound.
     #[serde(default = "default_live_buffer")]
     pub live_buffer_gb: u32,
+    /// Where offline downloads are kept. Empty means beside the rest of the
+    /// application's data.
+    ///
+    /// Both of these exist because the default is under the user profile, which
+    /// is on C: on almost every machine, and neither of these is small: a
+    /// download is the whole recording and the live buffer can be 32GB. Anyone
+    /// with a second drive wants them on it, and no amount of disk on C: makes
+    /// that preference wrong.
+    #[serde(default)]
+    pub download_dir: String,
+    /// Where the live buffer is written. Empty means the same.
+    #[serde(default)]
+    pub buffer_dir: String,
     /// Where the window was when it was last closed.
     ///
     /// None until it has been opened once, which is what makes the first launch
@@ -213,9 +226,54 @@ impl Default for Settings {
             dismissed_version_warning: true,
             minimize_to_tray: false,
             live_buffer_gb: default_live_buffer(),
+            download_dir: String::new(),
+            buffer_dir: String::new(),
             window: None,
         }
     }
+}
+
+impl Settings {
+    /// Where downloads go, configured or default.
+    pub fn download_path(&self) -> PathBuf {
+        resolve(&self.download_dir, "Downloads")
+    }
+
+    /// Where the live buffer goes, configured or default.
+    pub fn buffer_path(&self) -> PathBuf {
+        resolve(&self.buffer_dir, "Timeshift")
+    }
+}
+
+/// A configured directory, or the default one beside the application's data.
+///
+/// The configured path is used as given rather than having a folder appended:
+/// someone who types M:\ClickerDownloads means that directory, not a
+/// Downloads folder inside it.
+fn resolve(configured: &str, default_leaf: &str) -> PathBuf {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        return PathBuf::from(configured);
+    }
+    crate::paths::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(default_leaf)
+}
+
+/// Whether a directory can be written to, checked by writing to it.
+///
+/// Not by asking about permissions, which on Windows is a question with a long
+/// and unreliable answer: a path can be readable, exist, and still refuse a
+/// write for reasons no attribute reports. Creating a file and removing it
+/// again is the only test that means anything.
+pub fn writable(dir: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating {}", dir.display()))?;
+    let probe = dir.join(".clicker-write-test");
+    std::fs::write(&probe, b"")
+        .with_context(|| format!("writing to {}", dir.display()))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
 }
 
 impl Settings {
