@@ -45,6 +45,27 @@ pub struct Recording {
     pub playback_time: f64,
     #[serde(default)]
     pub original_air_date: String,
+    /// When this was last played, in milliseconds since the epoch.
+    ///
+    /// The field Continue Watching is actually about, and one this client
+    /// ignored for a long time in favour of `updated_at`. They are not the
+    /// same thing: the server bumps `updated_at` for its own housekeeping, so
+    /// on a real library twenty part-watched recordings shared one minute on
+    /// one night, and a documentary nobody had got 4% into outranked an
+    /// episode somebody was a third of the way through.
+    #[serde(default)]
+    pub last_watched_at: i64,
+    /// The year, for anything that has one. Films carry this where episodes
+    /// carry an air date.
+    #[serde(default)]
+    pub release_year: i64,
+    /// The longer description, where the server has both.
+    #[serde(default)]
+    pub full_summary: String,
+    #[serde(default)]
+    pub cast: Vec<String>,
+    #[serde(default)]
+    pub directors: Vec<String>,
     #[serde(default)]
     pub watched: bool,
     #[serde(default)]
@@ -130,6 +151,21 @@ impl Recording {
         } else {
             format!("{minutes}m left")
         }
+    }
+
+    /// The year this is from, if the server knows one.
+    ///
+    /// `release_year` for films, the air date's year for anything broadcast.
+    /// Both are absent often enough that this returns an option rather than a
+    /// zero nobody would want printed.
+    pub fn year(&self) -> Option<i64> {
+        if self.release_year > 1800 {
+            return Some(self.release_year);
+        }
+        self.original_air_date
+            .get(..4)
+            .and_then(|y| y.parse::<i64>().ok())
+            .filter(|y| *y > 1800)
     }
 
     /// "S24E142", or empty for anything that is not episodic.
@@ -403,7 +439,18 @@ impl Library {
         Ok(())
     }
 
-    /// Delete a recording from the server.
+    /// Move a recording to the DVR's Trash.
+    ///
+    /// This is a soft delete and deliberately so. Channels keeps deleted
+    /// recordings in Trash for a retention period and empties it early only
+    /// when the disk gets tight, so anything removed from here can be restored
+    /// from the server's own admin page.
+    ///
+    /// Verified against Channels' own interface, which sends exactly this for
+    /// its delete button and reserves a different call for the irreversible
+    /// one: `PUT /dvr/files/<id>/permanently_delete`, behind a second
+    /// confirmation that says "permanently". Nothing in this application ever
+    /// sends that, and nothing should start.
     pub async fn delete(&self, id: &str) -> Result<()> {
         let url = format!("{}/dvr/files/{id}", self.base);
         self.http
@@ -499,17 +546,20 @@ impl Library {
             .filter(|r| r.playable() && r.in_progress())
             .cloned()
             .collect();
-        // Most recently touched first: that is the one someone came back for.
+        // Most recently watched first, on the field that means that.
         //
-        // With `created_at` behind it, because `updated_at` alone is not a
-        // total order in practice. The server bumps it for its own reasons as
-        // well as for playback: on a real library, twenty of the twenty-four
-        // part-watched recordings share three minutes on one night, which is a
-        // maintenance pass and not twenty things somebody watched at 4am. Ties
-        // that large left the row in whatever order the API returned, which
-        // changes between requests, so the same screen reordered itself for no
-        // reason anyone could see.
-        continue_watching.sort_by_key(|r| std::cmp::Reverse((r.updated_at, r.created_at)));
+        // `last_watched_at` is what the server records when something is
+        // played. `updated_at`, which this used before, is bumped by the
+        // server's own housekeeping as well: measured on a real library,
+        // twenty of twenty-four part-watched recordings shared three minutes
+        // on one night, and sorting by it put a documentary nobody had got 4%
+        // into above an episode somebody was a third of the way through.
+        //
+        // `updated_at` stays behind it for anything the server has never
+        // recorded a play for, so those sort among themselves rather than all
+        // landing together at zero.
+        continue_watching
+            .sort_by_key(|r| std::cmp::Reverse((r.last_watched_at, r.updated_at)));
         continue_watching.truncate(12);
 
         // "Up next" is the server's own answer, resolved from ids back to

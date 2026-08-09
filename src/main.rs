@@ -332,6 +332,22 @@ fn crash_log_path() -> Option<std::path::PathBuf> {
     Some(paths::data_dir()?.join("crash.log"))
 }
 
+/// Something destructive, waiting to be confirmed.
+///
+/// One dialog for all three, because they are the same question, but each
+/// carries what it is about: "delete this?" means something different for a
+/// recording on the server and a copy on this disk, and a dialog that cannot
+/// tell them apart is one that gets clicked through.
+#[derive(Clone)]
+enum Confirm {
+    /// Delete the recording from the DVR.
+    Recording(library::Recording),
+    /// Delete the local copy of one download.
+    Download { id: String, title: String },
+    /// Delete the local copies of everything that has finished.
+    Finished(usize),
+}
+
 /// The icon the running window carries.
 ///
 /// This is a separate thing from the Win32 resource `build.rs` compiles in.
@@ -469,7 +485,7 @@ struct App {
     record_dialog: Option<ui_record::RecordDialog>,
     /// A recording awaiting delete confirmation. Deleting is the one action in
     /// this application that cannot be undone, so it asks.
-    confirm_delete: Option<library::Recording>,
+    confirm_delete: Option<Confirm>,
     /// What the spinner should say. Live TV really is tuning something;
     /// a recording is a file and is not.
     loading: Loading,
@@ -547,10 +563,15 @@ struct App {
     repaint: egui::Context,
     /// The Mica-alike the window is painted on.
     backdrop: backdrop::Backdrop,
-    /// This run, as a number. Fixed for the life of the process and used where
-    /// something should differ between launches but hold still within one —
-    /// the home screen's hero, so far.
-    launch: u64,
+    /// Which card the home screen's shuffle is showing.
+    ///
+    /// Bumped on every arrival at Home rather than once per launch, so leaving
+    /// the screen and coming back deals another one. It holds still while the
+    /// screen is up: a hero that changed under a click would be a trap rather
+    /// than a surprise.
+    hero_pick: u64,
+    /// The screen that was showing last frame, for noticing arrivals.
+    last_screen: Screen,
     /// The window's geometry as last written to settings, and when it last
     /// moved. Dragging a window produces a position every frame, and writing
     /// the settings file at sixty hertz for the length of a drag is not
@@ -639,11 +660,10 @@ impl App {
             fullscreen: false,
             watching: false,
             backdrop: backdrop::Backdrop::new(&cc.egui_ctx),
-            // Seconds since the epoch. Coarse on purpose: two launches a
-            // second apart are not something anyone is trying to tell apart,
-            // and this only has to differ between one opening of the program
-            // and the next.
-            launch: now_unix() as u64,
+            // Seeded from the clock so the first card of a session is not the
+            // same one every time the program opens.
+            hero_pick: now_unix() as u64,
+            last_screen: Screen::Home,
             window_settled: None,
             images: images::Images::new(runtime_handle.clone()),
             downloads: downloads::Downloads::new(runtime_handle, settings.download_path()),
@@ -1093,6 +1113,14 @@ impl eframe::App for App {
         self.handle_keys(ctx);
         self.housekeeping();
         self.remember_window(ctx);
+
+        // A new card every time Home is arrived at. Noticed here rather than
+        // at each of the several places that set the screen, so a new way of
+        // getting there cannot forget to deal one.
+        if self.screen == Screen::Home && self.last_screen != Screen::Home {
+            self.hero_pick = self.hero_pick.wrapping_add(1);
+        }
+        self.last_screen = self.screen;
 
         // The material, before anything else is drawn over it. Every surface
         // in the theme is translucent by design and needs something behind it;
@@ -1767,7 +1795,7 @@ impl App {
                     &self.home,
                     &mut self.images,
                     self.home_loading,
-                    self.launch,
+                    self.hero_pick,
                 );
                 self.handle_item(action);
             }
@@ -1825,12 +1853,31 @@ impl App {
                             .start(&id, url, move || repaint.request_repaint());
                     }
                     ui_downloads::DownloadAction::Remove(id) => {
-                        self.downloads.remove(&id);
-                        self.announce("Removed the local copy".into());
+                        // Asked first. This deletes a file, and the row it is
+                        // on has the remove button next to pause and resume,
+                        // which are not destructive at all.
+                        let title = self
+                            .home
+                            .all
+                            .iter()
+                            .find(|r| r.id == id)
+                            .map(|r| r.title.clone())
+                            .unwrap_or_else(|| format!("Recording {id}"));
+                        self.confirm_delete = Some(Confirm::Download { id, title });
                     }
                     ui_downloads::DownloadAction::ClearFinished => {
-                        self.downloads.clear_finished();
-                        self.announce("Cleared finished downloads".into());
+                        // The most destructive button on the screen: one click
+                        // deletes every finished copy. It said what it would do
+                        // in a tooltip and then did it.
+                        let finished = self
+                            .downloads
+                            .entries()
+                            .iter()
+                            .filter(|(_, status)| status.is_finished())
+                            .count();
+                        if finished > 0 {
+                            self.confirm_delete = Some(Confirm::Finished(finished));
+                        }
                     }
                 }
             }
@@ -1883,7 +1930,9 @@ impl App {
             ui::Action::Download(recording) => self.start_download(&recording),
             ui::Action::RemoveDownload(id) => self.downloads.remove(&id),
             ui::Action::SetWatched(id, watched) => self.set_watched(id, watched),
-            ui::Action::Delete(recording) => self.confirm_delete = Some(recording),
+            ui::Action::Delete(recording) => {
+                self.confirm_delete = Some(Confirm::Recording(recording))
+            }
             ui::Action::None => {}
         }
     }
@@ -2035,11 +2084,38 @@ impl App {
     /// what will go. The destructive button is the one that has to be aimed
     /// at, not the one under the cursor.
     fn delete_dialog_frame(&mut self, ctx: &egui::Context) {
-        let Some(recording) = self.confirm_delete.clone() else { return };
+        let Some(pending) = self.confirm_delete.clone() else { return };
         let mut open = true;
         let mut decision: Option<bool> = None;
 
-        egui::Window::new("Delete recording")
+        // What is about to happen, said in the terms of the thing itself. A
+        // dialog that says "delete this?" for both a recording on the server
+        // and a copy on this disk is asking two very different questions with
+        // one sentence.
+        let (window, heading, detail, warning) = match &pending {
+            Confirm::Recording(recording) => (
+                "Delete recording",
+                recording.title.clone(),
+                recording.subtitle(),
+                "This deletes the file from the DVR. It cannot be undone.".to_string(),
+            ),
+            Confirm::Download { title, .. } => (
+                "Delete download",
+                title.clone(),
+                String::new(),
+                "This deletes the copy on this machine. The recording stays on the DVR."
+                    .to_string(),
+            ),
+            Confirm::Finished(count) => (
+                "Delete finished downloads",
+                format!("{count} finished download{}", if *count == 1 { "" } else { "s" }),
+                String::new(),
+                "This deletes their copies on this machine. The recordings stay on the DVR."
+                    .to_string(),
+            ),
+        };
+
+        egui::Window::new(window)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -2047,21 +2123,26 @@ impl App {
             .default_width(420.0)
             .show(ctx, |ui| {
                 ui.label(
-                    egui::RichText::new(&recording.title)
+                    egui::RichText::new("Are you sure?")
+                        .size(13.0)
+                        .color(Fluent::TEXT_SECONDARY),
+                );
+                ui.add_space(SPACE_S);
+                ui.label(
+                    egui::RichText::new(&heading)
                         .size(16.0)
                         .color(Fluent::TEXT_PRIMARY),
                 );
-                let subtitle = recording.subtitle();
-                if !subtitle.is_empty() {
+                if !detail.is_empty() {
                     ui.label(
-                        egui::RichText::new(subtitle)
+                        egui::RichText::new(detail)
                             .size(12.0)
                             .color(Fluent::TEXT_SECONDARY),
                     );
                 }
                 ui.add_space(SPACE_M);
                 ui.label(
-                    egui::RichText::new("This deletes the file from the DVR. It cannot be undone.")
+                    egui::RichText::new(warning)
                         .size(12.0)
                         .color(Fluent::CAUTION),
                 );
@@ -2096,7 +2177,17 @@ impl App {
         match decision {
             Some(true) => {
                 self.confirm_delete = None;
-                self.delete_recording(&recording);
+                match pending {
+                    Confirm::Recording(recording) => self.delete_recording(&recording),
+                    Confirm::Download { id, .. } => {
+                        self.downloads.remove(&id);
+                        self.announce("Removed the local copy".into());
+                    }
+                    Confirm::Finished(_) => {
+                        self.downloads.clear_finished();
+                        self.announce("Cleared finished downloads".into());
+                    }
+                }
             }
             Some(false) => self.confirm_delete = None,
             None => {}

@@ -231,38 +231,40 @@ pub fn home(
         .show(&mut content, |ui| {
             ui.add_space(SPACE_L);
 
-            // The hero: something left unfinished, because a DVR is almost
-            // always opened to carry on with something, and that is worth a
-            // single large button rather than a hunt.
+            // The hero is a shuffle, and says so.
             //
-            // Which one rotates per launch. It used to be `first()`, which is
-            // stable, defensible, and meant the home screen showed the same
-            // picture every single time the program started — for as long as
-            // one series went unfinished, which for a DVR is months. The pool
-            // is still the few most recent, so this varies the face of the
-            // screen without offering up something forgotten.
+            // It used to be whatever was least recently finished, which is
+            // defensible and meant the same picture every launch for months at
+            // a time. Then it rotated through the unfinished ones, which was
+            // better and still looked like a broken "continue watching" —
+            // because it sat where continue watching goes and showed something
+            // that was not what you last watched.
             //
-            // Nothing that has arrived since launch changes the choice: the
-            // index comes from the launch stamp alone, so the hero does not
-            // swap out underneath a click when the library finishes loading.
-            let pool = data.continue_watching.len().min(HERO_POOL);
-            let hero_index = (pool > 0).then(|| (launch % pool as u64) as usize);
-
-            if let Some(index) = hero_index {
-                if let Some(a) = hero(ui, &data.continue_watching[index], images) {
+            // So it is drawn from the whole library and labelled as a pick.
+            // Something surfaced from seven thousand recordings nobody was
+            // going to scroll to is the point of it; pretending it is the next
+            // thing to resume was the mistake.
+            let pool: Vec<&Recording> = if data.all.is_empty() {
+                data.continue_watching.iter().collect()
+            } else {
+                data.all.iter().collect()
+            };
+            if !pool.is_empty() {
+                // The launch stamp, so it holds still for the session: a hero
+                // that changed while the library finished loading would swap
+                // out from under a click.
+                let pick = (launch % pool.len() as u64) as usize;
+                if let Some(a) = hero(ui, pool[pick], images) {
                     action = a;
                 }
                 ui.add_space(SPACE_L * 1.5);
             }
 
-            // Everything unfinished except whichever one is already the hero.
-            let rest: Vec<&Recording> = data
-                .continue_watching
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| Some(*i) != hero_index)
-                .map(|(_, item)| item)
-                .collect();
+            // Everything unfinished, in order, with nothing held back for the
+            // hero. The hero is no longer taken from this list, so the first
+            // card here is the most recently watched — which is what a row
+            // called Continue watching has to promise.
+            let rest: Vec<&Recording> = data.continue_watching.iter().collect();
             if !rest.is_empty() {
                 if let Some(a) = row(ui, "Continue watching", &rest, images) {
                     action = a;
@@ -360,10 +362,14 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     let text_x = card.min.x + SPACE_L * 2.0;
     let mut y = card.min.y + SPACE_L * 1.5;
 
+    // Said plainly, because a large picture where continue-watching used to be
+    // reads as "this is what you were watching" unless it says otherwise. It
+    // is a shuffle of the whole library, and the delight only works if the
+    // label is honest about that.
     ui.painter().text(
         egui::pos2(text_x, y),
         egui::Align2::LEFT_TOP,
-        "CONTINUE WATCHING",
+        "SOMETHING FROM YOUR LIBRARY",
         egui::FontId::proportional(11.0),
         Fluent::ACCENT_LIGHT,
     );
@@ -376,38 +382,112 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
         egui::FontId::proportional(30.0),
         Fluent::TEXT_PRIMARY,
     );
-    y += 42.0;
+    y += 40.0;
 
-    let subtitle = item.subtitle();
-    if !subtitle.is_empty() {
+    // The facts line: whichever of these the server actually knows. Joined
+    // rather than laid out in columns, because a film has a year and no
+    // episode number and a news bulletin has neither.
+    let mut facts: Vec<String> = Vec::new();
+    let episode = item.episode_label();
+    if !episode.is_empty() {
+        facts.push(episode);
+    }
+    if !item.episode_title.trim().is_empty() {
+        facts.push(item.episode_title.clone());
+    }
+    if let Some(year) = item.year() {
+        facts.push(year.to_string());
+    }
+    if item.duration > 0.0 {
+        facts.push(format!("{} min", (item.duration / 60.0).round() as i64));
+    }
+    if !item.content_rating.trim().is_empty() {
+        facts.push(item.content_rating.clone());
+    }
+    if !item.genres.is_empty() {
+        facts.push(item.genres.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+    }
+    if !facts.is_empty() {
         ui.painter().text(
             egui::pos2(text_x, y),
             egui::Align2::LEFT_TOP,
-            subtitle,
-            egui::FontId::proportional(14.0),
+            facts.join("  ·  "),
+            egui::FontId::proportional(13.0),
             Fluent::TEXT_SECONDARY,
         );
-        y += 26.0;
+        y += 24.0;
+    }
+
+    // The description. Wrapped by hand against the room the picture leaves,
+    // because this is painted rather than laid out and there is no widget here
+    // to wrap it for us.
+    let summary = if item.full_summary.trim().is_empty() {
+        item.summary.trim()
+    } else {
+        item.full_summary.trim()
+    };
+    if !summary.is_empty() {
+        let width = (card.width() * 0.52).max(280.0);
+        for line in wrap(summary, width, 13.0).into_iter().take(3) {
+            ui.painter().text(
+                egui::pos2(text_x, y),
+                egui::Align2::LEFT_TOP,
+                line,
+                egui::FontId::proportional(13.0),
+                Fluent::TEXT_TERTIARY,
+            );
+            y += 19.0;
+        }
+        y += 4.0;
+    }
+
+    // Who made it and who is in it, when the server knows. Directors first:
+    // it is the shorter list and the one that identifies a film.
+    let mut credits: Vec<String> = Vec::new();
+    if !item.directors.is_empty() {
+        credits.push(format!(
+            "Directed by {}",
+            item.directors.iter().take(2).cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !item.cast.is_empty() {
+        credits.push(item.cast.iter().take(4).cloned().collect::<Vec<_>>().join(", "));
+    }
+    for line in credits {
+        ui.painter().text(
+            egui::pos2(text_x, y),
+            egui::Align2::LEFT_TOP,
+            truncate(&line, 78),
+            egui::FontId::proportional(12.0),
+            Fluent::TEXT_TERTIARY,
+        );
+        y += 20.0;
     }
 
     // Progress, with the time left beside it rather than a percentage: nobody
     // wants to know they are 63% through, they want to know whether there is
-    // time to finish it.
-    let bar = egui::Rect::from_min_size(egui::pos2(text_x, y + 6.0), egui::vec2(260.0, 4.0));
-    ui.painter().rect_filled(bar, 2.0, with_alpha(Fluent::TEXT_PRIMARY, 50));
-    let filled = egui::Rect::from_min_size(
-        bar.min,
-        egui::vec2(bar.width() * item.progress(), bar.height()),
-    );
-    ui.painter().rect_filled(filled, 2.0, Fluent::ACCENT);
-    ui.painter().text(
-        egui::pos2(bar.max.x + SPACE_M, bar.center().y),
-        egui::Align2::LEFT_CENTER,
-        item.remaining(),
-        egui::FontId::proportional(12.0),
-        Fluent::TEXT_SECONDARY,
-    );
-    y += 30.0;
+    // time to finish it. Only for something actually started — on a shuffled
+    // pick it is usually zero, and an empty bar says nothing worth the space.
+    if item.progress() > 0.0 {
+        y += 6.0;
+        let bar = egui::Rect::from_min_size(egui::pos2(text_x, y + 6.0), egui::vec2(260.0, 4.0));
+        ui.painter().rect_filled(bar, 2.0, with_alpha(Fluent::TEXT_PRIMARY, 50));
+        let filled = egui::Rect::from_min_size(
+            bar.min,
+            egui::vec2(bar.width() * item.progress(), bar.height()),
+        );
+        ui.painter().rect_filled(filled, 2.0, Fluent::ACCENT);
+        ui.painter().text(
+            egui::pos2(bar.max.x + SPACE_M, bar.center().y),
+            egui::Align2::LEFT_CENTER,
+            item.remaining(),
+            egui::FontId::proportional(12.0),
+            Fluent::TEXT_SECONDARY,
+        );
+        y += 30.0;
+    } else {
+        y += 10.0;
+    }
 
     let button = egui::Rect::from_min_size(egui::pos2(text_x, y), egui::vec2(132.0, 38.0));
     let response = ui.interact(button, egui::Id::new(("hero", &item.id)), egui::Sense::click());
@@ -598,6 +678,30 @@ pub fn centered_message(ui: &mut egui::Ui, rect: egui::Rect, title: &str, detail
         egui::FontId::proportional(12.0),
         Fluent::TEXT_TERTIARY,
     );
+}
+
+/// Break text into lines that fit a width, on word boundaries.
+///
+/// Roughly six pixels a character at these sizes, the same estimate the guide
+/// and the downloads list use. Measuring properly would mean laying the text
+/// out twice for a paragraph that is redrawn every frame.
+fn wrap(text: &str, width: f32, size: f32) -> Vec<String> {
+    let per_line = ((width / (size * 0.48)).floor() as usize).max(16);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > per_line {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 fn truncate(text: &str, max: usize) -> String {
