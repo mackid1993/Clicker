@@ -317,8 +317,10 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     // The artwork fills the card and the text sits on a gradient over it, so
     // the picture is the panel rather than an inset thumbnail beside a block
     // of text.
-    let art = item.art().to_string();
-    if let Some(texture) = images.get(&art) {
+    // Asked for at the size it is drawn at. The API hands out artwork URLs
+    // sized for a thumbnail, and this is drawn the width of the window.
+    let art = crate::images::at_size(item.art(), crate::images::HERO_MAX, crate::images::HERO_MAX * 3 / 4);
+    if let Some(texture) = images.get_at(&art, crate::images::HERO_MAX) {
         // Focused above center: a wide crop of a 4:3 still keeps the faces if
         // it favors the top, and loses them if it takes the middle.
         theme::image_cover(ui.painter(), card, RADIUS_SURFACE, texture, 0.25);

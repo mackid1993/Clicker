@@ -37,6 +37,51 @@ struct Decoded {
 /// away. Three hundred thumbnails is a few screens of scrollback.
 const MAX_RESIDENT: usize = 300;
 
+/// How large a card's artwork is kept. Cards are around 230px and posters
+/// around 170, so this is already generous for them.
+const CARD_MAX: u32 = 640;
+
+/// How large the hero's artwork is kept, and asked for.
+///
+/// The hero is drawn the width of the window, so at the card's limit it is a
+/// 640px picture stretched across a thousand and it looks it. The artwork
+/// server will serve whatever size is asked for — the API hands out URLs
+/// ending `?w=720&h=540`, and the same asset comes back at 1600x1200 when the
+/// query says so — so the fix is to ask, not to upscale.
+pub const HERO_MAX: u32 = 1280;
+
+/// The same artwork, requested at a usable size.
+///
+/// Rewrites the size the API asked for rather than appending to it, because a
+/// URL with two `w=` parameters is a URL the server is entitled to read either
+/// way. Anything without them is returned untouched: the DVR's own preview
+/// frames are served at one size and have no query to rewrite.
+pub fn at_size(url: &str, width: u32, height: u32) -> String {
+    if !url.contains("w=") && !url.contains("h=") {
+        return url.to_string();
+    }
+    let mut out = String::with_capacity(url.len() + 8);
+    for (index, part) in url.split(['?', '&']).enumerate() {
+        // The first piece is the path, and the separator before each parameter
+        // after it is what this rebuilds.
+        if index == 0 {
+            out.push_str(part);
+            continue;
+        }
+        out.push(if index == 1 { '?' } else { '&' });
+        if let Some(rest) = part.strip_prefix("w=") {
+            let _ = rest;
+            out.push_str(&format!("w={width}"));
+        } else if let Some(rest) = part.strip_prefix("h=") {
+            let _ = rest;
+            out.push_str(&format!("h={height}"));
+        } else {
+            out.push_str(part);
+        }
+    }
+    out
+}
+
 pub struct Images {
     runtime: tokio::runtime::Handle,
     http: reqwest::Client,
@@ -107,6 +152,16 @@ impl Images {
     /// Returns `None` while loading and for anything that failed, so callers
     /// draw a placeholder rather than waiting.
     pub fn get(&mut self, url: &str) -> Option<&egui::TextureHandle> {
+        self.get_at(url, CARD_MAX)
+    }
+
+    /// The same, at a size of the caller's choosing.
+    ///
+    /// The hero is drawn a thousand pixels wide and everything else is a card
+    /// a couple of hundred across, so one limit cannot serve both: at the
+    /// card's size the hero is visibly soft, and at the hero's size every
+    /// thumbnail costs four times the memory it needs.
+    pub fn get_at(&mut self, url: &str, max: u32) -> Option<&egui::TextureHandle> {
         if url.is_empty() {
             return None;
         }
@@ -119,7 +174,7 @@ impl Images {
             let http = self.http.clone();
             let owned = url.to_string();
             self.runtime.spawn(async move {
-                let decoded = fetch_and_decode(&http, &owned).await;
+                let decoded = fetch_and_decode(&http, &owned, max).await;
                 let _ = tx.send((owned, decoded));
             });
         }
@@ -147,7 +202,7 @@ impl Images {
 ///
 /// A 720x540 JPEG is a few milliseconds to decode, which is most of a frame
 /// budget, and a home screen can ask for a dozen at once.
-async fn fetch_and_decode(http: &reqwest::Client, url: &str) -> Option<Decoded> {
+async fn fetch_and_decode(http: &reqwest::Client, url: &str, max: u32) -> Option<Decoded> {
     let bytes = http
         .get(url)
         .timeout(std::time::Duration::from_secs(20))
@@ -167,8 +222,8 @@ async fn fetch_and_decode(http: &reqwest::Client, url: &str) -> Option<Decoded> 
     // poster at full size is 1.5MB of texture — measured across the home,
     // guide and library screens, storing originals was hundreds of megabytes
     // of memory for pixels no one could ever see.
-    let decoded = if decoded.width() > 640 || decoded.height() > 640 {
-        decoded.thumbnail(640, 640)
+    let decoded = if decoded.width() > max || decoded.height() > max {
+        decoded.thumbnail(max, max)
     } else {
         decoded
     };
