@@ -290,8 +290,6 @@ pub struct Home {
     /// What this DVR recorded off a tuner, newest first. Distinct from the
     /// imported library, and usually a tiny fraction of it.
     pub recorded: Vec<Recording>,
-    /// External media imported into Channels — a Plex-style library.
-    pub imported: Vec<Recording>,
     /// Series, for the Library's poster grid.
     pub groups: Vec<Group>,
     /// Scheduled but not yet recorded, soonest first.
@@ -603,20 +601,13 @@ impl Library {
             all.iter().filter(|r| r.from_dvr()).cloned().collect();
         recorded.sort_by_key(|r| std::cmp::Reverse(r.created_at));
 
-        // Sorted, which it was not. This is the imported library, seven
-        // thousand items on a real server, and it was being handed to the
-        // screen in whatever order the API happened to return — which is not
-        // stable between requests, so the Library reshuffled itself on every
-        // refresh. By title, because that is how anyone looks for a film.
-        let mut imported: Vec<Recording> =
-            all.iter().filter(|r| !r.from_dvr()).cloned().collect();
-        imported.sort_by(|a, b| {
-            a.title
-                .to_lowercase()
-                .cmp(&b.title.to_lowercase())
-                .then_with(|| a.season_number.cmp(&b.season_number))
-                .then_with(|| a.episode_number.cmp(&b.episode_number))
-        });
+        // There was an `imported` list here: every item this DVR did not
+        // record, cloned out of `all`. Seven thousand two hundred of them on a
+        // real library, held in memory and written into the cache file, and
+        // read by nothing. The Library screen filters `all` itself.
+        //
+        // Sorting it was a fix to a bug nobody could see, on a field nobody
+        // looked at. Deleting it is the better fix.
 
         // Series with nothing playable behind them would be dead tiles.
         let have: std::collections::HashSet<&str> =
@@ -633,7 +624,6 @@ impl Library {
             total_recordings: recorded.len(),
             all,
             recorded,
-            imported,
             groups,
             upcoming,
         })

@@ -17,8 +17,14 @@ use egui::ColorImage;
 
 enum Entry {
     Loading,
-    /// The texture, when it was last asked for, and whether its ink is dark.
-    Ready(egui::TextureHandle, u64, bool),
+    /// The texture, when it was last asked for, whether its ink is dark, and
+    /// what it costs.
+    ///
+    /// The size is carried because eviction has to be about memory. Counting
+    /// entries treats a 4.9MB hero and a 40KB channel logo as the same thing,
+    /// and the limit that was safe for three hundred logos is not the limit
+    /// that is safe for three hundred heroes.
+    Ready(egui::TextureHandle, u64, bool, usize),
     /// Remembered so a broken URL is not retried forever.
     Failed,
 }
@@ -36,6 +42,14 @@ struct Decoded {
 /// ~150MB — full-size posters, cached forever, for rows long since scrolled
 /// away. Three hundred thumbnails is a few screens of scrollback.
 const MAX_RESIDENT: usize = 300;
+
+/// How much artwork may be resident at once.
+///
+/// The number that actually matters now that sizes differ by two orders of
+/// magnitude. 192MB is a few screens of everything plus a run of heroes, and
+/// it is a ceiling this can be held to rather than a number that happens to
+/// come out of counting entries.
+const MAX_BYTES: usize = 192 * 1024 * 1024;
 
 /// How large a card's artwork is kept. Cards are around 230px and posters
 /// around 170, so this is already generous for them.
@@ -113,36 +127,55 @@ impl Images {
     pub fn pump(&mut self, ctx: &egui::Context) {
         while let Ok((url, decoded)) = self.rx.try_recv() {
             let entry = match decoded {
-                Some(decoded) => Entry::Ready(
-                    ctx.load_texture(&url, decoded.image, egui::TextureOptions::LINEAR),
-                    self.tick,
-                    decoded.dark,
-                ),
+                Some(decoded) => {
+                    // Four bytes a pixel, which is what the texture costs on
+                    // the GPU and what its CPU copy cost on the way there.
+                    let bytes = decoded.image.width() * decoded.image.height() * 4;
+                    Entry::Ready(
+                        ctx.load_texture(&url, decoded.image, egui::TextureOptions::LINEAR),
+                        self.tick,
+                        decoded.dark,
+                        bytes,
+                    )
+                }
                 None => Entry::Failed,
             };
             self.entries.insert(url, entry);
         }
 
-        // Least-recently-used eviction. Dropping the handle frees the GPU
-        // texture and its CPU copy; the URL is forgotten too, so it reloads
-        // if it ever scrolls back into view — the trade a cache is for.
-        let resident = self
+        // Least-recently-used eviction, on memory and on count.
+        //
+        // Dropping the handle frees the GPU texture and its CPU copy; the URL
+        // is forgotten too, so it reloads if it ever scrolls back into view —
+        // the trade a cache is for.
+        //
+        // Both limits, because either alone is wrong. Three hundred channel
+        // logos are 12MB and evicting them achieves nothing; three hundred
+        // heroes are a gigabyte and a half. The count keeps the map small, the
+        // budget keeps the memory bounded, and the hero is why the second one
+        // had to exist: a new one is fetched on every visit to the home screen
+        // and none of them is small.
+        let mut ready: Vec<(String, u64, usize)> = self
             .entries
-            .values()
-            .filter(|e| matches!(e, Entry::Ready(..)))
-            .count();
-        if resident > MAX_RESIDENT {
-            let mut ready: Vec<(String, u64)> = self
-                .entries
-                .iter()
-                .filter_map(|(url, e)| match e {
-                    Entry::Ready(_, used, _) => Some((url.clone(), *used)),
-                    _ => None,
-                })
-                .collect();
-            ready.sort_by_key(|(_, used)| *used);
-            for (url, _) in ready.into_iter().take(resident - MAX_RESIDENT) {
+            .iter()
+            .filter_map(|(url, e)| match e {
+                Entry::Ready(_, used, _, bytes) => Some((url.clone(), *used, *bytes)),
+                _ => None,
+            })
+            .collect();
+
+        let mut held: usize = ready.iter().map(|(_, _, bytes)| bytes).sum();
+        if held > MAX_BYTES || ready.len() > MAX_RESIDENT {
+            // Oldest first, so what goes is what nothing has looked at longest.
+            ready.sort_by_key(|(_, used, _)| *used);
+            let mut count = ready.len();
+            for (url, _, bytes) in ready {
+                if held <= MAX_BYTES && count <= MAX_RESIDENT {
+                    break;
+                }
                 self.entries.remove(&url);
+                held = held.saturating_sub(bytes);
+                count -= 1;
             }
         }
     }
@@ -181,7 +214,7 @@ impl Images {
 
         let tick = self.tick;
         match self.entries.get_mut(url) {
-            Some(Entry::Ready(texture, used, _)) => {
+            Some(Entry::Ready(texture, used, _, _)) => {
                 *used = tick;
                 Some(&*texture)
             }
@@ -194,7 +227,7 @@ impl Images {
     /// Answers false while it is still loading, which is the right way round:
     /// the plate appears when the logo does, rather than flashing empty first.
     pub fn is_dark(&self, url: &str) -> bool {
-        matches!(self.entries.get(url), Some(Entry::Ready(_, _, true)))
+        matches!(self.entries.get(url), Some(Entry::Ready(_, _, true, _)))
     }
 }
 

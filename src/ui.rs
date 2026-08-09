@@ -530,10 +530,14 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
         egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
         egui::Color32::from_rgb(12, 14, 18),
     );
+    // "Resume" only when there is something to resume. The hero is a shuffle
+    // of the whole library now, so most of what lands here has never been
+    // played, and a button offering to resume it is offering to continue
+    // something that never started.
     ui.painter().text(
         egui::pos2(button.min.x + 42.0, button.center().y),
         egui::Align2::LEFT_CENTER,
-        "Resume",
+        if item.in_progress() { "Resume" } else { "Play" },
         egui::FontId::proportional(14.0),
         egui::Color32::from_rgb(12, 14, 18),
     );

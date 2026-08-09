@@ -265,6 +265,39 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            // Ask the graphics device to be frugal rather than fast.
+            //
+            // wgpu's default is `MemoryHints::Performance`, which by its own
+            // description favours performance over memory usage: it commits
+            // large heaps up front so later allocations are cheap. Measured
+            // here, the application had committed 726MB two seconds after
+            // launch — before a single recording had loaded and before any
+            // artwork — and then slowly gave some back.
+            //
+            // Nothing here needs that bargain. This draws one video frame and
+            // some flat panels, the same argument that has it asking for the
+            // integrated GPU in the first place.
+            device_descriptor: std::sync::Arc::new(|adapter| {
+                let base = if adapter.get_info().backend == eframe::wgpu::Backend::Gl {
+                    eframe::wgpu::Limits::downlevel_webgl2_defaults()
+                } else {
+                    eframe::wgpu::Limits::default()
+                };
+                eframe::wgpu::DeviceDescriptor {
+                    label: Some("clicker"),
+                    required_features: eframe::wgpu::Features::default(),
+                    required_limits: eframe::wgpu::Limits {
+                        // Enough for the whole surface on a 4K display, which
+                        // is eframe's own reasoning for this one.
+                        max_texture_dimension_2d: 8192,
+                        ..base
+                    },
+                    memory_hints: eframe::wgpu::MemoryHints::MemoryUsage,
+                }
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -570,8 +603,9 @@ struct App {
     /// screen is up: a hero that changed under a click would be a trap rather
     /// than a surprise.
     hero_pick: u64,
-    /// The screen that was showing last frame, for noticing arrivals.
-    last_screen: Screen,
+    /// What was on screen last frame, for noticing arrivals at home. None
+    /// while something is playing, because the player is not a screen.
+    last_view: Option<Screen>,
     /// The window's geometry as last written to settings, and when it last
     /// moved. Dragging a window produces a position every frame, and writing
     /// the settings file at sixty hertz for the length of a drag is not
@@ -663,7 +697,7 @@ impl App {
             // Seeded from the clock so the first card of a session is not the
             // same one every time the program opens.
             hero_pick: now_unix() as u64,
-            last_screen: Screen::Home,
+            last_view: Some(Screen::Home),
             window_settled: None,
             images: images::Images::new(runtime_handle.clone()),
             downloads: downloads::Downloads::new(runtime_handle, settings.download_path()),
@@ -1114,13 +1148,22 @@ impl eframe::App for App {
         self.housekeeping();
         self.remember_window(ctx);
 
-        // A new card every time Home is arrived at. Noticed here rather than
-        // at each of the several places that set the screen, so a new way of
-        // getting there cannot forget to deal one.
-        if self.screen == Screen::Home && self.last_screen != Screen::Home {
+        // A new card every time the home screen is arrived at.
+        //
+        // "Arrived at" has to include coming back from something playing, not
+        // just from another screen. Watching does not change `screen` — the
+        // player draws over whatever was showing — so a check on the screen
+        // alone missed the most common way of leaving and returning, which is
+        // to watch something and stop.
+        //
+        // Noticed here rather than at each of the several places that set the
+        // screen or start playback, so a new way of getting home cannot forget
+        // to deal one.
+        let view = (!self.watching).then_some(self.screen);
+        if view == Some(Screen::Home) && self.last_view != Some(Screen::Home) {
             self.hero_pick = self.hero_pick.wrapping_add(1);
         }
-        self.last_screen = self.screen;
+        self.last_view = view;
 
         // The material, before anything else is drawn over it. Every surface
         // in the theme is translucent by design and needs something behind it;
