@@ -104,6 +104,22 @@ pub struct Settings {
     /// Where the live buffer is written. Empty means the same.
     #[serde(default)]
     pub buffer_dir: String,
+    /// Decode on the processor rather than the graphics chip.
+    ///
+    /// Off by default, which lets the player use the integrated GPU's decoder.
+    /// Worth turning on when a driver produces a picture with artifacts, which
+    /// is the usual reason hardware decoding is wrong: the decode itself is
+    /// correct or it is not, and when it is not, no setting above it helps.
+    ///
+    /// What it costs is processor time, and what that means depends on the
+    /// machine: spare capacity on a desktop, battery on a laptop.
+    ///
+    /// The built-in pipeline ignores this and always decodes in software. That
+    /// is not an oversight — it is why it costs 28% of a core where mpv's
+    /// hardware path costs 72%: the frame has to come back from the GPU to be
+    /// composited, and the trip back is the expensive part.
+    #[serde(default)]
+    pub software_decoding: bool,
     /// Whether keyboard shortcuts do anything at all.
     ///
     /// On by default, and turned off by its own shortcut, which keeps working
@@ -244,6 +260,7 @@ impl Default for Settings {
             live_buffer_gb: default_live_buffer(),
             download_dir: String::new(),
             buffer_dir: String::new(),
+            software_decoding: false,
             shortcuts_enabled: true,
             shortcut_keys: Default::default(),
             window: None,

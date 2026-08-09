@@ -543,6 +543,32 @@ pub fn settings_screen(
                 }
             });
 
+            // ── Video ──────────────────────────────────────────────────
+            ui.add_space(SPACE_L * 1.5);
+            section(
+                ui,
+                "Video",
+                "Decoding uses the integrated graphics chip where it can. The \
+                 discrete card is never asked for: it costs battery and a video \
+                 player has no use for it.",
+            );
+            control_row(ui, |ui| {
+                let mut software = settings.software_decoding;
+                if ui
+                    .checkbox(&mut software, "Decode in software")
+                    .on_hover_text(
+                        "Turn this on if the picture shows artifacts or tears, which \
+                         is what a driver's decoder looks like when it is wrong. It \
+                         costs processor time: on a desktop that is spare capacity \
+                         nobody misses, on a laptop it is battery.",
+                    )
+                    .changed()
+                {
+                    settings.software_decoding = software;
+                    action = SetupAction::Save;
+                }
+            });
+
             // ── Where things are kept ──────────────────────────────────
             //
             // Both default to the user profile, which is on C: on almost every
