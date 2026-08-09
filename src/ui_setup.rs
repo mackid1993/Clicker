@@ -20,6 +20,18 @@ pub enum SetupAction {
     Remove(usize),
     /// Persist whatever is currently in the settings struct.
     Save,
+    /// Open the system folder picker for one of the storage locations.
+    ///
+    /// Returned rather than done here: the dialog blocks until it is dismissed,
+    /// and blocking inside a frame freezes the window that is drawing it.
+    PickFolder(Folder),
+}
+
+/// Which of the two configurable locations a pick is for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Folder {
+    Downloads,
+    Buffer,
 }
 
 #[derive(Default)]
@@ -31,6 +43,8 @@ pub struct SetupState {
     pub probing: bool,
     /// The result of the last probe, good or bad.
     pub message: Option<(String, bool)>,
+    /// Which shortcut is listening for a new key, by action id.
+    pub capturing: Option<String>,
     /// Why the configured folders were refused, if they were.
     ///
     /// Held rather than recomputed, because finding out means writing a file
@@ -544,18 +558,20 @@ pub fn settings_screen(
                  downloaded stays where it is.",
             );
 
-            for (label, value, error, hint) in [
+            for (label, value, error, hint, which) in [
                 (
                     "Downloads",
                     &mut settings.download_dir,
                     &mut state.download_dir_error,
                     "e.g. M:\\Clicker\\Downloads",
+                    Folder::Downloads,
                 ),
                 (
                     "Live buffer",
                     &mut settings.buffer_dir,
                     &mut state.buffer_dir_error,
                     "e.g. M:\\Clicker\\Buffer",
+                    Folder::Buffer,
                 ),
             ] {
                 control_row(ui, |ui| {
@@ -564,8 +580,27 @@ pub fn settings_screen(
                             .size(12.0)
                             .color(Fluent::TEXT_SECONDARY),
                     );
-                    let entry = field(ui, value, FIELD_W).hint_text(hint);
-                    if ui.add(entry).lost_focus() {
+                    let entry = field(ui, value, FIELD_W - 110.0).hint_text(hint);
+                    let typed = ui.add(entry);
+                    // The dialog first, typing as the fallback. A path someone
+                    // browsed to exists and is spelled correctly, which a typed
+                    // one only usually is.
+                    if ui
+                        .add(egui::Button::new("Browse…").min_size(egui::vec2(0.0, ROW_H)))
+                        .clicked()
+                    {
+                        action = SetupAction::PickFolder(which);
+                    }
+                    if ui
+                        .add(egui::Button::new("Default").min_size(egui::vec2(0.0, ROW_H)))
+                        .on_hover_text("Keep it beside the application's own data")
+                        .clicked()
+                    {
+                        value.clear();
+                        *error = None;
+                        action = SetupAction::Save;
+                    }
+                    if typed.lost_focus() {
                         // Checked by writing to it. A path can exist, be
                         // readable, and still refuse a write for reasons no
                         // attribute reports, and finding that out when a
@@ -597,28 +632,122 @@ pub fn settings_screen(
             section(
                 ui,
                 "Keyboard",
-                "The whole application can be driven without a mouse.",
+                "The whole application can be driven without a mouse. Click a key \
+                 to change it, then press the one you want.",
             );
-            for (keys, what) in crate::SHORTCUTS {
+
+            control_row(ui, |ui| {
+                let mut on = settings.shortcuts_enabled;
+                if ui
+                    .checkbox(&mut on, "Shortcuts are active")
+                    .on_hover_text(format!(
+                        "{} turns them off and on again, and keeps working when \
+                         they are off.",
+                        crate::keys::display(settings, crate::keys::TOGGLE)
+                    ))
+                    .changed()
+                {
+                    settings.shortcuts_enabled = on;
+                    action = SetupAction::Save;
+                }
+                if ui
+                    .add(egui::Button::new("Reset to defaults").min_size(egui::vec2(0.0, ROW_H)))
+                    .clicked()
+                {
+                    settings.shortcut_keys.clear();
+                    state.capturing = None;
+                    action = SetupAction::Save;
+                }
+            });
+
+            // The key being rebound, if any. Taken before the rows are drawn so
+            // that pressing a key binds it to the row that asked, and not to
+            // whichever row happens to be drawn when the event arrives.
+            let captured = state.capturing.as_ref().and_then(|_| {
+                ui.input(|i| {
+                    i.events.iter().find_map(|event| match event {
+                        egui::Event::Key { key, pressed: true, .. } => Some(*key),
+                        _ => None,
+                    })
+                })
+            });
+
+            for entry in crate::keys::ACTIONS {
                 ui.horizontal(|ui| {
                     ui.add_space(SPACE_S / 2.0);
-                    ui.label(
-                        egui::RichText::new(*keys)
+                    let arming = state.capturing.as_deref() == Some(entry.id);
+                    let text = if arming {
+                        "press a key".to_string()
+                    } else {
+                        crate::keys::display(settings, entry.id)
+                    };
+                    let button = egui::Button::new(
+                        egui::RichText::new(text)
                             .size(12.0)
                             .monospace()
-                            .color(Fluent::TEXT_PRIMARY),
-                    );
-                    // A fixed column, so the descriptions line up into a list
-                    // rather than stepping in and out with the key names.
-                    let used = ui.min_rect().width();
-                    ui.add_space((KEY_COLUMN - used).max(SPACE_S));
+                            .color(if arming { Fluent::ACCENT } else { Fluent::TEXT_PRIMARY }),
+                    )
+                    .min_size(egui::vec2(KEY_COLUMN, 24.0));
+
+                    if ui.add(button).clicked() {
+                        // Clicking the one already listening cancels it, so
+                        // there is a way out that is not a key press.
+                        state.capturing = if arming { None } else { Some(entry.id.to_string()) };
+                    }
+
+                    ui.add_space(SPACE_S);
                     ui.label(
-                        egui::RichText::new(*what)
+                        egui::RichText::new(entry.label)
                             .size(12.0)
                             .color(Fluent::TEXT_SECONDARY),
                     );
+
+                    // Said rather than refused. Somebody swapping two keys over
+                    // passes through a clash on the way, and refusing the first
+                    // half of that makes the swap impossible.
+                    let clash = crate::keys::conflicts(settings, entry.id);
+                    if !clash.is_empty() && !arming {
+                        ui.label(
+                            egui::RichText::new(format!("also {}", clash.join(", ")))
+                                .size(11.0)
+                                .color(Fluent::CAUTION),
+                        );
+                    }
                 });
+
+                if state.capturing.as_deref() == Some(entry.id) {
+                    if let Some(key) = captured {
+                        // Escape leaves it as it was. Backspace clears it, so
+                        // an action can be left with no key at all, which is
+                        // the only way to be sure a stray press does nothing.
+                        match key {
+                            egui::Key::Escape => {}
+                            egui::Key::Backspace => {
+                                settings
+                                    .shortcut_keys
+                                    .insert(entry.id.to_string(), String::new());
+                                action = SetupAction::Save;
+                            }
+                            key => {
+                                settings
+                                    .shortcut_keys
+                                    .insert(entry.id.to_string(), key.name().to_string());
+                                action = SetupAction::Save;
+                            }
+                        }
+                        state.capturing = None;
+                    }
+                }
             }
+            ui.label(
+                egui::RichText::new(
+                    "Escape keeps the current key, Backspace removes it. Escape \
+                     always leaves full screen and stops playback, whatever else \
+                     is bound.",
+                )
+                .size(11.0)
+                .color(Fluent::TEXT_TERTIARY),
+            );
 
             // ── About ──────────────────────────────────────────────────
             //

@@ -13,6 +13,7 @@ mod downloads;
 mod fluent;
 mod guide;
 mod images;
+mod keys;
 mod library;
 mod log;
 mod paths;
@@ -39,27 +40,6 @@ use ui::Screen;
 /// welcome card, the About line. One place, so it cannot be half-renamed.
 pub const APP_NAME: &str = "Clicker";
 
-/// Every keyboard shortcut, and what it does.
-///
-/// One table, read by both the code that handles the keys and the settings
-/// page that documents them. Two lists would disagree within a month, and the
-/// one that disagrees is always the documentation.
-///
-/// The letters only do anything when no text field has the keyboard, so typing
-/// "guide" into the search box does not walk through five screens. See
-/// `handle_keys`.
-pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("H  G  L  R  D  S", "Home, Guide, Library, Recordings, Downloads, Settings"),
-    ("Tab", "Show or hide the labels on the navigation rail"),
-    ("Space  or  K", "Play or pause"),
-    ("Left  Right", "Skip back or forward"),
-    ("Up  Down", "Volume"),
-    ("M", "Mute"),
-    ("Page Up  Page Down", "Previous or next channel, while watching live"),
-    ("F  or  F11", "Full screen"),
-    ("Escape", "Leave full screen, then stop playback"),
-    ("Backspace", "Stop playback"),
-];
 
 /// Width of the navigation rail, collapsed and expanded. Both are Fluent's own
 /// values, so it lines up with every other Windows application that uses one.
@@ -404,6 +384,8 @@ enum Msg {
     /// A recording was deleted or its watched state changed; the library and
     /// home screen need rereading.
     LibraryChanged(String),
+    /// A folder was chosen in the system picker.
+    FolderPicked(ui_setup::Folder, std::path::PathBuf),
 }
 
 struct App {
@@ -862,6 +844,24 @@ impl App {
                         }
                     }
                 }
+                Msg::FolderPicked(which, path) => {
+                    let text = path.display().to_string();
+                    // Checked the same way a typed path is, because a folder
+                    // that exists and was chosen from a dialog can still be
+                    // one this account cannot write to.
+                    let refused = settings::writable(&path).err().map(|e| format!("{e:#}"));
+                    match which {
+                        ui_setup::Folder::Downloads => {
+                            self.settings.download_dir = text;
+                            self.setup.download_dir_error = refused;
+                        }
+                        ui_setup::Folder::Buffer => {
+                            self.settings.buffer_dir = text;
+                            self.setup.buffer_dir_error = refused;
+                        }
+                    }
+                    self.handle_setup(ui_setup::SetupAction::Save);
+                }
                 Msg::LibraryChanged(note) => {
                     self.announce(note);
                     // Reload rather than patching the local copy, so what is
@@ -1268,18 +1268,49 @@ impl App {
             return;
         }
 
-        let (f11, escape, space, left, right, home) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::F11),
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::Space),
-                i.key_pressed(egui::Key::ArrowLeft),
-                i.key_pressed(egui::Key::ArrowRight),
-                i.key_pressed(egui::Key::Backspace),
-            )
-        });
+        // A shortcut being rebound owns the keyboard for that moment. Without
+        // this, binding an action to G would also switch to the guide on the
+        // way past, which is both startling and hard to undo.
+        if self.setup.capturing.is_some() {
+            return;
+        }
 
-        if f11 {
+        // Every binding sampled once, before anything acts on any of them.
+        //
+        // Two reasons, and both matter. Acting mutates `self`, so a closure
+        // holding the settings open to ask "was this pressed" would forbid it.
+        // And the toggle below changes whether the rest count at all, which
+        // would otherwise mean a key read before it and a key read after it
+        // disagreeing about the same frame.
+        let fired: std::collections::HashMap<&'static str, bool> = keys::ACTIONS
+            .iter()
+            .map(|action| (action.id, keys::pressed(ctx, &self.settings, action.id)))
+            .collect();
+        let bound = |id: &str| fired.get(id).copied().unwrap_or(false);
+
+        // The master switch, before anything else and regardless of it, so it
+        // can be pressed again to undo itself.
+        if bound(keys::TOGGLE) {
+            self.settings.shortcuts_enabled = !self.settings.shortcuts_enabled;
+            let state = if self.settings.shortcuts_enabled { "on" } else { "off" };
+            self.announce(format!("Keyboard shortcuts {state}"));
+            self.handle_setup(ui_setup::SetupAction::Save);
+        }
+
+        // Escape is not reboundable and not disableable. It is the key every
+        // application on this desktop uses to get out of something, and a
+        // full-screen window with shortcuts turned off and no way back is a
+        // trap worth refusing to build.
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
+        let (space, left, right, home) = (
+            bound("play"),
+            bound("back"),
+            bound("forward"),
+            bound("stop"),
+        );
+
+        if bound("fullscreen") {
             self.set_fullscreen(ctx, !self.fullscreen);
         }
         if escape {
@@ -1304,57 +1335,33 @@ impl App {
         // would tear the picture away on a mistyped key, and the transport is
         // what the keyboard should be reaching during playback.
         if !self.watching {
-            let (h, g, l, r, d, s, tab) = ctx.input(|i| {
-                (
-                    i.key_pressed(egui::Key::H),
-                    i.key_pressed(egui::Key::G),
-                    i.key_pressed(egui::Key::L),
-                    i.key_pressed(egui::Key::R),
-                    i.key_pressed(egui::Key::D),
-                    i.key_pressed(egui::Key::S),
-                    i.key_pressed(egui::Key::Tab),
-                )
-            });
-            let screen = if h {
-                Some(Screen::Home)
-            } else if g {
-                Some(Screen::Guide)
-            } else if l {
-                Some(Screen::Library)
-            } else if r {
-                Some(Screen::Recordings)
-            } else if d {
-                Some(Screen::Downloads)
-            } else if s {
-                Some(Screen::Settings)
-            } else {
-                None
-            };
+            let screen = [
+                ("home", Screen::Home),
+                ("guide", Screen::Guide),
+                ("library", Screen::Library),
+                ("recordings", Screen::Recordings),
+                ("downloads", Screen::Downloads),
+                ("settings", Screen::Settings),
+            ]
+            .into_iter()
+            .find(|(id, _)| bound(id))
+            .map(|(_, screen)| screen);
+
             if let Some(screen) = screen {
                 if self.screen != screen {
                     self.screen = screen;
                     self.screen_changed = Instant::now();
                 }
             }
-            if tab {
+            if bound("rail") {
                 self.rail_expanded = !self.rail_expanded;
             }
             return;
         }
 
         // Volume, and muting, which is the one control a remote always has.
-        let (up_arrow, down_arrow, mute, k, f) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::ArrowUp),
-                i.key_pressed(egui::Key::ArrowDown),
-                i.key_pressed(egui::Key::M),
-                i.key_pressed(egui::Key::K),
-                i.key_pressed(egui::Key::F),
-            )
-        });
-        if f {
-            self.set_fullscreen(ctx, !self.fullscreen);
-        }
+        let (up_arrow, down_arrow, mute) =
+            (bound("volume_up"), bound("volume_down"), bound("mute"));
         if up_arrow || down_arrow {
             let step = if up_arrow { 0.05 } else { -0.05 };
             self.volume = (self.volume + step).clamp(0.0, 1.0);
@@ -1373,7 +1380,7 @@ impl App {
             );
         }
 
-        if space || k {
+        if space {
             self.paused = !self.paused;
             if let Some(p) = &self.player {
                 p.set_paused(self.paused);
@@ -1397,12 +1404,7 @@ impl App {
         // Channel surfing. Steps through the guide as it is currently
         // filtered, so a collection picked in the guide is also the lineup
         // being surfed rather than the whole thousand-channel list.
-        let (up, down) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::PageUp),
-                i.key_pressed(egui::Key::PageDown),
-            )
-        });
+        let (up, down) = (bound("channel_up"), bound("channel_down"));
         if (up || down) && self.live_channel.is_some() {
             self.surf(if up { -1 } else { 1 });
         }
@@ -1893,6 +1895,34 @@ impl App {
                 if let Err(e) = self.settings.save() {
                     self.announce(format!("Could not save settings: {e:#}"));
                 }
+            }
+            ui_setup::SetupAction::PickFolder(which) => {
+                // On its own thread. The picker runs its own message loop and
+                // does not return until it is dismissed, so calling it from
+                // here would stop this window drawing — including the dialog's
+                // own parent, which is the thing behind it.
+                let tx = self.tx.clone();
+                let ctx = self.repaint.clone();
+                let start = match which {
+                    ui_setup::Folder::Downloads => self.settings.download_path(),
+                    ui_setup::Folder::Buffer => self.settings.buffer_path(),
+                };
+                std::thread::spawn(move || {
+                    let picked = rfd::FileDialog::new()
+                        .set_title(match which {
+                            ui_setup::Folder::Downloads => "Where downloads are kept",
+                            ui_setup::Folder::Buffer => "Where the live buffer is written",
+                        })
+                        // Opening where the current setting points, so changing
+                        // it starts from where it is rather than from wherever
+                        // the shell last happened to be.
+                        .set_directory(&start)
+                        .pick_folder();
+                    if let Some(path) = picked {
+                        let _ = tx.send(Msg::FolderPicked(which, path));
+                        ctx.request_repaint();
+                    }
+                });
             }
             ui_setup::SetupAction::Probe(input) => {
                 let url = settings::normalize(&input);

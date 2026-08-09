@@ -47,6 +47,13 @@ raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tray-icon = { version = "0.24.2", default-features = false }
 
+# The system folder picker, for choosing where downloads and the live buffer
+# go. Typing a path is a fine fallback and a poor first offer: it invites
+# typos, and the failure it produces arrives later, when a recording is half
+# downloaded. On Windows this is the shell's own dialog over IFileDialog, and
+# it pulls in windows-sys and nothing else. MIT.
+rfd = { version = "0.15", default-features = false }
+
 [build-dependencies]
 cc = "1"
 # Embeds the icon and version information into the executable as Win32

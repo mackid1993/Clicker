@@ -104,6 +104,22 @@ pub struct Settings {
     /// Where the live buffer is written. Empty means the same.
     #[serde(default)]
     pub buffer_dir: String,
+    /// Whether keyboard shortcuts do anything at all.
+    ///
+    /// On by default, and turned off by its own shortcut, which keeps working
+    /// so the switch can be reached again. Worth having for anyone who types
+    /// into this on a machine that is also doing something else, and for the
+    /// case where a rebind has gone wrong.
+    #[serde(default = "yes")]
+    pub shortcuts_enabled: bool,
+    /// Rebound keys, by action id. Anything absent uses its default; an entry
+    /// present but empty is an action deliberately left with no key.
+    ///
+    /// A map rather than a list so a settings file written by an older version
+    /// keeps working when actions are added, and so hand-editing it is
+    /// obvious. See `keys::ACTIONS`.
+    #[serde(default)]
+    pub shortcut_keys: std::collections::BTreeMap<String, String>,
     /// Where the window was when it was last closed.
     ///
     /// None until it has been opened once, which is what makes the first launch
@@ -228,6 +244,8 @@ impl Default for Settings {
             live_buffer_gb: default_live_buffer(),
             download_dir: String::new(),
             buffer_dir: String::new(),
+            shortcuts_enabled: true,
+            shortcut_keys: Default::default(),
             window: None,
         }
     }
