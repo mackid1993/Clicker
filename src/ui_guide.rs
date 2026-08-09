@@ -542,7 +542,7 @@ fn draw_row(
 
         // Left click: watch what has started, and ask about what has not.
         //
-        // It used to schedule a future programme outright. Recording is not a
+        // It used to schedule a future program outright. Recording is not a
         // preview — it claims a tuner, it may create a season pass, and the
         // padding is usually the thing worth changing — so a single click that
         // commits to all of that, with no confirmation and no undo beyond

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// One recording.
 ///
 /// Field names follow the API rather than Rust convention because they are
-/// deserialised straight from it; renaming every one of forty fields buys
+/// deserialized straight from it; renaming every one of forty fields buys
 /// nothing.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Recording {

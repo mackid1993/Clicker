@@ -226,7 +226,7 @@ fn main() -> eframe::Result<()> {
     settings::set_user_agent(&saved.client_name);
     prefer_integrated_gpu();
 
-    // The build's own licence, from the binary rather than from a claim in a
+    // The build's own license, from the binary rather than from a claim in a
     // text file. This application may only be distributed if FFmpeg was built
     // without GPL components, so it is worth being able to check.
     log::logline!("[clicker] {}", player::Player::backend());
@@ -2834,7 +2834,7 @@ impl App {
         //
         // On the bar rather than in the row of buttons underneath: they
         // describe the bar, and that row sheds controls as the window narrows
-        // — where you are in a programme is not something to shed.
+        // — where you are in a program is not something to shed.
         const GUTTER: f32 = 64.0;
         let inner = egui::Rect::from_min_max(
             egui::pos2(rect.min.x + GUTTER, rect.min.y),

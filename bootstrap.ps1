@@ -41,7 +41,7 @@ $Msys = 'C:\msys64'
 
 # The mingw packages libmpv needs. libass and libplacebo are not optional in
 # mpv: both are plain dependencies in its meson.build with no way to turn them
-# off. Both are licence-compatible, ISC and LGPLv2.1+ respectively.
+# off. Both are license-compatible, ISC and LGPLv2.1+ respectively.
 $MingwPackages = @(
     'mingw-w64-x86_64-gcc'
     'mingw-w64-x86_64-meson'

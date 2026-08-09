@@ -1,7 +1,7 @@
 ; Clicker installer.
 ;
 ; Packages whatever build.ps1 staged into dist\Clicker. It deliberately does
-; not know how that directory was assembled: the licence vetting of the media
+; not know how that directory was assembled: the license vetting of the media
 ; plugins happens during staging, so anything that reaches this point has
 ; already been checked.
 ;
@@ -70,7 +70,7 @@ Source: "{#StageDir}\clicker.ico";   DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\licenses\*";    DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
 
 ; FFmpeg's libraries, shipped as ordinary DLLs beside the executable,
-; unmodified and individually replaceable. This is a licence requirement, not a
+; unmodified and individually replaceable. This is a license requirement, not a
 ; packaging preference: LGPL-2.1 section 6 obliges us to leave the recipient
 ; able to substitute their own build of these, which is only true while they
 ; stay separate files loaded at runtime. They must never be folded into the

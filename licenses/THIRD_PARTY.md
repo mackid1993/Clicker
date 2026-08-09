@@ -18,7 +18,7 @@ LGPL is what guarantees it.
   recorded inside the binaries themselves and can be read back with
   `av_license()` / `FFMPEG_CONFIGURATION`.
 * License text: `LGPL-2.1.txt`, distributed alongside this file.
-* Section 6 exception: Clicker's own licence forbids modification and reverse
+* Section 6 exception: Clicker's own license forbids modification and reverse
   engineering, which section 6 does not permit for the libraries it covers.
   `LICENSE.md` therefore carries an explicit exception allowing both, for the
   LGPL libraries, to the extent that section requires. Without it this

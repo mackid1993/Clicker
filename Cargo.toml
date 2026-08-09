@@ -3,11 +3,11 @@ name = "clicker"
 version = "1.0.0"
 edition = "2021"
 description = "A native Channels DVR client"
-# PolyForm Noncommercial has no SPDX identifier, so the file is the licence of
+# PolyForm Noncommercial has no SPDX identifier, so the file is the license of
 # record.
 license-file = "LICENSE.md"
 # crates.io requires that anything published there be usable by anyone for any
-# purpose, which a noncommercial licence is not. Refusing here means it cannot
+# purpose, which a noncommercial license is not. Refusing here means it cannot
 # happen by accident.
 publish = false
 

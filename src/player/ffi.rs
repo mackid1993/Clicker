@@ -15,7 +15,16 @@ pub struct RdMedia {
 pub const RD_NOTHING: c_int = 0;
 pub const RD_VIDEO: c_int = 1;
 pub const RD_AUDIO: c_int = 2;
+pub const RD_PACKET: c_int = 3;
 pub const RD_EOF: c_int = -1;
+
+/// One demuxed, still-compressed packet. Opaque here for the same reason
+/// `RdMedia` is: this is FFmpeg's `AVPacket` and nothing on this side has any
+/// business knowing its shape.
+#[repr(C)]
+pub struct RdPacket {
+    _opaque: [u8; 0],
+}
 
 extern "C" {
     /// `abort_flag` points at an `i32` the shim hands to FFmpeg's interrupt
@@ -53,6 +62,28 @@ extern "C" {
     pub fn rd_seekable(m: *mut RdMedia) -> c_int;
 
     pub fn rd_next(m: *mut RdMedia, pts_out: *mut c_double) -> c_int;
+
+    /// Read one packet without decoding it. `RD_PACKET`, `RD_EOF` or
+    /// `RD_ERROR`; on `RD_PACKET` the packet is the caller's to free.
+    ///
+    /// This and `rd_decode` are `rd_next` taken apart, so reading can run on
+    /// its own thread and get ahead of the decoder. A packet costs its own size
+    /// in memory, where a decoded 1080p frame costs 7.9MB, which is what makes
+    /// minutes of read-ahead affordable when a fifth of a second of decoded
+    /// frames is not.
+    pub fn rd_read(m: *mut RdMedia, out: *mut *mut RdPacket) -> c_int;
+    pub fn rd_packet_bytes(pkt: *const RdPacket) -> c_int;
+    pub fn rd_packet_seconds(m: *mut RdMedia, pkt: *const RdPacket) -> c_double;
+    pub fn rd_packet_kind(m: *mut RdMedia, pkt: *const RdPacket) -> c_int;
+    pub fn rd_packet_free(pkt: *mut RdPacket);
+
+    /// Decode, feeding in `pkt`, or NULL to drain what the last packet is still
+    /// producing. `RD_NOTHING` with NULL means the decoder wants another packet.
+    pub fn rd_decode(
+        m: *mut RdMedia,
+        pkt: *mut RdPacket,
+        pts_out: *mut c_double,
+    ) -> c_int;
     /// Returns -1 rather than writing past the end when the decoded picture
     /// does not fit the buffer described by the last three arguments.
     pub fn rd_video_copy(
@@ -93,9 +124,9 @@ extern "C" {
     pub fn rd_version() -> *const c_char;
 }
 
-/// The FFmpeg build's own licence string.
+/// The FFmpeg build's own license string.
 ///
-/// Read at startup and logged. The licence position of this application
+/// Read at startup and logged. The license position of this application
 /// depends on FFmpeg having been built without GPL components, and this is the
 /// binary saying so itself rather than a claim in a text file.
 pub fn license() -> String {

@@ -317,8 +317,8 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     // of text.
     let art = item.art().to_string();
     if let Some(texture) = images.get(&art) {
-        // Focused above centre: a wide crop of a 4:3 still keeps the faces if
-        // it favours the top, and loses them if it takes the middle.
+        // Focused above center: a wide crop of a 4:3 still keeps the faces if
+        // it favors the top, and loses them if it takes the middle.
         theme::image_cover(ui.painter(), card, RADIUS_SURFACE, texture, 0.25);
     } else {
         ui.painter().rect_filled(card, RADIUS_SURFACE, Fluent::LAYER_CARD);

@@ -89,7 +89,7 @@ pub fn onboarding(
     inner.add_space(SPACE_S);
 
     // No example address as placeholder text. Someone glancing at this cannot
-    // tell a greyed-out suggestion from a value that is already filled in, and
+    // tell a grayed-out suggestion from a value that is already filled in, and
     // a field that looks populated next to a disabled Connect button reads as
     // the application being broken.
     let entered = inner
@@ -634,7 +634,7 @@ const ROW_H: f32 = 34.0;
 /// it — which made the field read as too small for its own purpose.
 const FIELD_W: f32 = 420.0;
 
-/// One row of controls, all the same height and centred on one line.
+/// One row of controls, all the same height and centered on one line.
 ///
 /// egui derives a TextEdit's height from its text margin, a Button's from its
 /// padding and a ComboBox's from neither, so controls meant to read as a single

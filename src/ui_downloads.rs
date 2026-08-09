@@ -222,7 +222,7 @@ fn row(
 
     // Four lines, top down: what it is, which episode, what happens in it, and
     // how the download is getting on. Laid out from the top rather than around
-    // the centre so a row with no summary does not shuffle the other three.
+    // the center so a row with no summary does not shuffle the other three.
     let text_x = thumb.max.x + SPACE_M;
     let text_w = rect.max.x - text_x - 52.0;
     let mut line_y = rect.min.y + 12.0;

@@ -33,6 +33,7 @@
 #define RD_NOTHING   0
 #define RD_VIDEO     1
 #define RD_AUDIO     2
+#define RD_PACKET    3
 #define RD_EOF      -1
 #define RD_ERROR    -2
 
@@ -493,8 +494,8 @@ void rd_take_timings(RdMedia *m, int64_t *read_us, int64_t *decode_us, int64_t *
  *
  * Those spaces are indentation: a caption row carries them to sit under the
  * speaker it belongs to. That positioning is against the broadcaster's own
- * 32-column grid, and it means nothing once the text is a centred block over a
- * window of arbitrary width — it only pushes lines off-centre by an amount
+ * 32-column grid, and it means nothing once the text is a centered block over a
+ * window of arbitrary width — it only pushes lines off-center by an amount
  * that looks like a bug. */
 static void trim_lines(char *s)
 {
@@ -717,14 +718,82 @@ static int decode_frame_from(RdMedia *m, AVCodecContext *dec, int kind, double *
 }
 
 /*
- * Advance by one decoded frame.
+ * Read one packet from the container.
+ *
+ * Split from decoding so the two can happen on different threads. Fused, a
+ * slow read stops decoding for its duration, and 200ms later — the depth of
+ * the frame queue — the picture stops with it. That is the whole reason a
+ * segment fetch or a server hiccup is visible as a stutter.
+ *
+ * Ownership of the packet passes to the caller, which must return it to
+ * rd_packet_free. Returns RD_PACKET, RD_EOF or RD_ERROR.
+ */
+int rd_read(RdMedia *m, AVPacket **out)
+{
+    if (!m || !out) return RD_ERROR;
+    *out = NULL;
+
+    AVPacket *pkt = av_packet_alloc();
+    if (!pkt) return RD_ERROR;
+
+    int64_t t0 = av_gettime_relative();
+    int rc = av_read_frame(m->fmt, pkt);
+    int64_t took = av_gettime_relative() - t0;
+    m->read_us += took;
+    if (took > m->read_max_us) m->read_max_us = took;
+
+    if (rc < 0) {
+        av_packet_free(&pkt);
+        return (rc == AVERROR_EOF) ? RD_EOF : RD_ERROR;
+    }
+
+    *out = pkt;
+    return RD_PACKET;
+}
+
+int rd_packet_bytes(const AVPacket *pkt)
+{
+    return pkt ? pkt->size : 0;
+}
+
+/* How much play time this packet represents, for bounding the queue by
+ * duration as well as by memory. Zero when the container does not say. */
+double rd_packet_seconds(RdMedia *m, const AVPacket *pkt)
+{
+    if (!m || !pkt || pkt->duration <= 0) return 0.0;
+    if (pkt->stream_index == m->video_index) return (double)pkt->duration * m->video_timebase;
+    if (pkt->stream_index == m->audio_index) return (double)pkt->duration * m->audio_timebase;
+    return 0.0;
+}
+
+/* Which stream it belongs to, so the queue can measure video and audio
+ * separately: they are interleaved, and the video packets are what the depth
+ * of the buffer should be judged on. */
+int rd_packet_kind(RdMedia *m, const AVPacket *pkt)
+{
+    if (!m || !pkt) return RD_NOTHING;
+    if (pkt->stream_index == m->video_index) return RD_VIDEO;
+    if (pkt->stream_index == m->audio_index) return RD_AUDIO;
+    return RD_NOTHING;
+}
+
+void rd_packet_free(AVPacket *pkt)
+{
+    if (pkt) av_packet_free(&pkt);
+}
+
+/*
+ * Decode, optionally feeding one packet in.
+ *
+ * Call with NULL to drain frames a previous packet is still producing; when
+ * that returns RD_NOTHING the decoder is empty and wants another packet.
+ * Frames are drained before the next packet goes in, because one packet can
+ * produce several and discarding them reads as stutter.
  *
  * Returns RD_VIDEO or RD_AUDIO with *pts_out set, RD_NOTHING if it needs to be
- * called again, RD_EOF at the end, or RD_ERROR. Frames are drained from a
- * decoder before the next packet is read, because one packet can produce
- * several frames and discarding them reads as stutter.
+ * called again, or RD_ERROR.
  */
-int rd_next(RdMedia *m, double *pts_out)
+int rd_decode(RdMedia *m, AVPacket *pkt, double *pts_out)
 {
     if (!m) return RD_ERROR;
     av_frame_unref(m->frame);
@@ -740,18 +809,12 @@ int rd_next(RdMedia *m, double *pts_out)
         m->draining = 0;
     }
 
-    av_packet_unref(m->packet);
-    int64_t t0 = av_gettime_relative();
-    int rc = av_read_frame(m->fmt, m->packet);
-    int64_t took = av_gettime_relative() - t0;
-    m->read_us += took;
-    if (took > m->read_max_us) m->read_max_us = took;
-    if (rc == AVERROR_EOF) return RD_EOF;
-    if (rc < 0) return RD_ERROR;
+    /* Nothing pending and nothing offered: the caller owes us a packet. */
+    if (!pkt) return RD_NOTHING;
 
-    if (m->packet->stream_index == m->video_index) {
+    if (pkt->stream_index == m->video_index) {
         int64_t t1 = av_gettime_relative();
-        int sent = avcodec_send_packet(m->video_dec, m->packet);
+        int sent = avcodec_send_packet(m->video_dec, pkt);
         m->decode_us += av_gettime_relative() - t1;
         if (sent < 0) return RD_NOTHING;
         m->draining = RD_VIDEO;
@@ -760,8 +823,8 @@ int rd_next(RdMedia *m, double *pts_out)
         return r;
     }
 
-    if (m->audio_index >= 0 && m->packet->stream_index == m->audio_index) {
-        if (avcodec_send_packet(m->audio_dec, m->packet) < 0) return RD_NOTHING;
+    if (m->audio_index >= 0 && pkt->stream_index == m->audio_index) {
+        if (avcodec_send_packet(m->audio_dec, pkt) < 0) return RD_NOTHING;
         m->draining = RD_AUDIO;
         int r = decode_frame_from(m, m->audio_dec, RD_AUDIO, pts_out);
         if (r == RD_NOTHING) m->draining = 0;
@@ -769,6 +832,29 @@ int rd_next(RdMedia *m, double *pts_out)
     }
 
     return RD_NOTHING;
+}
+
+/*
+ * Read and decode in one call, on one thread.
+ *
+ * What the pipeline used to do everywhere, kept because the headless self test
+ * uses it and because it is the honest baseline to measure the buffered path
+ * against.
+ */
+int rd_next(RdMedia *m, double *pts_out)
+{
+    if (!m) return RD_ERROR;
+
+    int r = rd_decode(m, NULL, pts_out);
+    if (r != RD_NOTHING) return r;
+
+    AVPacket *pkt = NULL;
+    int rc = rd_read(m, &pkt);
+    if (rc != RD_PACKET) return rc;
+
+    r = rd_decode(m, pkt, pts_out);
+    rd_packet_free(pkt);
+    return r;
 }
 
 /* Copy the last decoded picture out as RGBA. */
@@ -1013,7 +1099,7 @@ int rd_seek(RdMedia *m, double seconds)
     return 0;
 }
 
-/* The build's own licence string, so the shipped binary can be asked what it
+/* The build's own license string, so the shipped binary can be asked what it
  * is rather than trusted. A build carrying GPL components would say so here. */
 const char *rd_license(void)
 {

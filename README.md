@@ -29,7 +29,7 @@ Installers are on the
   to disk here so it can still be rewound. The buffer recycles rather than
   filling up, and how large it is allowed to get is a setting
 - **Guide** across every channel, with logos, collections, sources and search.
-  Left click watches, right click records; a future programme records on left
+  Left click watches, right click records; a future program records on left
   click
 - **Recordings**, split into what is scheduled and what already exists, because
   a DVR with 303 recordings and 7,233 imported files is unusable as one list
@@ -193,7 +193,7 @@ Which of the two is in use is read from the demuxer rather than guessed from the
 URL, because plenty of playlists elsewhere are sliding windows that cannot seek
 backwards at all.
 
-## Licence
+## License
 
 Clicker is **source available**: PolyForm Noncommercial 1.0.0. Read it, build
 it, run it, change it, fork it and share it — for any noncommercial purpose.
@@ -212,7 +212,7 @@ Clicker uses [FFmpeg](https://ffmpeg.org/), licensed under the **GNU Lesser
 General Public License version 2.1 or later**. FFmpeg is not covered by the
 terms above and is not owned by this project.
 
-It is built from source rather than downloaded, because the licence has to be
+It is built from source rather than downloaded, because the license has to be
 provable. Every prebuilt libVLC and libmpv binary for Windows embeds an FFmpeg
 configured with `--enable-gpl`; shipping one of those inside a noncommercially
 licensed application would relicense the entire distribution under the GPL and
@@ -226,7 +226,7 @@ folded into the executable and never renamed. That is what lets anyone receiving
 a copy substitute their own build of them, as LGPL-2.1 section 6 requires.
 `LICENSE.md` carries the exception that section also requires, granting private
 modification and reverse engineering for debugging unconditionally — including
-to someone whose purpose is commercial, and who therefore holds no licence to
+to someone whose purpose is commercial, and who therefore holds no license to
 Clicker itself.
 
 The corresponding source is FFmpeg `n7.1.1`, from

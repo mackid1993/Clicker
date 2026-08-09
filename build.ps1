@@ -152,7 +152,7 @@ Write-Host '[2/3] Staging into dist\Clicker' -ForegroundColor Cyan
 $dlls = Get-ChildItem (Join-Path $FFmpeg 'bin\*.dll') -ErrorAction SilentlyContinue
 if (-not $dlls) { Fail "No FFmpeg DLLs found in $FFmpeg\bin" }
 
-# The licence is read out of the binary that is actually being shipped, not
+# The license is read out of the binary that is actually being shipped, not
 # taken on trust from the build script that produced it.
 $avutil = $dlls | Where-Object { $_.Name -like 'avutil*' } | Select-Object -First 1
 if ($avutil) {
@@ -166,7 +166,7 @@ incompatible with the GPL. Rebuild FFmpeg with scripts\build-ffmpeg.ps1, which c
 --disable-gpl --disable-nonfree.
 "@
     }
-    Write-Host '      FFmpeg licence verified: LGPL, no GPL components' -ForegroundColor DarkGray
+    Write-Host '      FFmpeg license verified: LGPL, no GPL components' -ForegroundColor DarkGray
 }
 
 # A clean stage every time. Leftovers from a previous run are how a file that is

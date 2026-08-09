@@ -15,8 +15,8 @@
     Why from source. The prebuilt LGPL packages that exist are built by someone
     who states plainly that they cannot guarantee every LGPL-incompatible
     component is disabled, and their FFmpeg has been stripped of the strings
-    that would let anyone check. This project's licence position is that the
-    licence has to be provable from the binary being shipped, which means
+    that would let anyone check. This project's license position is that the
+    license has to be provable from the binary being shipped, which means
     building it here, from a pinned tag, with the flags written down.
 
     FFmpeg is built again rather than reusing third_party\ffmpeg: that one is
@@ -133,11 +133,11 @@ if ($Reconfigure -or -not (Test-Path $FFmpegBuilt)) {
         '--arch=x86_64'
         '--enable-shared'
         '--disable-static'
-        # The licence position of this entire application rests on these two.
+        # The license position of this entire application rests on these two.
         '--disable-gpl'
         '--disable-nonfree'
         # Nothing gets picked up off this machine and silently becomes a
-        # dependency or a licence problem.
+        # dependency or a license problem.
         '--disable-autodetect'
         '--enable-schannel'
         '--enable-d3d11va'
@@ -162,7 +162,7 @@ if ($Reconfigure -or -not (Test-Path $FFmpegBuilt)) {
 #
 # libass and libplacebo are not optional in mpv 0.41 — both are plain
 # `dependency()` calls in its meson.build with no `required: false`, so there
-# is no flag to turn them off. Both are licence-compatible: libass is ISC and
+# is no flag to turn them off. Both are license-compatible: libass is ISC and
 # libplacebo is LGPLv2.1+. They come from MSYS2 packages along with freetype,
 # fribidi and harfbuzz, and they ship as DLLs beside libmpv.
 $MpvBuild = Join-Path $MpvSrc 'build'
@@ -227,7 +227,7 @@ foreach ($dep in $deps) {
 
 # ------------------------------------------------------------------- verify ---
 #
-# The licence is read out of the binaries actually produced, not taken on trust
+# The license is read out of the binaries actually produced, not taken on trust
 # from the flags above. Same check build.ps1 runs before packaging.
 Step 'verifying'
 $bad = @()

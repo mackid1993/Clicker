@@ -3,7 +3,7 @@
     Build FFmpeg from source for Clicker.
 
 .DESCRIPTION
-    FFmpeg is built rather than downloaded because the licence has to be
+    FFmpeg is built rather than downloaded because the license has to be
     provable. Every prebuilt libVLC and libmpv binary for Windows embeds an
     FFmpeg configured with --enable-gpl, which would relicense this whole
     application under the GPL. Here --disable-gpl and --disable-nonfree are
@@ -196,11 +196,11 @@ if ($Reconfigure -or -not (Test-Path $ConfigMak)) {
         '--arch=x86_64'
         '--enable-shared'
         '--disable-static'
-        # The licence position of this entire application rests on these two.
+        # The license position of this entire application rests on these two.
         '--disable-gpl'
         '--disable-nonfree'
         # No external libraries, so nothing can be picked up off this machine
-        # and silently become a dependency or a licence problem.
+        # and silently become a dependency or a license problem.
         '--disable-autodetect'
         # Windows' own TLS, for HTTPS sources.
         '--enable-schannel'
@@ -338,7 +338,7 @@ if ($mak -match 'gsub\(/') {
     Set-Content -Path $ConfigMak -Value $mak -NoNewline
 }
 
-# ------------------------------------------------------- licence gateway ----
+# ------------------------------------------------------- license gateway ----
 # Checked before a single object is compiled, so a build that could not legally
 # be shipped is never even started.
 $ConfigH = Join-Path $Src 'config.h'
@@ -348,7 +348,7 @@ $gpl     = Select-String -Path $ConfigH -Pattern '^#define CONFIG_GPL 1$'     -Q
 $nonfree = Select-String -Path $ConfigH -Pattern '^#define CONFIG_NONFREE 1$' -Quiet
 if ($gpl)     { Fail 'REFUSING: this configuration enables GPL components.' }
 if ($nonfree) { Fail 'REFUSING: this configuration enables nonfree components.' }
-Step 'licence check passed: no GPL, no nonfree'
+Step 'license check passed: no GPL, no nonfree'
 
 # ----------------------------------------------------------------- build ----
 # Reconfiguring means every object is suspect.

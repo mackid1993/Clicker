@@ -164,6 +164,54 @@ enum Command {
 const MAX_VIDEO_FRAMES: usize = 12;
 const MAX_AUDIO_SECONDS: f64 = 1.0;
 
+/// How far ahead of the decoder to read, in seconds of stream and in bytes.
+///
+/// This is where the memory goes, and deliberately so. The queue above holds
+/// decoded frames, which at 1080p are 7.9MB each: twelve of them is 95MB and
+/// buys a fifth of a second. The same 95MB of *compressed* packets is around
+/// two minutes on a 6.8Mbps recording, because a packet costs what it costs on
+/// the wire rather than what it costs on a screen.
+///
+/// That ratio is the entire difference between a pipeline that stutters when a
+/// read is slow and one that does not. A segment fetch, a server pausing to
+/// think, a wifi hiccup: all of it now eats into a minute of slack instead of
+/// stopping the picture a fifth of a second later.
+///
+/// Both limits exist because either alone is wrong. Seconds alone would let a
+/// 25Mbps stream take 375MB; bytes alone would give a radio-quality stream an
+/// hour of read-ahead nobody asked for. Whichever binds first, binds.
+const MAX_PACKET_SECONDS: f64 = 60.0;
+const MAX_PACKET_BYTES: usize = 96 * 1024 * 1024;
+
+/// One demuxed packet, owned on this side of the shim.
+///
+/// A newtype rather than a bare pointer so that dropping it frees it, which
+/// matters because these are dropped in several places: consumed by the
+/// decoder, thrown away by a seek, and abandoned when the queue is torn down.
+struct Packet(*mut ffi::RdPacket);
+
+// Safe to move between threads: it is read on the reader thread, handed to the
+// queue, and used on the decode thread, never touched by two at once.
+unsafe impl Send for Packet {}
+
+impl Drop for Packet {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ffi::rd_packet_free(self.0) };
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+/// The media handle, for the reader thread.
+///
+/// The decode thread owns the `Media` and closes it when it returns, so this
+/// is only sound while the reader is guaranteed to have stopped first. It is:
+/// the decode loop spawns the reader and joins it before returning.
+#[derive(Clone, Copy)]
+struct Handle(*mut ffi::RdMedia);
+unsafe impl Send for Handle {}
+
 /// How many frame buffers to keep for recycling.
 ///
 /// Only needs to cover the difference between what the decoder is filling and
@@ -184,7 +232,7 @@ const MAX_SPARE_BUFFERS: usize = 4;
 /// picture froze, and the audio queue, which is filled from the same thread by
 /// the same reads, sat empty and underran on hundreds of callbacks a minute.
 /// That is the stutter, and it is not a decode fault: the decode thread was
-/// measured at 32% busy throughout, and colour conversion at 3%.
+/// measured at 32% busy throughout, and color conversion at 3%.
 ///
 /// The fix is not a bigger buffer here. Holding a second of 1080p frames costs
 /// half a gigabyte, and it would only postpone the problem, because a player
@@ -253,7 +301,7 @@ const WARM_OPEN: Duration = Duration::from_secs(2);
 
 /// How long a caption stays up with nothing new arriving, in stream seconds.
 ///
-/// A caption decoder does not announce that a programme has stopped talking,
+/// A caption decoder does not announce that a program has stopped talking,
 /// it simply stops sending — so something has to decide when silence has gone
 /// on long enough that the last line is stale rather than still being read.
 /// Eight seconds is longer than any single pop-on caption and shorter than the
@@ -318,7 +366,7 @@ struct Shared {
 
     // --- instrumentation ---------------------------------------------------
     //
-    // `decode_ms` above lumps demux, decode and colour conversion into one
+    // `decode_ms` above lumps demux, decode and color conversion into one
     // figure, which is what the stats card shows and is useless for deciding
     // which of the three to fix. These separate them, and record the shape of
     // the failures rather than only their averages: this pipeline averaged 8ms
@@ -339,6 +387,24 @@ struct Shared {
     /// Times the stream's timeline stepped and the clock was re-anchored onto
     /// it. See `DISCONTINUITY`.
     discontinuities: AtomicU64,
+
+    // --- read-ahead --------------------------------------------------------
+    /// Packets read but not yet decoded. See `MAX_PACKET_SECONDS`.
+    packets: Mutex<VecDeque<Packet>>,
+    /// What the queue holds, tracked alongside it rather than measured by
+    /// walking it: the decode loop asks on every pass and the reader asks
+    /// between every packet, and neither should pay O(queue) to find out.
+    packet_bytes: AtomicUsize,
+    /// Seconds of *video* in the queue, as f64 bits. Video only, because audio
+    /// packets are tiny and numerous and would make the queue look deep when
+    /// it holds no pictures.
+    packet_seconds: AtomicU64,
+    /// The reader has reached the end of the container. Not necessarily the end
+    /// of playback: a live playlist grows, so the reader keeps asking.
+    reader_eof: AtomicBool,
+    /// Serializes the two threads that touch the format context. Reading and
+    /// seeking are the only operations that do, and they must never overlap.
+    demux: Mutex<()>,
     /// Earliest PTS ever seen, as f64 bits. The stream's timeline does not
     /// start at zero, and pretending it does makes every position wrong.
     first_pts: AtomicU64,
@@ -381,7 +447,7 @@ impl Shared {
     /// `live_edge` is the furthest timestamp actually decoded, and while
     /// playback is rewound nothing further is being decoded, so it stops
     /// moving. That breaks the one control that exists to undo a rewind:
-    /// rewind ten minutes into a programme and "jump to live" would take you
+    /// rewind ten minutes into a program and "jump to live" would take you
     /// back to the moment you pressed rewind, because that is still the
     /// furthest frame the player has ever seen. The "-10:00" behind-live
     /// readout freezes with it.
@@ -389,7 +455,7 @@ impl Shared {
     /// A broadcast does not stop while you are watching an earlier part of it.
     /// It advances at exactly one second per second, so the edge is wherever it
     /// was last observed plus however long ago that was. This is an
-    /// extrapolation and it is labelled as one, but it is extrapolating the
+    /// extrapolation and it is labeled as one, but it is extrapolating the
     /// most reliable quantity in the system.
     ///
     /// Note that it tracks *this player's* live edge, which the startup
@@ -609,6 +675,11 @@ impl Player {
             starved: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
             discontinuities: AtomicU64::new(0),
+            packets: Mutex::new(VecDeque::new()),
+            packet_bytes: AtomicUsize::new(0),
+            packet_seconds: AtomicU64::new(0),
+            reader_eof: AtomicBool::new(false),
+            demux: Mutex::new(()),
             first_pts: AtomicU64::new(f64::NAN.to_bits()),
             discarded: AtomicU32::new(0.0f32.to_bits()),
             cc_available: AtomicBool::new(false),
@@ -696,7 +767,7 @@ impl Player {
         })
     }
 
-    /// What FFmpeg build this is, and what licence it carries.
+    /// What FFmpeg build this is, and what license it carries.
     pub fn backend() -> String {
         // Playback faults on a live stream cannot be reproduced in a test: the
         // stream only exists in real time, only arrives at 1x, and the failure
@@ -739,7 +810,7 @@ impl Player {
 
     /// How long the decode thread spent producing each frame, in milliseconds,
     /// averaged over recent frames. This is the number that decides whether
-    /// 60fps is achievable at all: it covers demux, decode and the colour
+    /// 60fps is achievable at all: it covers demux, decode and the color
     /// conversion, which all happen on one thread.
     pub fn decode_ms(&self) -> f32 {
         f32::from_bits(self.shared.decode_ms.load(Ordering::Relaxed))
@@ -1106,6 +1177,30 @@ fn decode_loop(
         }
     }
 
+    // The reader is started here, and joined below, because the handle it uses
+    // belongs to `media`, which this function owns and closes on the way out.
+    // Started from here rather than beside the other threads so that ordering
+    // is a property of the code rather than of a comment asking someone to
+    // preserve it.
+    let reader = {
+        let shared = Arc::clone(&shared);
+        let handle = Handle(handle);
+        std::thread::Builder::new()
+            .name("clicker-read".into())
+            .spawn(move || read_loop(handle, shared))
+            .ok()
+    };
+
+    // Everything below leaves through `stop`, so the reader is always joined.
+    let stop = |reader: Option<std::thread::JoinHandle<()>>, shared: &Arc<Shared>| {
+        shared.quit.store(true, Ordering::SeqCst);
+        if let Some(reader) = reader {
+            let _ = reader.join();
+        }
+        // Nothing else may hold a packet once the handle is about to close.
+        shared.clear_packets();
+    };
+
     loop {
         if shared.quit.load(Ordering::SeqCst) {
             break;
@@ -1116,14 +1211,22 @@ fn decode_loop(
         while let Ok(command) = commands.try_recv() {
             match command {
                 Command::Seek(target) => seek_to = Some(target),
-                Command::Quit => return,
+                Command::Quit => return stop(reader, &shared),
             }
         }
 
         if let Some(target) = seek_to {
             report_next_pts = true;
             last_video_pts = f64::NAN;
-            let rc = unsafe { ffi::rd_seek(handle, target) };
+            // The read-ahead goes first, and before the seek rather than after:
+            // every packet in it was read from where playback used to be, and
+            // decoding even one of them after the jump puts a frame from the
+            // old position into the queue the presenter is about to trust.
+            shared.clear_packets();
+            let rc = {
+                let _demux = shared.demux.lock().unwrap();
+                unsafe { ffi::rd_seek(handle, target) }
+            };
             eprintln!(
                 "[player] seek to {target:.3}s at wall {:.1}s -> {}",
                 opened_at.elapsed().as_secs_f64(),
@@ -1139,6 +1242,9 @@ fn decode_loop(
                 // the progress bar answers the button press rather than waiting
                 // for a segment to arrive.
                 shared.clock.reset(target);
+                // Again, because the reader may have pushed one more between
+                // the flush above and the seek completing.
+                shared.clear_packets();
                 recycle_video(&shared);
                 shared.audio.lock().unwrap().clear();
                 shared.audio_buffered.store(0, Ordering::Relaxed);
@@ -1217,7 +1323,7 @@ fn decode_loop(
             // underrun are the two ways the pipeline runs dry, and they have
             // different causes; skew is A/V sync.
             eprintln!(
-                "[player] {:.1}s pos {:.1}s edge {:.1}s | read {:.0}+dec {:.0}+conv {:.0} ms/s, stall {:.0}ms x{} | vq {}/{} aq {:.0}ms held {} ({:.0}MB) | fps {:.2} dropped {} starved {} underrun {} disc {} | skew {:+.0}ms rate {:.5}",
+                "[player] {:.1}s pos {:.1}s edge {:.1}s | read {:.0}+dec {:.0}+conv {:.0} ms/s, stall {:.0}ms x{} | buf {:.0}s/{:.0}MB | vq {}/{} aq {:.0}ms held {} ({:.0}MB) | fps {:.2} dropped {} starved {} underrun {} disc {} | skew {:+.0}ms rate {:.5}",
                 opened_at.elapsed().as_secs_f64(),
                 position,
                 shared.live_edge(),
@@ -1226,6 +1332,10 @@ fn decode_loop(
                 shared.convert_us.load(Ordering::Relaxed) as f64 * 59.94 / 1000.0,
                 read_max_us as f64 / 1000.0,
                 shared.stalls.swap(0, Ordering::Relaxed),
+                // The read-ahead: how much slack there is before a slow read
+                // could possibly be seen.
+                shared.buffered_seconds(),
+                shared.packet_bytes.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0),
                 queued,
                 MAX_VIDEO_FRAMES,
                 buffered * 1000.0,
@@ -1284,16 +1394,32 @@ fn decode_loop(
 
         let started = Instant::now();
         let mut pts = 0.0f64;
-        let kind = unsafe { ffi::rd_next(handle, &mut pts) };
-        let demuxed = started.elapsed();
 
-        // A live HLS segment fetch happens inside rd_next, on this thread, so
-        // a slow one stops decoding entirely for its duration. Counted rather
-        // than averaged, because that is exactly the kind of fault an average
-        // hides: this pipeline once stalled a full second every two seconds
-        // while averaging a few milliseconds a frame.
-        if demuxed.as_millis() > 16 {
-            shared.stalls.fetch_add(1, Ordering::Relaxed);
+        // Drain whatever the last packet is still producing, and only ask the
+        // queue for another once the decoder is empty. One packet can carry
+        // several frames and throwing any of them away reads as stutter.
+        //
+        // Reading no longer happens here. It happens on the reader thread,
+        // into a queue this drains, which is why a slow read is no longer a
+        // stopped picture — see `MAX_PACKET_SECONDS`.
+        let mut kind = unsafe { ffi::rd_decode(handle, std::ptr::null_mut(), &mut pts) };
+        if kind == ffi::RD_NOTHING {
+            match shared.pop_packet(handle) {
+                Some(packet) => {
+                    kind = unsafe { ffi::rd_decode(handle, packet.0, &mut pts) };
+                    // Freed here, having been consumed: the decoder copies what
+                    // it needs out of it and keeps no reference.
+                    drop(packet);
+                }
+                None if shared.reader_eof.load(Ordering::SeqCst) => kind = ffi::RD_EOF,
+                None => {
+                    // The reader has not got there yet. Nothing is wrong; it is
+                    // simply ahead of nobody. Sleeping here rather than spinning
+                    // leaves the core to the thread doing the work.
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+            }
         }
 
         match kind {
@@ -1360,7 +1486,7 @@ fn decode_loop(
                     } else if caption_pts.is_finite() && pts - caption_pts > CAPTION_HOLD {
                         // Nothing has arrived for a while, so what is on
                         // screen is stale. A caption decoder is not obliged to
-                        // send anything to say a programme has stopped talking
+                        // send anything to say a program has stopped talking
                         // — it simply stops — and without a timeout the last
                         // line of dialogue sits over the whole advert break
                         // that follows it.
@@ -1418,10 +1544,12 @@ fn decode_loop(
                     shared.spare.lock().unwrap().push(pixels);
                 }
 
-                // Demux, decode and colour conversion, measured together
-                // because they all happen here on this one thread. Above
-                // roughly 16ms this cannot sustain 60fps no matter what the
-                // rest of the pipeline does.
+                // Decode and color conversion, measured together because both
+                // happen here on this one thread. Reading is no longer among
+                // them and no longer distorts this: it is on the reader thread,
+                // where a slow one costs the queue depth rather than a frame.
+                // Above roughly 16ms this cannot sustain 60fps no matter what
+                // the rest of the pipeline does.
                 let ms = started.elapsed().as_secs_f32() * 1000.0;
                 let previous = f32::from_bits(shared.decode_ms.load(Ordering::Relaxed));
                 let smoothed = if previous > 0.0 {
@@ -1488,6 +1616,138 @@ fn decode_loop(
                     *shared.error.lock().unwrap() =
                         Some("the stream stopped decoding".into());
                     break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    stop(reader, &shared);
+}
+
+impl Shared {
+    /// Seconds of video waiting to be decoded.
+    fn buffered_seconds(&self) -> f64 {
+        f64::from_bits(self.packet_seconds.load(Ordering::Relaxed))
+    }
+
+    fn add_seconds(&self, delta: f64) {
+        // Not a fetch_add: this is an f64 in an integer, so it takes a
+        // read-modify-write loop to stay correct against the other thread.
+        let mut current = self.packet_seconds.load(Ordering::Relaxed);
+        loop {
+            let next = (f64::from_bits(current) + delta).max(0.0).to_bits();
+            match self.packet_seconds.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    /// Whether the reader should stop for a moment.
+    fn read_ahead_full(&self) -> bool {
+        self.packet_bytes.load(Ordering::Relaxed) >= MAX_PACKET_BYTES
+            || self.buffered_seconds() >= MAX_PACKET_SECONDS
+    }
+
+    fn push_packet(&self, packet: Packet, bytes: usize, seconds: f64) {
+        self.packet_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.add_seconds(seconds);
+        self.packets.lock().unwrap().push_back(packet);
+    }
+
+    fn pop_packet(&self, handle: *mut ffi::RdMedia) -> Option<Packet> {
+        let packet = self.packets.lock().unwrap().pop_front()?;
+        let bytes = unsafe { ffi::rd_packet_bytes(packet.0) }.max(0) as usize;
+        let seconds = if unsafe { ffi::rd_packet_kind(handle, packet.0) } == ffi::RD_VIDEO {
+            unsafe { ffi::rd_packet_seconds(handle, packet.0) }
+        } else {
+            0.0
+        };
+        self.packet_bytes.fetch_sub(bytes.min(self.packet_bytes.load(Ordering::Relaxed)), Ordering::Relaxed);
+        self.add_seconds(-seconds);
+        Some(packet)
+    }
+
+    /// Throw the read-ahead away. Everything in it describes where playback
+    /// was, which after a seek is nowhere.
+    fn clear_packets(&self) {
+        self.packets.lock().unwrap().clear();
+        self.packet_bytes.store(0, Ordering::Relaxed);
+        self.packet_seconds.store(0.0f64.to_bits(), Ordering::Relaxed);
+        self.reader_eof.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Read packets ahead of the decoder.
+///
+/// The entire point of this thread is that a slow read no longer stops
+/// decoding. It fills a bounded queue and sleeps when it is full, so on a
+/// healthy stream it spends nearly all its time asleep and the queue sits at
+/// its limit; when a read goes slow, the decoder carries on out of the queue
+/// and nobody sees anything.
+fn read_loop(handle: Handle, shared: Arc<Shared>) {
+    let mut failures = 0u32;
+
+    loop {
+        if shared.quit.load(Ordering::SeqCst) {
+            return;
+        }
+        if shared.read_ahead_full() {
+            std::thread::sleep(Duration::from_millis(4));
+            continue;
+        }
+
+        let mut packet: *mut ffi::RdPacket = std::ptr::null_mut();
+        let started = Instant::now();
+        let rc = {
+            // Held only across the read itself. A seek waits for this, which is
+            // no worse than before: the old single-threaded loop made a seek
+            // wait behind the in-flight read too.
+            let _demux = shared.demux.lock().unwrap();
+            unsafe { ffi::rd_read(handle.0, &mut packet) }
+        };
+        let took = started.elapsed();
+
+        // Counted here rather than at the decoder, which is the honest place
+        // for it now: this is the thread a slow read actually stops, and the
+        // measure of whether the queue behind it was deep enough to hide it.
+        if took.as_millis() > 16 {
+            shared.stalls.fetch_add(1, Ordering::Relaxed);
+        }
+
+        match rc {
+            ffi::RD_PACKET if !packet.is_null() => {
+                failures = 0;
+                let packet = Packet(packet);
+                let bytes = unsafe { ffi::rd_packet_bytes(packet.0) }.max(0) as usize;
+                let seconds = if unsafe { ffi::rd_packet_kind(handle.0, packet.0) } == ffi::RD_VIDEO
+                {
+                    unsafe { ffi::rd_packet_seconds(handle.0, packet.0) }
+                } else {
+                    0.0
+                };
+                shared.push_packet(packet, bytes, seconds);
+            }
+            ffi::RD_EOF => {
+                // Not necessarily the end. A live playlist grows, so this asks
+                // again shortly; a file simply stays at the end and the decoder
+                // drains what is left.
+                shared.reader_eof.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            _ => {
+                // A read interrupted by a seek arrives here too, which is why
+                // this counts rather than gives up immediately.
+                failures += 1;
+                if failures > 200 {
+                    shared.reader_eof.store(true, Ordering::SeqCst);
+                    return;
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
