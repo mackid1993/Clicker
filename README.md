@@ -1,4 +1,19 @@
+<div align="center">
+
+<img src="assets/clicker.png" width="144" alt="Clicker">
+
 # Clicker
+
+**A native Windows client for [Channels DVR](https://getchannels.com/).**
+
+Live TV, recordings and a guide, in a single Rust binary.
+
+[![Release](https://img.shields.io/github/v/release/mackid1993/Clicker?style=flat-square&color=6ca5fa&label=release)](https://github.com/mackid1993/Clicker/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/mackid1993/Clicker/total?style=flat-square&color=6ca5fa)](https://github.com/mackid1993/Clicker/releases)
+![Platform](https://img.shields.io/badge/windows-10%201809%2B-6ca5fa?style=flat-square)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-6ca5fa?style=flat-square)
+
+</div>
 
 > **Clicker is not affiliated with Fancy Bits, LLC and is an unofficial client
 > to Channels DVR Server.**

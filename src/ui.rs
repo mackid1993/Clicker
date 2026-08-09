@@ -343,8 +343,25 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     // step between neighbouring bands is a dozen levels of alpha and the eye
     // finds every one of them. Interpolating between vertices makes the
     // hardware do it per pixel instead.
+    // How hard to darken, decided by the picture rather than fixed.
+    //
+    // A single strength cannot serve both a night scene and a snowy field. It
+    // was tuned against dark artwork, so a bright still — a title card, a
+    // studio set, anything overexposed — left white text sitting on white and
+    // the hero became unreadable. The left of the image is measured when it is
+    // decoded; this turns that into an opacity and a reach.
+    //
+    // The floor keeps dark artwork looking as it did. The ceiling stops short
+    // of opaque, because the point of the hero is the picture: covering it
+    // completely would be legible and pointless.
+    let luma = images.left_luma(&art).unwrap_or(0.3);
+    let strength = 200.0 + (luma.clamp(0.0, 1.0) * 55.0);
+    // Bright pictures also need the darkening to reach further across, or the
+    // text runs off the end of the scrim into the bright part.
+    let reach = 1.0 + luma.clamp(0.0, 1.0) * 0.55;
+
     let shade = |t: f32| {
-        let alpha = ((1.0 - t).clamp(0.0, 1.0).powf(1.6) * 225.0) as u8;
+        let alpha = ((1.0 - t / reach).clamp(0.0, 1.0).powf(1.6) * strength) as u8;
         egui::Color32::from_rgba_unmultiplied(10, 11, 14, alpha)
     };
 

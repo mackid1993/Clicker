@@ -24,7 +24,7 @@ enum Entry {
     /// entries treats a 4.9MB hero and a 40KB channel logo as the same thing,
     /// and the limit that was safe for three hundred logos is not the limit
     /// that is safe for three hundred heroes.
-    Ready(egui::TextureHandle, u64, bool, usize),
+    Ready(egui::TextureHandle, u64, bool, usize, f32),
     /// Remembered so a broken URL is not retried forever.
     Failed,
 }
@@ -35,6 +35,15 @@ struct Decoded {
     /// True for artwork drawn in dark ink on transparency, which needs
     /// something light behind it to be visible at all on a dark surface.
     dark: bool,
+    /// How bright the left of the picture is, 0 to 1.
+    ///
+    /// The hero writes white text over the left of its artwork and darkens
+    /// that side to keep it legible. A fixed amount of darkening cannot do
+    /// that: it is too much over a night scene and not enough over a snowy
+    /// field or a title card, where the text disappears into the picture.
+    /// Measured here, once per image on the worker, rather than sampled from
+    /// the texture every frame on the UI thread.
+    left_luma: f32,
 }
 
 /// Textures kept resident at once. Measured before this existed: the home,
@@ -131,11 +140,13 @@ impl Images {
                     // Four bytes a pixel, which is what the texture costs on
                     // the GPU and what its CPU copy cost on the way there.
                     let bytes = decoded.image.width() * decoded.image.height() * 4;
+                    let luma = decoded.left_luma;
                     Entry::Ready(
                         ctx.load_texture(&url, decoded.image, egui::TextureOptions::LINEAR),
                         self.tick,
                         decoded.dark,
                         bytes,
+                        luma,
                     )
                 }
                 None => Entry::Failed,
@@ -159,7 +170,7 @@ impl Images {
             .entries
             .iter()
             .filter_map(|(url, e)| match e {
-                Entry::Ready(_, used, _, bytes) => Some((url.clone(), *used, *bytes)),
+                Entry::Ready(_, used, _, bytes, _) => Some((url.clone(), *used, *bytes)),
                 _ => None,
             })
             .collect();
@@ -214,7 +225,7 @@ impl Images {
 
         let tick = self.tick;
         match self.entries.get_mut(url) {
-            Some(Entry::Ready(texture, used, _, _)) => {
+            Some(Entry::Ready(texture, used, _, _, _)) => {
                 *used = tick;
                 Some(&*texture)
             }
@@ -227,7 +238,19 @@ impl Images {
     /// Answers false while it is still loading, which is the right way round:
     /// the plate appears when the logo does, rather than flashing empty first.
     pub fn is_dark(&self, url: &str) -> bool {
-        matches!(self.entries.get(url), Some(Entry::Ready(_, _, true, _)))
+        matches!(self.entries.get(url), Some(Entry::Ready(_, _, true, _, _)))
+    }
+
+    /// How bright the left of this artwork is, 0 to 1, once it has loaded.
+    ///
+    /// None while it is still arriving, which the caller should read as "no
+    /// reason to darken yet" rather than "dark": the picture is not on screen
+    /// either, so there is nothing to be unreadable over.
+    pub fn left_luma(&self, url: &str) -> Option<f32> {
+        match self.entries.get(url) {
+            Some(Entry::Ready(_, _, _, _, luma)) => Some(*luma),
+            _ => None,
+        }
     }
 }
 
@@ -265,8 +288,46 @@ async fn fetch_and_decode(http: &reqwest::Client, url: &str, max: u32) -> Option
     let size = [rgba.width() as usize, rgba.height() as usize];
     Some(Decoded {
         dark: is_dark_ink(rgba.as_raw()),
+        left_luma: left_luma(&rgba),
         image: ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
     })
+}
+
+/// How bright the left of a picture is, 0 to 1.
+///
+/// Only the left 55%, and only the middle band vertically, because that is
+/// where the hero puts its text: brightness in the top corner or off the right
+/// edge has no bearing on whether a title is readable.
+///
+/// Rec. 709 luma, then sampled on a grid rather than over every pixel. A 1280
+/// wide image is a million pixels and the answer to "is this side bright" does
+/// not change between one pixel and the next.
+fn left_luma(rgba: &image::RgbaImage) -> f32 {
+    let (width, height) = (rgba.width(), rgba.height());
+    if width == 0 || height == 0 {
+        return 0.0;
+    }
+    let right = (width as f32 * 0.55) as u32;
+    let (top, bottom) = (height / 5, height * 4 / 5);
+    let step = (width / 64).max(1);
+
+    let mut total = 0.0f32;
+    let mut counted = 0u32;
+    let mut y = top;
+    while y < bottom {
+        let mut x = 0;
+        while x < right {
+            let p = rgba.get_pixel(x, y).0;
+            total += 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32;
+            counted += 1;
+            x += step;
+        }
+        y += step;
+    }
+    if counted == 0 {
+        return 0.0;
+    }
+    (total / counted as f32 / 255.0).clamp(0.0, 1.0)
 }
 
 /// Whether artwork is drawn in dark ink, measured over the pixels that are

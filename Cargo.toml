@@ -1,6 +1,6 @@
 [package]
 name = "clicker"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "A native Channels DVR client"
 # PolyForm Noncommercial has no SPDX identifier, so the file is the license of
