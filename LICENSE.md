@@ -123,21 +123,41 @@ Those components are **not** licensed under the terms above. Each is governed by
 its own license, and where those licenses conflict with the terms above, the
 component's own license prevails for that component.
 
+## mpv
+
+Clicker plays all video using mpv, which is licensed here under the GNU Lesser
+General Public License version 2.1 or later. mpv is **dynamically loaded and
+shipped unmodified as a separate shared library**, `libmpv-2.dll`, placed beside
+the executable and opened by name at runtime through its public client and
+render APIs. It is never folded into Clicker's own binary and never renamed, and
+no plugins, scripts or configuration are loaded from anywhere.
+
+mpv is GPL-2.0-or-later by default and is only LGPL when configured that way.
+The corresponding source is mpv `v0.41.0`, from
+<https://github.com/mpv-player/mpv>, built with `-Dgpl=false -Dlibmpv=true`.
+`scripts/build-mpv.ps1` reproduces that build from the pinned tag, and
+`build.ps1` reads the license string back out of the finished library and
+refuses to package it if it reports GPL.
+
+The libraries mpv itself was linked against ship the same way, beside the
+executable, unmodified, each under its own license.
+
 ## FFmpeg
 
-Clicker decodes all audio and video using FFmpeg, which is licensed under the
-GNU Lesser General Public License version 2.1 or later. FFmpeg is **dynamically
-linked and shipped unmodified as separate shared libraries** — `avcodec`,
-`avformat`, `avfilter`, `avutil`, `swscale` and `swresample` — placed beside the
-executable and loaded at runtime. It is never folded into Clicker's own binary
-and never renamed.
+FFmpeg does the decoding underneath mpv. It is licensed under the GNU Lesser
+General Public License version 2.1 or later, and is **shipped unmodified as
+separate shared libraries** — `avcodec`, `avformat`, `avfilter`, `avutil`,
+`swscale` and `swresample` — placed beside the executable and loaded at
+runtime. It is never folded into Clicker's own binary and never renamed.
+Clicker does not link against it directly; it reaches FFmpeg only through mpv.
 
-The LGPL requires that anyone who receives Clicker be free to modify FFmpeg, to
-relink Clicker against their modified version, and to reverse engineer as
-necessary to debug that relinking. Nothing in the PolyForm Noncommercial License
-above restricts any of that, because FFmpeg is not part of "the software" as that
-term is used above. Those rights are granted by the LGPL and are not withdrawn
-here, and the exception at the top of this file exists so that they cannot be.
+The LGPL requires that anyone who receives Clicker be free to modify mpv and
+FFmpeg, to relink Clicker against their modified versions, and to reverse
+engineer as necessary to debug that relinking. Nothing in the PolyForm
+Noncommercial License above restricts any of that, because neither is part of
+"the software" as that term is used above. Those rights are granted by the LGPL
+and are not withdrawn here, and the exception at the top of this file exists so
+that they cannot be.
 
 The corresponding source is FFmpeg `n7.1.1`, from
 <https://github.com/FFmpeg/FFmpeg>. It is built from that source rather than
@@ -148,10 +168,10 @@ licensed application would place the entire distribution under the GPL.
 
 This build is configured `--disable-gpl --disable-nonfree`. The configure line
 is recorded inside the libraries themselves and can be read back at runtime
-through `av_license()` and `FFMPEG_CONFIGURATION`; Clicker prints it on startup.
-`scripts/build-ffmpeg.ps1` reproduces the build from the pinned tag, and
-`build.ps1` re-reads the shipped library and refuses to package it if it reports
-GPL.
+through `av_license()` and `FFMPEG_CONFIGURATION`; Clicker prints it on startup
+and shows it in Settings under About. `scripts/build-mpv.ps1` reproduces the
+build from the pinned tag, and `build.ps1` re-reads the shipped library and
+refuses to package it if it reports GPL.
 
 ## Rust crates
 

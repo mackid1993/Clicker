@@ -56,7 +56,6 @@ $ErrorActionPreference = 'Stop'
 $Root   = $PSScriptRoot
 $Stage  = Join-Path $Root 'dist\Clicker'
 $OutDir = Join-Path $Root 'dist'
-$FFmpeg = if ($env:FFMPEG_DIR) { $env:FFMPEG_DIR } else { Join-Path $Root 'third_party\ffmpeg' }
 
 function Fail($message) {
     Write-Host ''
@@ -99,6 +98,13 @@ if ($Version) {
         Set-Content -Path $CargoToml -NoNewline `
             -Value $VersionLine.Replace($manifest, "`${1}$Version`${3}", 1)
         Write-Host "      version $current -> $Version" -ForegroundColor DarkGray
+        # Discard this crate's own artifacts, and only this crate's: the
+        # version is compiled in twice, into a Win32 resource and into
+        # CARGO_PKG_VERSION, and a cached binary from the previous version has
+        # been observed surviving the change. Dependencies are untouched, so
+        # this costs one crate's compile rather than a full rebuild.
+        Push-Location $Root
+        try { cargo clean --release -p clicker 2>&1 | Out-Null } finally { Pop-Location }
     }
 } else {
     $Version = $current
@@ -106,17 +112,6 @@ if ($Version) {
 
 # ------------------------------------------------------------------ [1/3] ----
 Write-Host "[1/3] Building clicker $Version (release)" -ForegroundColor Cyan
-
-if (-not (Test-Path (Join-Path $FFmpeg 'include'))) {
-    Fail @"
-FFmpeg not found at $FFmpeg
-
-  scripts\build-ffmpeg.ps1
-
-Or set FFMPEG_DIR to an existing LGPL build.
-"@
-}
-$env:FFMPEG_DIR = $FFmpeg
 
 # Keep the machine's directory layout out of the binary. rustc records the path
 # of every source file it compiles, including the crate registry under the
@@ -145,28 +140,22 @@ if ($Target -eq 'App') { Write-Host ''; Write-Host '  Done.' -ForegroundColor Gr
 # ------------------------------------------------------------------ [2/3] ----
 Write-Host '[2/3] Staging into dist\Clicker' -ForegroundColor Cyan
 
-# The FFmpeg libraries sit beside the executable, unmodified and separately
-# replaceable. That is not incidental: LGPL-2.1 section 6 requires that whoever
-# receives this be able to substitute their own build of them, which is only
-# true if they are shipped as ordinary DLLs rather than folded into the binary.
-$dlls = Get-ChildItem (Join-Path $FFmpeg 'bin\*.dll') -ErrorAction SilentlyContinue
-if (-not $dlls) { Fail "No FFmpeg DLLs found in $FFmpeg\bin" }
+# mpv and the libraries it was linked against, FFmpeg among them. They sit
+# beside the executable, unmodified and separately replaceable. That is not
+# incidental: LGPL-2.1 section 6 requires that whoever receives this be able to
+# substitute their own build of them, which is only true if they are shipped as
+# ordinary DLLs rather than folded into the binary.
+$mpv = Join-Path $Root 'third_party\mpv'
+$mpvDlls = @(Get-ChildItem (Join-Path $mpv '*.dll') -ErrorAction SilentlyContinue)
+if (-not $mpvDlls) {
+    Fail @"
+libmpv was not found in $mpv
 
-# The license is read out of the binary that is actually being shipped, not
-# taken on trust from the build script that produced it.
-$avutil = $dlls | Where-Object { $_.Name -like 'avutil*' } | Select-Object -First 1
-if ($avutil) {
-    $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($avutil.FullName))
-    if ($text -match '--enable-gpl' -or $text -match 'GPL version 2 or later') {
-        Fail @"
-REFUSING TO PACKAGE: $($avutil.Name) reports GPL.
+  scripts\build-mpv.ps1
 
-This application is distributed under PolyForm Noncommercial, which is
-incompatible with the GPL. Rebuild FFmpeg with scripts\build-ffmpeg.ps1, which configures
---disable-gpl --disable-nonfree.
+It is the player. There is no second one to fall back to, so this refuses to
+package an application that would install and then be unable to play anything.
 "@
-    }
-    Write-Host '      FFmpeg license verified: LGPL, no GPL components' -ForegroundColor DarkGray
 }
 
 # A clean stage every time. Leftovers from a previous run are how a file that is
@@ -200,7 +189,28 @@ if (Test-Path $licenses) {
     Copy-Item (Join-Path $licenses '*') (New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'licenses')).FullName -Force
 }
 
-Copy-Item $dlls.FullName $Stage -Force
+Copy-Item $mpvDlls.FullName $Stage -Force
+Write-Host ("      libmpv and its libraries staged: {0} files" -f $mpvDlls.Count) -ForegroundColor DarkGray
+
+# Licenses are read out of the binaries that are actually being shipped, not
+# taken on trust from the build scripts that produced them. Clicker is
+# distributed under PolyForm Noncommercial, which cannot be combined with the
+# GPL, so a GPL component anywhere in the stage means there is nothing lawful
+# to package.
+foreach ($name in 'avutil-59.dll', 'libmpv-2.dll') {
+    $file = Join-Path $Stage $name
+    if (-not (Test-Path $file)) { Fail "$name is missing from the stage." }
+    $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($file))
+    if ($text -match '--enable-gpl' -or $text -match 'GPL version 2 or later') {
+        Fail @"
+REFUSING TO PACKAGE: $name reports GPL.
+
+Rebuild it. scripts\build-mpv.ps1 configures FFmpeg --disable-gpl
+--disable-nonfree and mpv -Dgpl=false.
+"@
+    }
+}
+Write-Host '      licenses verified: LGPL, no GPL components' -ForegroundColor DarkGray
 
 # Nothing shipped should name the person who built it.
 #

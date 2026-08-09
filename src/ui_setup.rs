@@ -797,7 +797,7 @@ pub fn settings_screen(
                     .color(Fluent::TEXT_PRIMARY),
             );
             ui.label(
-                egui::RichText::new(crate::player::Player::backend())
+                egui::RichText::new(crate::mpv::Player::backend())
                     .size(12.0)
                     .color(Fluent::TEXT_TERTIARY),
             );
@@ -824,18 +824,23 @@ pub fn settings_screen(
             ui.add_space(SPACE_S / 2.0);
             ui.label(
                 egui::RichText::new(
-                    "Media playback uses FFmpeg, licensed under the LGPL v2.1 or later. \
-                     The FFmpeg libraries are separate files beside the application and \
-                     may be replaced with any compatible build. License texts are in the \
+                    "Video is played by mpv and decoded by FFmpeg, both licensed under \
+                     the LGPL v2.1 or later. Both are built from source with no GPL \
+                     components, ship as separate files beside the application, and may \
+                     be replaced with any compatible build. License texts are in the \
                      installation folder.",
                 )
                 .size(11.0)
                 .color(Fluent::TEXT_TERTIARY),
             );
-            ui.hyperlink_to(
-                egui::RichText::new("ffmpeg.org").size(11.0),
-                "https://ffmpeg.org/",
-            );
+            ui.horizontal(|ui| {
+                ui.hyperlink_to(egui::RichText::new("mpv.io").size(11.0), "https://mpv.io/");
+                ui.label(egui::RichText::new("·").size(11.0).color(Fluent::TEXT_TERTIARY));
+                ui.hyperlink_to(
+                    egui::RichText::new("ffmpeg.org").size(11.0),
+                    "https://ffmpeg.org/",
+                );
+            });
 
             // ── Reporting a problem ────────────────────────────────────
             //

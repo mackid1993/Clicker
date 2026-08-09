@@ -16,9 +16,10 @@ mod images;
 mod keys;
 mod library;
 mod log;
+mod mpv;
 mod paths;
-mod player;
 mod settings;
+mod stream;
 mod theme;
 mod timeshift;
 mod tray;
@@ -30,6 +31,7 @@ mod ui_record;
 mod ui_setup;
 
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
@@ -233,7 +235,7 @@ fn main() -> eframe::Result<()> {
     // The build's own license, from the binary rather than from a claim in a
     // text file. This application may only be distributed if FFmpeg was built
     // without GPL components, so it is worth being able to check.
-    log::logline!("[clicker] {}", player::Player::backend());
+    log::logline!("[clicker] {}", mpv::Player::backend());
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 760.0])
@@ -265,39 +267,6 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport,
-        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-            // Ask the graphics device to be frugal rather than fast.
-            //
-            // wgpu's default is `MemoryHints::Performance`, which by its own
-            // description favours performance over memory usage: it commits
-            // large heaps up front so later allocations are cheap. Measured
-            // here, the application had committed 726MB two seconds after
-            // launch — before a single recording had loaded and before any
-            // artwork — and then slowly gave some back.
-            //
-            // Nothing here needs that bargain. This draws one video frame and
-            // some flat panels, the same argument that has it asking for the
-            // integrated GPU in the first place.
-            device_descriptor: std::sync::Arc::new(|adapter| {
-                let base = if adapter.get_info().backend == eframe::wgpu::Backend::Gl {
-                    eframe::wgpu::Limits::downlevel_webgl2_defaults()
-                } else {
-                    eframe::wgpu::Limits::default()
-                };
-                eframe::wgpu::DeviceDescriptor {
-                    label: Some("clicker"),
-                    required_features: eframe::wgpu::Features::default(),
-                    required_limits: eframe::wgpu::Limits {
-                        // Enough for the whole surface on a 4K display, which
-                        // is eframe's own reasoning for this one.
-                        max_texture_dimension_2d: 8192,
-                        ..base
-                    },
-                    memory_hints: eframe::wgpu::MemoryHints::MemoryUsage,
-                }
-            }),
-            ..Default::default()
-        },
         ..Default::default()
     };
 
@@ -422,7 +391,7 @@ enum Msg {
     /// request it answers; a stale one is dropped, which also stops its
     /// threads and releases its stream.
     PlayerOpened {
-        result: Result<Box<player::Player>, String>,
+        result: Result<Arc<mpv::Player>, String>,
         resume_at: f64,
         generation: u64,
     },
@@ -438,19 +407,9 @@ enum Msg {
 }
 
 struct App {
-    player: Option<player::Player>,
-    texture: Option<egui::TextureHandle>,
-    /// Video textures that have been replaced but must not be freed yet.
-    ///
-    /// Dropping a `TextureHandle` tells egui to destroy the GPU texture behind
-    /// it. Doing that part-way through a frame destroys something the shapes
-    /// already painted this frame still refer to, and the frame then fails at
-    /// `Queue::submit` with "Texture with 'egui_texid_Managed(N)' label has
-    /// been destroyed" — a panic on the UI thread, so the process goes with it.
-    /// Retired handles are held until the top of the next frame, by which time
-    /// the frame that used them has been submitted.
-    retired: Vec<egui::TextureHandle>,
-    last_generation: u64,
+    /// Behind an `Arc` because the paint callback that draws the picture runs
+    /// later, inside egui's renderer, and has to still have a player then.
+    player: Option<Arc<mpv::Player>>,
 
     paused: bool,
     volume: f32,
@@ -485,7 +444,6 @@ struct App {
     last_decoded: u64,
     last_fps_sample: Instant,
     decode_fps: f32,
-    upload_ms: f32,
 
     // ── Navigation and screens ──────────────────────────────────────────
     screen: Screen,
@@ -493,6 +451,9 @@ struct App {
     /// Full screen hides the caption and the rail entirely: the picture is the
     /// whole point of full screen, so nothing else should be on it.
     fullscreen: bool,
+    /// Whether the window was maximized before full screen, so leaving it
+    /// returns to what was there rather than to a restored-size window.
+    was_maximized: bool,
     /// Set when the player is showing rather than a browsing screen. Live TV
     /// and a recording are both this; what differs is the source.
     watching: bool,
@@ -543,6 +504,10 @@ struct App {
     /// Playing a downloaded local file. Quality does not apply there: the file
     /// is the file, and downloads always fetch the original.
     playing_local: bool,
+    /// How the current source is being carried, for the stats card. Known here
+    /// rather than asked of the player: mpv opens the address and does not
+    /// report back which of these it decided the address was.
+    transport: Option<stream::Transport>,
     /// Which open request is current. Tuning channel B while A is still
     /// opening must not end with A's picture arriving late and winning.
     open_generation: u64,
@@ -665,9 +630,6 @@ impl App {
 
         Self {
             player: None,
-            texture: None,
-            retired: Vec::new(),
-            last_generation: 0,
             paused: false,
             volume: 1.0,
             show_stats: false,
@@ -688,10 +650,10 @@ impl App {
             last_decoded: 0,
             last_fps_sample: Instant::now(),
             decode_fps: 0.0,
-            upload_ms: 0.0,
             screen: Screen::Home,
             rail_expanded: false,
             fullscreen: false,
+            was_maximized: false,
             watching: false,
             backdrop: backdrop::Backdrop::new(&cc.egui_ctx),
             // Seeded from the clock so the first card of a session is not the
@@ -731,6 +693,7 @@ impl App {
             show_quality: false,
             current_recording: None,
             playing_local: false,
+            transport: None,
             open_generation: 0,
             timeshift: None,
             tray: None,
@@ -780,8 +743,8 @@ impl App {
         self.guide_loading = true;
 
         // Whatever was playing came from the old server.
-        self.player = None;
         self.retire_texture();
+        self.player = None;
         self.watching = false;
         self.live_channel = None;
 
@@ -887,7 +850,7 @@ impl App {
                                 player.seek_to(origin + resume_at);
                             }
 
-                            self.player = Some(*player);
+                            self.player = Some(player);
                             self.error = None;
                             self.paused = false;
                             self.first_frame_at = None;
@@ -1005,86 +968,116 @@ impl App {
     /// switching quality, stopping playback, changing server — and the picture
     /// has already been painted by the time they do. Freeing the texture there
     /// leaves the frame referring to something that no longer exists.
+    /// Let go of the picture, and of the OpenGL objects behind it.
+    ///
+    /// mpv's renderer owns shaders and textures and frees them itself, but only
+    /// lawfully while the context is current — which, between frames, it is
+    /// not. So this happens here, at the points where a source is being
+    /// replaced, rather than in a `Drop` that could run anywhere.
+    ///
+    /// Call this *before* dropping the player, not after. Every one of these
+    /// call sites originally cleared `self.player` first, which left nothing to
+    /// release and leaked mpv's whole renderer on every channel change.
     fn retire_texture(&mut self) {
-        if let Some(handle) = self.texture.take() {
-            self.retired.push(handle);
+        if let (Some(player), Some(gl)) = (self.player.as_ref(), gl_fns()) {
+            unsafe { player.release_gl(gl) };
         }
     }
 
-    fn sync_texture(&mut self, ctx: &egui::Context) {
+    /// Put the picture on screen.
+    ///
+    /// mpv draws it, inside a paint callback, because that is the only moment
+    /// the OpenGL context is current on this thread. Nothing is uploaded and
+    /// nothing is copied: the frame is decoded, converted and composited on the
+    /// graphics chip and never crosses back into system memory. The old path
+    /// read every frame back, converted it on the processor, allocated eight
+    /// megabytes of `Color32` for it and uploaded that again — three crossings
+    /// of the bus for a picture that was already on the right side of it.
+    fn draw_video(
+        &self,
+        ui: &egui::Ui,
+        ctx: &egui::Context,
+        rect: egui::Rect,
+        entrance: f32,
+    ) {
         let Some(player) = &self.player else { return };
-        let slot = player.frame();
-        if slot.generation == self.last_generation || slot.pixels.is_empty() {
+        let (vw, vh) = player.video_size();
+        if vw == 0 || vh == 0 {
             return;
         }
 
-        // Check the size against the buffer before handing both to egui.
+        // Where the picture goes, letterboxed inside the content area, with the
+        // entrance rise applied.
+        let size = egui::vec2(vw as f32, vh as f32);
+        let scale = (rect.width() / size.x).min(rect.height() / size.y);
+        let rise = (1.0 - entrance) * 42.0;
+        let target =
+            egui::Rect::from_center_size(rect.center() + egui::vec2(0.0, rise), size * scale);
+        let target = target.intersect(rect);
+        if !target.is_positive() {
+            return;
+        }
+
+        // Weak, emphatically not a clone of the `Arc`.
         //
-        // These are written together under one lock, so they should always
-        // agree — but "should" is not good enough here. egui's wgpu backend
-        // asserts that the pixel count matches the size, and an assert on the
-        // UI thread aborts the process. Changing stream quality is exactly when
-        // a picture of one size can meet a buffer sized for another, and the
-        // result was a hard crash with nothing on screen to explain it. A
-        // dropped frame is the right cost for that.
-        let expected = slot.width as usize * slot.height as usize * 4;
-        if expected == 0 || slot.pixels.len() != expected {
-            eprintln!(
-                "[player] skipping a frame: {} bytes for {}x{}, expected {expected}",
-                slot.pixels.len(),
-                slot.width,
-                slot.height
-            );
-            return;
-        }
-
-        let started = Instant::now();
-
-        // Premultiplied, not unmultiplied. `from_rgba_unmultiplied` runs a
-        // multiply per channel over every pixel, which at 1920x1080 is over
-        // eight million scalar operations per frame on the UI thread. Video is
-        // opaque, so alpha is 255 and the two forms are identical: the whole
-        // computation was being done to arrive back at the bytes we started
-        // with. This just packs them.
-        let image = egui::ColorImage {
-            size: [slot.width as usize, slot.height as usize],
-            pixels: slot
-                .pixels
-                .chunks_exact(4)
-                .map(|p| egui::Color32::from_rgba_premultiplied(p[0], p[1], p[2], p[3]))
-                .collect(),
+        // This callback runs after `update` has returned, during egui's paint.
+        // The transport — including its back arrow — is drawn over the picture,
+        // so stopping playback happens *after* this callback is already queued:
+        // teardown frees mpv's renderer and drops the player, and then the
+        // renderer runs this. Holding a strong reference kept the player alive
+        // to that moment and ran its `Drop` from inside egui, destroying an mpv
+        // handle whose render context had just been freed under it. A weak one
+        // simply finds nothing and skips the frame, which is the truth: there is
+        // no longer anything to draw.
+        let player = Arc::downgrade(player);
+        let callback = egui::PaintCallback {
+            rect: target,
+            callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(
+                move |info, _painter| {
+                    let Some(player) = player.upgrade() else { return };
+                    // egui's own conversion of this callback's rect into
+                    // physical pixels, rather than one computed up in the
+                    // interface from points and a scale factor. It is the
+                    // renderer's view of where the picture goes, which is the
+                    // only one that has to be right.
+                    let at = info.viewport_in_pixels();
+                    if let Some(gl) = gl_fns() {
+                        unsafe {
+                            player.present(
+                                gl,
+                                [at.left_px, at.from_bottom_px, at.width_px, at.height_px],
+                            )
+                        };
+                    }
+                },
+            )),
         };
-        // Reuse the handle only while the picture is the same size.
-        //
-        // `set` on a differently-sized image makes egui destroy the GPU texture
-        // and allocate a new one *under the same id*. Anything already painted
-        // this frame with that id then submits against a texture that no longer
-        // exists, which is a wgpu validation error and a panic on the UI thread.
-        // Changing stream quality is exactly when the size changes, so that was
-        // the crash. A new size gets a new texture, and the old one is retired
-        // rather than dropped.
-        let same_size = self
-            .texture
-            .as_ref()
-            .map(|handle| handle.size() == image.size)
-            .unwrap_or(false);
+        ui.painter().with_clip_rect(rect).add(callback);
 
-        match &mut self.texture {
-            Some(handle) if same_size => handle.set(image, egui::TextureOptions::LINEAR),
-            _ => {
-                if let Some(old) = self.texture.take() {
-                    self.retired.push(old);
-                }
-                self.texture =
-                    Some(ctx.load_texture("video", image, egui::TextureOptions::LINEAR));
-                // The first frame of a new source starts the entrance
-                // animation: the picture rises in rather than snapping on.
-                self.first_frame_at = Some(Instant::now());
-            }
+        // Keep asking for frames while something is playing.
+        //
+        // mpv's ready-callback alone is not enough to hold a steady rate: it
+        // wakes the event loop, which then has to reach a paint, and a wake
+        // that lands just after the compositor's deadline waits out the whole
+        // refresh and the frame it was carrying is dropped. Asking for the
+        // next frame now means the interface is already at the vsync boundary
+        // when it arrives. Vsync caps this, so it is the display's rate and
+        // not a spin.
+        if !self.paused {
+            ctx.request_repaint();
         }
-        self.last_generation = slot.generation;
-        self.upload_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+        // The entrance fade, painted over the picture rather than tinted into
+        // it: a blit cannot blend, and this is one rectangle for a third of a
+        // second.
+        if entrance < 1.0 {
+            let veil = ((1.0 - entrance) * 255.0) as u8;
+            ui.painter()
+                .with_clip_rect(rect)
+                .rect_filled(target, 0.0, egui::Color32::from_black_alpha(veil));
+        }
     }
+
 
     fn sample_rates(&mut self) {
         let now = Instant::now();
@@ -1134,14 +1127,38 @@ impl eframe::App for App {
         Fluent::SOLID.to_normalized_gamma_f32()
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Before anything paints. The frame that referenced these has been
-        // submitted, so the GPU textures behind them can safely go now.
-        self.retired.clear();
+    /// Take the player down while there is still a graphics context to take it
+    /// down with.
+    ///
+    /// mpv requires its renderer be freed before the handle that owns it, and
+    /// freeing the renderer touches OpenGL. Left to `Drop`, neither condition
+    /// holds: the window and its context are gone by then, and closing the
+    /// application mid-playback crashed on the way out. eframe calls this with
+    /// the context still current, which is the one moment both are true.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.retire_texture();
+        self.player = None;
+    }
 
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_tray(ctx);
         self.drain_messages();
-        self.sync_texture(ctx);
+
+        // Bring the renderer up, and only then let mpv open the file.
+        //
+        // Here rather than where the player is created, because this is the
+        // thread that holds the OpenGL context. mpv initializes its video
+        // output while loading, and a load that happens before the renderer
+        // exists gets video switched off for the rest of the file — audio
+        // playing over a spinner, with one line in the log to say so.
+        //
+        // Every frame, not once: it is cheap after the first, and a renderer
+        // that failed to come up gets another attempt rather than a player
+        // that is permanently mute about it.
+        if let (Some(player), Some(gl)) = (self.player.as_ref(), gl_fns()) {
+            unsafe { player.start(gl) };
+        }
+
         self.sample_rates();
         self.images.pump(ctx);
         self.handle_keys(ctx);
@@ -1569,7 +1586,7 @@ impl App {
                 // duration, so the seekable window is measured from what this
                 // player has decoded, and for the first second there is no
                 // window at all.
-                self.tune(&channel, player::JoinAt::LiveEdge);
+                self.tune(&channel, stream::JoinAt::LiveEdge);
                 self.announce(format!("Switched to {}", choice.label()));
             } else if let Some(recording) = self.current_recording.clone() {
                 // Elapsed, not the raw clock. Stream timestamps do not start
@@ -1603,11 +1620,10 @@ impl App {
         // One last position report before the player goes away, so stopping
         // two minutes into something records those two minutes.
         self.report_position();
-        self.player = None;
         self.retire_texture();
+        self.player = None;
         // Gigabytes, and worthless the moment nothing is reading them.
         self.timeshift = None;
-        self.last_generation = 0;
         self.watching = false;
         self.paused = false;
         self.live_channel = None;
@@ -1622,7 +1638,25 @@ impl App {
             return;
         }
         self.fullscreen = on;
+
+        // Un-maximize on the way in, and put it back on the way out.
+        //
+        // This window has no decorations, and Windows constrains a maximized
+        // borderless window to the *work area* — the screen less the taskbar.
+        // Going fullscreen from that state left it exactly there, so full
+        // screen came up with a strip of desktop along the bottom where the
+        // taskbar had been. Dropping the maximize first means the fullscreen
+        // is applied to an ordinary window and covers the monitor.
+        if on {
+            self.was_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            if self.was_maximized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+            }
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+        if !on && self.was_maximized {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        }
         // Coming out of full screen with the controls hidden would leave no
         // visible way back, so wake them.
         self.last_activity = Instant::now();
@@ -1647,8 +1681,13 @@ impl App {
             return;
         }
 
-        match &self.texture {
-            Some(texture) => {
+        let playing = self
+            .player
+            .as_ref()
+            .map(|p| p.video_size().0 > 0)
+            .unwrap_or(false);
+        match playing {
+            true => {
                 // The swoop: the picture rises from below and fades in over a
                 // third of a second, easing out. Tuning takes long enough that
                 // the arrival deserves to feel like one.
@@ -1662,9 +1701,9 @@ impl App {
                 if entrance < 1.0 {
                     ctx.request_repaint();
                 }
-                draw_video(ui, content, texture, eased);
+                self.draw_video(ui, ctx, content, eased);
             }
-            None => tuning_indicator(ui, content, &self.loading),
+            false => tuning_indicator(ui, content, &self.loading),
         }
 
         // Double click anywhere on the picture toggles full screen, as it does
@@ -2566,13 +2605,13 @@ impl App {
     fn spawn_open(
         &mut self,
         uri: String,
-        transport: player::Transport,
+        transport: stream::Transport,
         resume_at: f64,
-        join: player::JoinAt,
+        join: stream::JoinAt,
     ) {
-        self.player = None;
         self.retire_texture();
-        self.last_generation = 0;
+        self.player = None;
+        self.transport = Some(transport);
         self.first_frame_at = None;
         self.watching = true;
         self.paused = false;
@@ -2582,6 +2621,9 @@ impl App {
         let tx = self.tx.clone();
         let notify = self.repaint.clone();
         let frame_repaint = self.repaint.clone();
+        // Read here rather than on the thread: the settings belong to the
+        // interface and the thread must not reach back into them.
+        let software_decoding = self.settings.software_decoding;
         std::thread::spawn(move || {
             // A live buffer is created empty and the tuner takes several
             // seconds to produce its first byte, so opening straight away only
@@ -2591,7 +2633,7 @@ impl App {
             // Waited for here rather than before the thread is spawned: this
             // is exactly the blocking the interface must not do, and the
             // tuning animation is already on screen while it happens.
-            if transport == player::Transport::Timeshift {
+            if transport == stream::Transport::Timeshift {
                 const ENOUGH: u64 = 1024 * 1024;
                 let deadline = Instant::now() + Duration::from_secs(30);
                 while Instant::now() < deadline {
@@ -2603,12 +2645,10 @@ impl App {
                 }
             }
 
-            let result =
-                player::Player::open_at(&uri, transport, join, move || {
-                    frame_repaint.request_repaint()
-                })
-                    .map(Box::new)
-                    .map_err(|e| format!("{e:#}"));
+            let result = mpv::Player::open(&uri, resume_at, join, software_decoding, move || {
+                frame_repaint.request_repaint()
+            })
+            .map(Arc::new);
             let _ = tx.send(Msg::PlayerOpened {
                 result,
                 resume_at,
@@ -2635,11 +2675,11 @@ impl App {
     /// channel being tuned now is a few seconds back — a buffer held on the
     /// server rather than in memory.
     fn watch_channel(&mut self, channel: &str) {
-        self.tune(channel, player::JoinAt::Start);
+        self.tune(channel, stream::JoinAt::Start);
     }
 
     /// Tune a channel, choosing where a live playlist is joined.
-    fn tune(&mut self, channel: &str, join: player::JoinAt) {
+    fn tune(&mut self, channel: &str, join: stream::JoinAt) {
         let server = self.settings.server_url();
         let quality = self.effective_quality();
         let uri = stream_uri(&server, channel, quality);
@@ -2688,10 +2728,10 @@ impl App {
         let (uri, transport) = match &buffer {
             Some(buffer) => (
                 buffer.path().to_string_lossy().into_owned(),
-                player::Transport::Timeshift,
+                stream::Transport::Timeshift,
             ),
             None => {
-                let transport = player::Transport::of(&uri);
+                let transport = stream::Transport::of(&uri);
                 (uri, transport)
             }
         };
@@ -2745,7 +2785,7 @@ impl App {
                 false,
             ),
         };
-        let transport = player::Transport::of(&uri);
+        let transport = stream::Transport::of(&uri);
 
         self.loading = Loading::recording(&recording.title);
         self.live_channel = None;
@@ -2759,7 +2799,7 @@ impl App {
             .collect();
         self.current_recording = Some(recording);
 
-        self.spawn_open(uri, transport, resume_at, player::JoinAt::Start);
+        self.spawn_open(uri, transport, resume_at, stream::JoinAt::Start);
     }
 
     /// How visible the controls should be, 0 to 1.
@@ -3513,7 +3553,6 @@ impl App {
         let health = if self.ui_fps() >= 50.0 { Fluent::SUCCESS } else { Fluent::CAUTION };
         row("Display", format!("{:.0} fps", self.ui_fps()), health);
         row("Decode", format!("{:.0} fps", self.decode_fps), Fluent::TEXT_PRIMARY);
-        row("Upload", format!("{:.2} ms", self.upload_ms), Fluent::TEXT_PRIMARY);
 
         // Frames decoded but never shown, because the clock had already passed
         // them. A number that climbs steadily is the honest signal that
@@ -3525,45 +3564,73 @@ impl App {
             if dropped == 0 { Fluent::SUCCESS } else { Fluent::CAUTION },
         );
 
-        // The three numbers that say *why* when something stutters.
-        //
-        // Decode time is the budget: 16.7ms is one frame at 60fps, and this
-        // covers demux, decode and color conversion on a single thread.
-        // A queue sitting near its limit means the decoder is comfortable; a
-        // queue near zero means it is not keeping up, which is the opposite
-        // fault and needs the opposite fix.
-        let decode_ms = self.player.as_ref().map(|p| p.decode_ms()).unwrap_or(0.0);
+        // Frames the decoder abandoned before output. A different fault from
+        // the row above, with a different cause: too slow to decode at all,
+        // rather than too slow to present on time.
+        let behind = self.player.as_ref().map(|p| p.decoder_dropped()).unwrap_or(0);
         row(
-            "Decode time",
-            format!("{decode_ms:.1} ms"),
-            if decode_ms < 12.0 {
+            "Decoder drops",
+            behind.to_string(),
+            if behind == 0 { Fluent::SUCCESS } else { Fluent::LIVE },
+        );
+
+        // The cost of the software renderer, as a share of one core.
+        //
+        // Not milliseconds per frame. That row used to read 16.6ms on every
+        // machine and every stream, which looked like a player scraping past
+        // its 16.7ms budget and was nothing of the sort: the render call
+        // returns when the frame is *due*, so a clock around it measures the
+        // frame interval and never the work. This is processor time over
+        // elapsed time, which is the actual cost.
+        //
+        // It falls with the size of the window, because that is the size being
+        // rendered at — a 1080p stream in a small window is genuinely less
+        // work, not the same work drawn smaller. Measured on one 1080p60
+        // recording: 0.82 of a core at full size, 0.70 at 1280x720.
+        let load = self.player.as_ref().map(|p| p.render_load()).unwrap_or(0.0);
+        row(
+            "Render load",
+            format!("{:.0}% of a core", load * 100.0),
+            if load < 0.6 {
                 Fluent::SUCCESS
-            } else if decode_ms < 16.7 {
+            } else if load < 0.95 {
                 Fluent::CAUTION
             } else {
                 Fluent::LIVE
             },
         );
 
-        let queued = self.player.as_ref().map(|p| p.queued_frames()).unwrap_or(0);
+        // How far the picture is from the sound. The one number that says
+        // whether playback is actually correct rather than merely running.
+        let avsync = self.player.as_ref().map(|p| p.avsync()).unwrap_or(0.0);
         row(
-            "Frame queue",
-            format!("{queued}"),
-            if queued >= 2 { Fluent::SUCCESS } else { Fluent::CAUTION },
+            "A/V sync",
+            format!("{:+.0} ms", avsync * 1000.0),
+            if avsync.abs() < 0.040 { Fluent::SUCCESS } else { Fluent::CAUTION },
         );
 
-        let audio_s = self.player.as_ref().map(|p| p.queued_audio()).unwrap_or(0.0);
+        let buffered = self.player.as_ref().map(|p| p.buffered()).unwrap_or(0.0);
         row(
-            "Audio buffer",
-            format!("{:.0} ms", audio_s * 1000.0),
-            if audio_s > 0.05 { Fluent::SUCCESS } else { Fluent::CAUTION },
+            "Buffered",
+            if buffered >= 1.0 {
+                format!("{buffered:.1} s")
+            } else {
+                format!("{:.0} ms", buffered * 1000.0)
+            },
+            if buffered > 0.5 { Fluent::SUCCESS } else { Fluent::CAUTION },
         );
+        // The stream's size, then what is actually being converted, which is
+        // smaller whenever the window is. Both, because one without the other
+        // reads as a fault: "1280x720" alone looks like the wrong stream, and
+        // "1920x1080" alone hides where the render time went.
+        let stream = self.player.as_ref().map(|p| p.video_size()).unwrap_or((0, 0));
         row(
             "Resolution",
-            self.texture
-                .as_ref()
-                .map(|t| format!("{}x{}", t.size()[0], t.size()[1]))
-                .unwrap_or_else(|| "—".into()),
+            if stream.0 > 0 {
+                format!("{}x{}", stream.0, stream.1)
+            } else {
+                "—".into()
+            },
             Fluent::TEXT_PRIMARY,
         );
         // The raw timeline numbers, not a tidied summary. A live HLS playlist
@@ -3598,7 +3665,7 @@ impl App {
         );
         row(
             "Source",
-            player.map(|p| p.transport.label().to_string()).unwrap_or_else(|| "—".into()),
+            self.transport.map(|t| t.label().to_string()).unwrap_or_else(|| "—".into()),
             Fluent::TEXT_PRIMARY,
         );
     }
@@ -3767,23 +3834,20 @@ enum CaptionAction {
 ///
 /// `entrance` is the arrival animation, 0 to 1: the picture rises the last few
 /// pixels into place while fading up from black.
-fn draw_video(ui: &egui::Ui, rect: egui::Rect, texture: &egui::TextureHandle, entrance: f32) {
-    let size = texture.size_vec2();
-    if size.x <= 0.0 || size.y <= 0.0 {
-        return;
-    }
-    let scale = (rect.width() / size.x).min(rect.height() / size.y);
-    let rise = (1.0 - entrance) * 42.0;
-    let target =
-        egui::Rect::from_center_size(rect.center() + egui::vec2(0.0, rise), size * scale);
-
-    let tint = egui::Color32::from_gray((entrance * 255.0) as u8);
-    ui.painter().with_clip_rect(rect).image(
-        texture.id(),
-        target,
-        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        tint,
-    );
+/// The OpenGL entry points, resolved once the context exists.
+///
+/// Not at startup: there is no context until eframe has made a window, and
+/// asking earlier gets null for everything.
+fn gl_fns() -> Option<&'static mpv::GlFns> {
+    static FNS: std::sync::OnceLock<Option<mpv::GlFns>> = std::sync::OnceLock::new();
+    FNS.get_or_init(|| match unsafe { mpv::GlFns::load() } {
+        Ok(fns) => Some(fns),
+        Err(e) => {
+            log::logline!("[clicker] {e}");
+            None
+        }
+    })
+    .as_ref()
 }
 
 /// What is being waited for, so the spinner can say so.

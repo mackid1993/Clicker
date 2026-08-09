@@ -2,42 +2,55 @@
 
 ## 1.1.0
 
-Playback is steadier, the app uses a third less memory, and the home screen
-stopped lying about what you were watching.
+Clicker plays through mpv now, the picture stays on the graphics chip, memory
+is down by two thirds, and the home screen stopped lying about what you were
+watching.
 
-### Playback
+### mpv is the video player
 
-**A read-ahead buffer.** Reading and decoding used to happen in one call on
-one thread, so a slow read stopped decoding, and the picture ran out a fifth
-of a second later. That was what a stutter was. They are separate threads now
-with a queue of compressed packets between them, so a slow read eats into the
-buffer instead of into the picture.
+Everything Clicker plays goes through **mpv**, built from source and shipped
+beside the application. There is no setting for it and no second player to
+fall back to.
 
-The memory goes where it buys the most. Twelve decoded 1080p frames cost 95MB
-and buy 0.20 seconds, because a frame is 7.9MB and sixty of them go past every
-second. The same memory spent on compressed packets buys around two minutes.
-Measured on a real recording: 60 seconds of protection for 48MB, at one
-percent of a core.
+The reason is edge cases. Broadcast television is full of them — timestamps
+that jump at a segment boundary, damaged segments, containers assembled by
+something unusual, streams that stop and start — and mpv has been having those
+solved for twenty years. Nearly every playback report is one of them, and most
+arrive attached to a recording that plays perfectly everywhere else.
 
-**Timeline jumps no longer freeze the picture.** Timestamps in a transport
-stream are not continuous. A recording made from a segmented source can step
-at a segment boundary, and the 33 bit clock wraps every 26.5 hours regardless.
-The player waited out the gap, showing nothing, which on a two second segment
-is a freeze every two seconds. It now re-anchors and keeps going.
+**The picture never leaves the graphics chip.** Decoding, colour conversion
+and drawing all happen on the integrated GPU, and frames make no round trip
+through system memory on the way to the screen. Measured on a 1080p60
+recording, video costs about eight percent of one processor core. The discrete
+card is still never asked for.
 
 **A log file.** The player has always reported what it was doing, but a
 windowed build has no console, so every one of those lines went nowhere. They
 now go to `player.log` beside the settings, and Settings has a button that
-opens the folder. If something stutters, send that file.
+opens the folder — and mpv's own account of a file goes in there too. If
+something stutters, send that file.
+
+**Stats.** Ctrl+I shows what playback is actually doing: frames dropped, A/V
+sync, how much is buffered, and what the renderer costs.
+
+mpv and FFmpeg are both LGPL, both built from source with no GPL components,
+and both ship as ordinary replaceable libraries. Settings names them under
+About, and `licenses/THIRD_PARTY.md` has the full accounting.
 
 ### Memory
 
-Startup dropped from 726MB to 494MB, the peak during library load from 937MB
-to 495MB, and idle from 645MB to 404MB. Three causes, none of them
-interesting on their own:
+Idle went from 645MB to **173MB**, and startup from 726MB to the same figure.
+Most of it was structural:
 
-- wgpu defaults to a mode that trades memory for speed and commits large heaps
-  up front. Nothing here needs that bargain.
+- The old player and everything under it is gone, along with its audio stack
+  and its own copy of FFmpeg's headers and import libraries. mpv brings one of
+  each.
+- Drawing moved to OpenGL. The previous graphics backend defaults to trading
+  memory for speed and commits large heaps up front; nothing here needs that
+  bargain.
+- Video frames are no longer copied into system memory and converted before
+  being drawn. At 1080p that was eight megabytes of allocation per frame,
+  sixty times a second.
 - A list of every recording the DVR did not record, cloned in full, held in
   memory and written to the cache file, and read by nothing.
 - The server's raw object for every airing in the guide was kept resident to
@@ -85,12 +98,15 @@ mistake is recoverable from the server's own admin page.
   all be turned off with one key that keeps working while they are off. The
   whole list is on the settings page, generated from the same table the
   handler reads.
-- **Software decoding.** On by default the decoder uses the integrated
-  graphics chip. Turn this on if a driver produces a picture with artifacts.
-  The discrete card is never asked for.
+- **Software decoding.** Decoding uses the integrated graphics chip by
+  default. Turn this on if a driver produces a picture with artifacts. The
+  discrete card is never asked for either way.
 
 ### Appearance
 
+- **Full screen fills the screen.** A maximized window is confined to the area
+  above the taskbar, and going full screen from there stayed confined to it,
+  leaving a strip of desktop along the bottom.
 - A new icon: a 1980s remote, drawn at nine sizes and simplified as it gets
   smaller so it still reads at 16 pixels.
 - Artwork has rounded corners everywhere. It was being drawn square inside

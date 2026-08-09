@@ -114,8 +114,27 @@ if ($Clean) {
 # ------------------------------------------------------------------ mpv src ---
 if (-not (Test-Path (Join-Path $MpvSrc 'meson.build'))) {
     Step "fetching mpv $MpvTag"
-    git clone --depth 1 --branch $MpvTag https://github.com/mpv-player/mpv.git $MpvSrc
+    # core.autocrlf=false, and it matters for more than tidiness. Windows git
+    # checks out CRLF by default; the mingw git that mpv's own version script
+    # runs under compares against LF, sees all 820 files as modified, and
+    # stamps "-dirty" into the version string embedded in the library. The
+    # source is the pinned tag either way, but the About panel would be saying
+    # otherwise.
+    git -c core.autocrlf=false clone --depth 1 --branch $MpvTag `
+        https://github.com/mpv-player/mpv.git $MpvSrc
     if ($LASTEXITCODE -ne 0) { Fail 'Could not clone mpv.' }
+    git -C $MpvSrc config core.autocrlf false
+}
+
+# An existing tree checked out before that was fixed. Line endings only: the
+# content is the tag's, so re-checking it out costs nothing and stops the
+# library claiming to be built from a modified source tree.
+if ((git -C $MpvSrc config core.autocrlf) -ne 'false') {
+    Step 'normalizing line endings in the mpv checkout'
+    git -C $MpvSrc config core.autocrlf false
+    git -C $MpvSrc rm --cached -r -q . | Out-Null
+    git -C $MpvSrc reset --hard -q
+    if ($LASTEXITCODE -ne 0) { Fail 'Could not normalize the mpv checkout.' }
 }
 
 # ------------------------------------------------------------------- FFmpeg ---

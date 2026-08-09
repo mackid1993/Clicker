@@ -1,22 +1,19 @@
 <#
 .SYNOPSIS
-    Get a machine ready to build Clicker, then build the vendored FFmpeg.
+    Get a machine ready to build Clicker, then build the vendored mpv.
 
 .DESCRIPTION
     Checks every build prerequisite, reports what is missing, and — with
-    -Install — installs it via winget. Then fetches FFmpeg at its pinned tag
-    and builds it.
+    -Install — installs it via winget. Then builds libmpv, and the FFmpeg it
+    sits on, from their pinned tags.
 
     Run once per machine. Afterwards, .\build.ps1 is all that is needed.
 
     Nothing here is required to *run* Clicker; the installer carries its own
-    FFmpeg. These are build-time tools only.
+    copy of everything. These are build-time tools only.
 
 .PARAMETER Install
     Install anything missing via winget instead of only reporting it.
-
-.PARAMETER SkipFFmpeg
-    Check the toolchain but do not fetch or build FFmpeg.
 
 .PARAMETER SkipMpv
     Check the toolchain but do not build libmpv.
@@ -29,14 +26,11 @@
 [CmdletBinding()]
 param(
     [switch]$Install,
-    [switch]$SkipFFmpeg,
     [switch]$SkipMpv
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
-$FFmpegTag = 'n7.1.1'
-$FFmpegSrc = Join-Path $Root 'third_party\ffmpeg-src'
 $Msys = 'C:\msys64'
 
 # The mingw packages libmpv needs. libass and libplacebo are not optional in
@@ -79,9 +73,10 @@ function Need($name, $found, $wingetId, $note = '') {
 $cargo = (Get-Command cargo -ErrorAction SilentlyContinue)
 Need 'Rust (cargo)' ([bool]$cargo) 'Rustlang.Rustup' $(if ($cargo) { (cargo --version) }) | Out-Null
 
-# The MSVC compiler, not merely Visual Studio. A Build Tools install without
-# the C++ workload has no cl.exe, and saying "Visual Studio found" there would
-# be a lie that only surfaces twenty minutes into an FFmpeg build.
+# The MSVC linker, not merely Visual Studio. Rust's Windows target links
+# through it, and a Build Tools install without the C++ workload has none;
+# saying "Visual Studio found" there would be a lie that only surfaces when
+# cargo tries to link.
 $vcvars = @(
     "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
     "$env:ProgramFiles\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
@@ -108,19 +103,12 @@ if ($vcvars) {
     $missing += 'Microsoft.VisualStudio.2022.BuildTools'
 }
 
-$git = @(
-    "$env:ProgramFiles\Git\bin\bash.exe",
-    "${env:ProgramFiles(x86)}\Git\bin\bash.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-Need 'Git for Windows (bash)' ([bool]$git) 'Git.Git' 'FFmpeg configure needs a POSIX shell' | Out-Null
+$git = (Get-Command git -ErrorAction SilentlyContinue)
+Need 'Git' ([bool]$git) 'Git.Git' 'to fetch mpv and FFmpeg at their pinned tags' | Out-Null
 
-$nasm = (Get-Command nasm -ErrorAction SilentlyContinue)
-Need 'NASM' ([bool]$nasm) 'NASM.NASM' $(if ($nasm) { $nasm.Source }) | Out-Null
-
-$make = @('make', 'gmake', 'mingw32-make') |
-        ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } |
-        Select-Object -First 1
-Need 'GNU make' ([bool]$make) 'GnuWin32.Make' $(if ($make) { $make.Name }) | Out-Null
+# NASM, make and a POSIX shell used to be checked here, for an FFmpeg built
+# with MSVC. That build is gone: FFmpeg now comes from the mingw side with
+# mpv, and every one of those tools is an MSYS2 package installed below.
 
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -129,11 +117,11 @@ $iscc = @(
 if ($iscc) { Ok 'Inno Setup 6' }
 else { Say '[opt]  Inno Setup 6  ->  winget install JRSoftware.InnoSetup  (only needed to package)' 'DarkGray' }
 
-# MSYS2, for libmpv only.
+# MSYS2, for libmpv and the FFmpeg under it.
 #
-# The application and its C shim are built with MSVC and always will be. mpv
-# cannot be built with MSVC at all — upstream supports mingw-w64 and nothing
-# else on Windows — so a second toolchain has to exist to produce the DLL.
+# The application is Rust against MSVC and always will be. mpv cannot be built
+# with MSVC at all — upstream supports mingw-w64 and nothing else on Windows —
+# so a second toolchain has to exist to produce the DLL.
 # Nothing else in this repository uses it, and the DLL it produces is loaded by
 # name at runtime, so no part of the MSVC build ever links against it.
 $msysBash = Join-Path $Msys 'usr\bin\bash.exe'
@@ -195,39 +183,18 @@ Write-Host ''
 Write-Host '  Toolchain complete.' -ForegroundColor Green
 Write-Host ''
 
-if ($SkipFFmpeg) { exit 0 }
-
-# ---------------------------------------------------------------- ffmpeg ----
-if (-not (Test-Path (Join-Path $FFmpegSrc 'configure'))) {
-    Write-Host "  Fetching FFmpeg $FFmpegTag" -ForegroundColor Cyan
-    New-Item -ItemType Directory -Force -Path (Split-Path $FFmpegSrc) | Out-Null
-    # Shallow, single tag: the full history is 600MB and nothing here needs it.
-    git clone --depth 1 --branch $FFmpegTag https://github.com/FFmpeg/FFmpeg.git $FFmpegSrc
-    if ($LASTEXITCODE -ne 0) { Bad 'git clone failed'; exit 1 }
-} else {
-    Say "FFmpeg source already present" 'DarkGray'
-}
-
-$built = Join-Path $Root 'third_party\ffmpeg\bin\avcodec-61.dll'
-if (Test-Path $built) {
-    Say 'FFmpeg already built (delete third_party\ffmpeg to force a rebuild)' 'DarkGray'
-} else {
-    Write-Host '  Building FFmpeg. This takes about fifteen minutes.' -ForegroundColor Cyan
-    & (Join-Path $Root 'scripts\build-ffmpeg.ps1')
-    if ($LASTEXITCODE -ne 0) { Bad 'FFmpeg build failed'; exit 1 }
-}
-
 # ------------------------------------------------------------------- mpv ----
 #
-# A second FFmpeg gets built here, by gcc, because that is what libmpv links
-# against. It does not replace the one above: the application and its C shim
-# are MSVC and use that one. The two never share a source tree.
+# The only native dependency. mpv is the player, and FFmpeg comes with it:
+# build-mpv.ps1 builds both, under mingw, because mpv cannot be built with
+# MSVC. Nothing here is linked against — libmpv is loaded by name at runtime —
+# so the application itself needs no headers and no import libraries.
 if (-not $SkipMpv) {
     $mpvBuilt = Join-Path $Root 'third_party\mpv\libmpv-2.dll'
     if (Test-Path $mpvBuilt) {
         Say 'libmpv already built (delete third_party\mpv to force a rebuild)' 'DarkGray'
     } else {
-        Write-Host '  Building libmpv. This takes about twenty minutes.' -ForegroundColor Cyan
+        Write-Host '  Building libmpv and FFmpeg. This takes about half an hour.' -ForegroundColor Cyan
         & (Join-Path $Root 'scripts\build-mpv.ps1')
         if ($LASTEXITCODE -ne 0) { Bad 'libmpv build failed'; exit 1 }
     }
