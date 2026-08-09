@@ -226,13 +226,47 @@ impl GuideApi {
             "/devices/ANY/guide?time={now}&duration={}",
             hours * 3600
         );
-        let (channels, listings, collections, jobs, rules) = tokio::join!(
+        let (channels, listings, collections, jobs, rules, devices) = tokio::join!(
             self.get("/dvr/guide/channels"),
             self.get(&listings_path),
             self.get("/dvr/collections/channels"),
             self.get("/dvr/jobs"),
             self.get("/dvr/rules"),
+            self.get("/devices"),
         );
+
+        // What each source is actually called.
+        //
+        // A channel does not carry the name of the source it came from. It
+        // carries `DeviceID`, which is a serial number or an internal handle:
+        // checked against a real server, the two sources there are `1063F9E0`
+        // and `M3U-DirecTV`, where Channels itself shows "HDHomeRun DUO" and
+        // "DirecTV". The guide was showing the raw identifiers, which is why
+        // the source filter did not match what people see in Channels and why
+        // a source could look like it was missing entirely: nobody recognizes
+        // their aerial by its serial number.
+        //
+        // The names live on /devices, keyed by that same DeviceID.
+        let mut device_names: HashMap<String, String> = HashMap::new();
+        if let Ok(Value::Array(list)) = devices {
+            for device in list {
+                let id = as_str(&device, "DeviceID");
+                // FriendlyName is what the Channels interface displays. Falling
+                // back to the id keeps a source that has no name visible rather
+                // than dropping it, which is the failure this is fixing.
+                let name = [
+                    as_str(&device, "FriendlyName"),
+                    as_str(&device, "Name"),
+                    id.clone(),
+                ]
+                .into_iter()
+                .find(|n| !n.trim().is_empty())
+                .unwrap_or_default();
+                if !id.is_empty() {
+                    device_names.insert(id, name);
+                }
+            }
+        }
 
         // Channels come back as an object keyed by number, not a list.
         let mut by_number: HashMap<String, Channel> = HashMap::new();
@@ -241,6 +275,13 @@ impl GuideApi {
                 if let Ok(mut channel) = serde_json::from_value::<Channel>(value) {
                     if channel.number.is_empty() {
                         channel.number = number.clone();
+                    }
+                    // The id becomes the name it is known by. Left as the id
+                    // when the device list did not mention it, so a channel
+                    // from a source that has since gone still groups somewhere
+                    // rather than falling out of the filter.
+                    if let Some(name) = device_names.get(&channel.source) {
+                        channel.source = name.clone();
                     }
                     if !channel.hidden {
                         by_number.insert(number, channel);
@@ -263,11 +304,17 @@ impl GuideApi {
                 // Prefer the merged channel record, which knows the source.
                 let channel = by_number.get(&number).cloned().unwrap_or_else(|| {
                     let c = entry.get("Channel").cloned().unwrap_or(Value::Null);
+                    let device = as_str(&c, "DeviceID");
                     Channel {
                         number: number.clone(),
                         name: as_str(&c, "Name"),
                         logo: as_str(&c, "Image"),
-                        source: as_str(&c, "DeviceID"),
+                        // Named, on the same terms as above: a channel that
+                        // only appears in the listings still has to land in
+                        // the same group as its siblings, and it will not if
+                        // one of them says "DirecTV" and the other says
+                        // "M3U-DirecTV".
+                        source: device_names.get(&device).cloned().unwrap_or(device),
                         hd: c.get("HD").and_then(Value::as_bool).unwrap_or(false),
                         hidden: false,
                         favorite: false,
