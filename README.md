@@ -5,7 +5,8 @@
 # Clicker
 
 **A Unoffical native Windows client for [Channels DVR](https://getchannels.com/) Server.**
-**Not affiliated or supported by with Fancy Bits, LLC, don't go to them with issues related to this tool.**
+
+**Not affiliated or supported by Fancy Bits, LLC, don't go to them with issues related to this tool.**
 
 Live TV, recordings and a guide, in a single Rust binary.
 
