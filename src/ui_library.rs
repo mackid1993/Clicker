@@ -239,6 +239,49 @@ fn show_detail(
                         .size(22.0)
                         .color(Fluent::TEXT_PRIMARY),
                 );
+
+                // Shuffle, which for a series with a hundred episodes is the
+                // only sensible way to start one. Unwatched first, because
+                // "play me something" from a series someone is working through
+                // means something they have not seen; it falls back to the
+                // whole run once there is nothing new, which is what makes it
+                // useful on a comedy somebody has finished twice.
+                if episodes.len() > 1 {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(SPACE_L * 2.0);
+                        if ui
+                            .button("🔀  Shuffle")
+                            .on_hover_text("Play a random episode")
+                            .clicked()
+                        {
+                            let unseen: Vec<&&Recording> =
+                                episodes.iter().filter(|e| !e.watched).collect();
+                            let pool: &[&&Recording] = if unseen.is_empty() {
+                                // Nothing unwatched left, so anything goes.
+                                &[]
+                            } else {
+                                &unseen
+                            };
+                            // The clock as the die. There is no random number
+                            // generator in this program and one crate is not
+                            // worth adding to pick an episode.
+                            let roll = crate::ui::scatter(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_nanos() as u64)
+                                    .unwrap_or(0),
+                            );
+                            let chosen = if pool.is_empty() {
+                                episodes.get((roll % episodes.len() as u64) as usize).copied()
+                            } else {
+                                pool.get((roll % pool.len() as u64) as usize).map(|e| **e)
+                            };
+                            if let Some(episode) = chosen {
+                                action = Action::Play(episode.clone());
+                            }
+                        }
+                    });
+                }
             });
             ui.add_space(SPACE_M);
 

@@ -32,7 +32,6 @@ pub struct Airing {
     pub start: i64,
     pub duration: i64,
     pub channel: String,
-    pub raw: Value,
 }
 
 impl Airing {
@@ -163,7 +162,6 @@ impl Dvr {
             start: as_i64(raw, "Time"),
             duration: as_i64(raw, "Duration"),
             channel: channel.to_string(),
-            raw: raw.clone(),
         })
     }
 
@@ -174,7 +172,13 @@ impl Dvr {
             "Time": airing.start - padding.start,
             "Duration": airing.duration + padding.start + padding.end,
             "Channels": [airing.channel],
-            "Airing": airing.raw,
+            // The server's own object, read back from the guide's cache rather
+            // than carried in memory for every airing on every channel. Null
+            // if this airing did not come from a guide load — the server fills
+            // in what it can from the fields above, which is the same position
+            // a client that never had the object is in.
+            "Airing": crate::guide::raw_airing(&airing.channel, airing.start)
+                .unwrap_or(Value::Null),
         });
 
         let url = format!("{}/dvr/jobs/new", self.base);

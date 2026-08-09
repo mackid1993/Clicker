@@ -2295,15 +2295,15 @@ impl App {
         let ctx = self.repaint.clone();
         let title = airing.title.clone();
 
-        // The guide's Airing carries the server's own object, which is handed
-        // straight back so the recording keeps its metadata.
+        // Channel and start are enough: the server's own object for this
+        // airing is looked up from the guide's cache on disk when the job is
+        // built, rather than carried through every airing in memory.
         let job = api::Airing {
             title: airing.title.clone(),
             subtitle: airing.episode_title.clone(),
             start: airing.start,
             duration: airing.duration,
             channel: airing.channel.clone(),
-            raw: airing.raw.clone(),
         };
         let padding = api::Padding {
             start: start_pad,

@@ -51,10 +51,6 @@ pub struct Airing {
     pub program_id: String,
     pub is_new: bool,
     pub is_movie: bool,
-    /// The server's own object, handed back untouched when scheduling so the
-    /// recording carries the right metadata. Rebuilding it field by field
-    /// would silently drop anything this client does not know about.
-    pub raw: Value,
 }
 
 impl Airing {
@@ -134,6 +130,52 @@ const TAIL_PADDING: i64 = 60;
 
 pub fn key(channel: &str, start: i64) -> String {
     format!("{}|{}", channel.trim().to_lowercase(), start)
+}
+
+/// Where the server's own airing objects are kept.
+///
+/// On disk rather than in memory. Scheduling a recording hands the server back
+/// its own object untouched, because rebuilding it field by field would
+/// silently drop anything this client does not know about — but that is needed
+/// for the one airing being recorded, and it was being held for all of them.
+/// A day of listings is 24MB of JSON across thirteen thousand airings, and as
+/// parsed values that is a couple of hundred thousand small allocations sitting
+/// in the heap to serve an action that happens once in a while.
+///
+/// One line per airing, so finding one is a scan and a single parse rather
+/// than reading the whole file back into a tree.
+fn raw_cache_path() -> Option<std::path::PathBuf> {
+    Some(crate::paths::data_dir()?.join("guide-airings.jsonl"))
+}
+
+/// Write the airing objects out, replacing whatever was there.
+fn write_raw_cache(lines: &str) {
+    let Some(path) = raw_cache_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Written whole and replaced, not appended: these describe one load of the
+    // guide, and half of one load plus half of another describes nothing.
+    let _ = std::fs::write(path, lines);
+}
+
+/// The server's object for one airing, or none if this load did not cache it.
+///
+/// Scans for the key rather than parsing every line, so the cost is reading
+/// 24MB and parsing one object.
+pub fn raw_airing(channel: &str, start: i64) -> Option<Value> {
+    let path = raw_cache_path()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let wanted = format!("\"{}\"", key(channel, start));
+    for line in text.lines() {
+        // The key is written first on every line, so this is a prefix test
+        // rather than a search through the airing's own text.
+        if line.starts_with(&format!("{{\"k\":{wanted}")) {
+            let parsed: Value = serde_json::from_str(line).ok()?;
+            return parsed.get("a").cloned();
+        }
+    }
+    None
 }
 
 #[derive(Default, Clone)]
@@ -279,6 +321,11 @@ impl GuideApi {
         // guide is asked for and far short of a century.
         let horizon = now + 30 * 24 * 3600;
 
+        // Built as the rows are, written once at the end. 24MB of text, which
+        // is the point: it is 24MB on a disk instead of a couple of hundred
+        // thousand allocations in the heap.
+        let mut raw_lines = String::with_capacity(24 * 1024 * 1024);
+
         // Channels come back as an object keyed by number, not a list.
         let mut by_number: HashMap<String, Channel> = HashMap::new();
         if let Ok(Value::Object(map)) = channels {
@@ -337,20 +384,34 @@ impl GuideApi {
                     .and_then(Value::as_array)
                     .map(|list| {
                         list.iter()
-                            .map(|a| Airing {
-                                title: as_str(a, "Title"),
-                                episode_title: as_str(a, "EpisodeTitle"),
-                                summary: as_str(a, "Summary"),
-                                start: as_i64(a, "Time"),
-                                duration: as_i64(a, "Duration"),
-                                channel: number.clone(),
-                                series_id: as_str(a, "SeriesID"),
-                                program_id: as_str(a, "ProgramID"),
-                                is_new: has_tag(a, "Tags", "New"),
-                                is_movie: has_tag(a, "Categories", "Movie"),
-                                raw: a.clone(),
+                            .filter_map(|a| {
+                                let airing = Airing {
+                                    title: as_str(a, "Title"),
+                                    episode_title: as_str(a, "EpisodeTitle"),
+                                    summary: as_str(a, "Summary"),
+                                    start: as_i64(a, "Time"),
+                                    duration: as_i64(a, "Duration"),
+                                    channel: number.clone(),
+                                    series_id: as_str(a, "SeriesID"),
+                                    program_id: as_str(a, "ProgramID"),
+                                    is_new: has_tag(a, "Tags", "New"),
+                                    is_movie: has_tag(a, "Categories", "Movie"),
+                                };
+                                if airing.start >= horizon {
+                                    return None;
+                                }
+                                // The server's own object goes to the file, not
+                                // into this struct. One line, key first, so it
+                                // can be found later without parsing the rest.
+                                use std::fmt::Write;
+                                let _ = writeln!(
+                                    raw_lines,
+                                    "{{\"k\":\"{}\",\"a\":{}}}",
+                                    key(&airing.channel, airing.start),
+                                    a
+                                );
+                                Some(airing)
                             })
-                            .filter(|airing: &Airing| airing.start < horizon)
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
@@ -360,6 +421,9 @@ impl GuideApi {
                 }
             }
         }
+
+        write_raw_cache(&raw_lines);
+        drop(raw_lines);
 
         // Numeric where possible: "10" before "9" is what string ordering gives
         // and it looks broken on a channel list.
