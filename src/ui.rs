@@ -328,33 +328,55 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
         ui.painter().rect_filled(card, RADIUS_SURFACE, Fluent::LAYER_CARD);
     }
 
-    // Darken the left half so the text is legible over any image. Drawn as a
-    // handful of wide bands rather than a true gradient, which egui has no
-    // primitive for; at this width the steps are not visible.
+    // Darken the left so the text is legible over any image.
     //
-    // The outermost bands carry the card's corner radius on their outer side.
-    // Square bands painted over rounded artwork put the corners straight back
-    // — which is exactly what they did, most visibly on the left where this is
-    // nearly opaque.
-    let bands = 24;
-    for i in 0..bands {
-        let t = i as f32 / bands as f32;
-        let x0 = card.min.x + card.width() * t;
-        let x1 = card.min.x + card.width() * (t + 1.0 / bands as f32);
-        let alpha = ((1.0 - t).powf(1.6) * 225.0) as u8;
-        let rounding = if i == 0 {
-            egui::Rounding { nw: RADIUS_SURFACE, sw: RADIUS_SURFACE, ne: 0.0, se: 0.0 }
-        } else if i == bands - 1 {
-            egui::Rounding { ne: RADIUS_SURFACE, se: RADIUS_SURFACE, nw: 0.0, sw: 0.0 }
-        } else {
-            egui::Rounding::ZERO
-        };
-        ui.painter().rect_filled(
-            egui::Rect::from_min_max(egui::pos2(x0, card.min.y), egui::pos2(x1, card.max.y)),
-            rounding,
-            egui::Color32::from_rgba_unmultiplied(10, 11, 14, alpha),
-        );
+    // A mesh with the colour on its vertices, not a row of flat rectangles.
+    // This was twenty-four bands, each a single alpha across fifty pixels, and
+    // that reads as stripes the moment the picture behind it is sharp: the
+    // step between neighbouring bands is a dozen levels of alpha and the eye
+    // finds every one of them. Interpolating between vertices makes the
+    // hardware do it per pixel instead.
+    let shade = |t: f32| {
+        let alpha = ((1.0 - t).clamp(0.0, 1.0).powf(1.6) * 225.0) as u8;
+        egui::Color32::from_rgba_unmultiplied(10, 11, 14, alpha)
+    };
+
+    // The rounded end cap first. A mesh is a quad and cannot have a corner
+    // radius, so the leftmost sliver — where this is at its most opaque, and
+    // where a square corner over rounded artwork is most obvious — is drawn as
+    // a rounded rectangle. Across eight pixels the gradient is flat enough
+    // that one colour will do.
+    let cap = egui::Rect::from_min_max(
+        card.min,
+        egui::pos2(card.min.x + RADIUS_SURFACE, card.max.y),
+    );
+    ui.painter().rect_filled(
+        cap,
+        egui::Rounding { nw: RADIUS_SURFACE, sw: RADIUS_SURFACE, ne: 0.0, se: 0.0 },
+        shade(0.0),
+    );
+
+    // Then the gradient across the rest. Sixteen columns is plenty: within
+    // each one the colour is interpolated, so this is approximating the curve
+    // rather than the gradient.
+    let columns = 16;
+    let mut mesh = egui::Mesh::default();
+    for i in 0..=columns {
+        let along = i as f32 / columns as f32;
+        let x = cap.max.x + (card.max.x - cap.max.x) * along;
+        // Sampled against the whole card, so the curve is unaffected by the
+        // cap having taken the first few pixels.
+        let t = (x - card.min.x) / card.width();
+        let color = shade(t);
+        mesh.colored_vertex(egui::pos2(x, card.min.y), color);
+        mesh.colored_vertex(egui::pos2(x, card.max.y), color);
     }
+    for i in 0..columns {
+        let left = (i * 2) as u32;
+        mesh.add_triangle(left, left + 1, left + 2);
+        mesh.add_triangle(left + 1, left + 3, left + 2);
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
     ui.painter().rect_stroke(
         card,
         RADIUS_SURFACE,
