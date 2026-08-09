@@ -221,6 +221,29 @@ const LIVE_PREROLL: Duration = Duration::from_secs(4);
 const PREROLL_FRAMES: usize = 10;
 const PREROLL_MAX: Duration = Duration::from_millis(1200);
 
+/// A gap between the clock and the next frame that means the stream's timeline
+/// moved rather than that the frame is early.
+///
+/// Timestamps in a transport stream are not guaranteed to be continuous. A
+/// recording made from a segmented source is a concatenation of segments, and
+/// the timeline can step at a boundary; a broadcast multiplex can reset its
+/// clock outright. Either way frames arrive stamped somewhere the clock is not.
+///
+/// The presenter waits for a frame that is early, which is right when it is
+/// early by a frame or two and catastrophic when it is early by seconds: it
+/// sleeps until wall time catches up, showing nothing, while the queue fills
+/// behind it and the decoder stops. That is the same fault the seek path
+/// already guards against, and the comment there records what it looks like:
+/// the picture frozen solid for the whole gap. This is that fault arriving
+/// mid-stream instead of after a seek, and on a source whose segments are two
+/// seconds long it arrives every two seconds.
+///
+/// Half a second is comfortably past anything scheduling produces. A frame is
+/// due within one frame period, and the largest legitimate wait is the audio
+/// buffer's depth right after the clock is snapped onto the sound, measured at
+/// around 200ms.
+const DISCONTINUITY: f64 = 0.5;
+
 /// An open faster than this means the server already had the channel running.
 ///
 /// Measured on a real DVR: 8.61s when it had to tune, 0.35s when the session
@@ -313,6 +336,9 @@ struct Shared {
     starved: AtomicU64,
     /// Audio callbacks that could not be filled from the queue.
     underruns: AtomicU64,
+    /// Times the stream's timeline stepped and the clock was re-anchored onto
+    /// it. See `DISCONTINUITY`.
+    discontinuities: AtomicU64,
     /// Earliest PTS ever seen, as f64 bits. The stream's timeline does not
     /// start at zero, and pretending it does makes every position wrong.
     first_pts: AtomicU64,
@@ -582,6 +608,7 @@ impl Player {
             stalls: AtomicU64::new(0),
             starved: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
+            discontinuities: AtomicU64::new(0),
             first_pts: AtomicU64::new(f64::NAN.to_bits()),
             discarded: AtomicU32::new(0.0f32.to_bits()),
             cc_available: AtomicBool::new(false),
@@ -1190,7 +1217,7 @@ fn decode_loop(
             // underrun are the two ways the pipeline runs dry, and they have
             // different causes; skew is A/V sync.
             eprintln!(
-                "[player] {:.1}s pos {:.1}s edge {:.1}s | read {:.0}+dec {:.0}+conv {:.0} ms/s, stall {:.0}ms x{} | vq {}/{} aq {:.0}ms held {} ({:.0}MB) | fps {:.2} dropped {} starved {} underrun {} | skew {:+.0}ms rate {:.5}",
+                "[player] {:.1}s pos {:.1}s edge {:.1}s | read {:.0}+dec {:.0}+conv {:.0} ms/s, stall {:.0}ms x{} | vq {}/{} aq {:.0}ms held {} ({:.0}MB) | fps {:.2} dropped {} starved {} underrun {} disc {} | skew {:+.0}ms rate {:.5}",
                 opened_at.elapsed().as_secs_f64(),
                 position,
                 shared.live_edge(),
@@ -1208,6 +1235,7 @@ fn decode_loop(
                 shared.dropped.load(Ordering::Relaxed),
                 shared.starved.swap(0, Ordering::Relaxed),
                 shared.underruns.swap(0, Ordering::Relaxed),
+                shared.discontinuities.swap(0, Ordering::Relaxed),
                 skew * 1000.0,
                 shared.clock.rate(),
             );
@@ -1535,7 +1563,7 @@ fn present_loop(shared: Arc<Shared>, repaint: impl Fn() + Send + Sync + 'static)
         let mut due: Option<VideoFrame> = None;
         let mut wait = Duration::from_millis(4);
 
-        let now;
+        let mut now;
         {
             let mut queue = shared.video.lock().unwrap();
             if queue.is_empty() && shared.clock.started() {
@@ -1601,6 +1629,32 @@ fn present_loop(shared: Arc<Shared>, repaint: impl Fn() + Send + Sync + 'static)
             }
 
             now = shared.clock.now();
+
+            // A timeline that has moved, rather than a frame that is early.
+            //
+            // Waiting is the right answer for a frame a few milliseconds out
+            // and the wrong one for a frame seconds out: the clock cannot be
+            // hurried, so the presenter shows nothing until wall time arrives,
+            // the queue fills behind it, and the decoder stops. Re-anchoring
+            // costs a single step in the position readout and keeps the
+            // picture moving. See `DISCONTINUITY`.
+            //
+            // Both directions. A timeline that steps backwards would otherwise
+            // have every frame in the queue thrown away as stale, one at a
+            // time, for as long as the step lasted.
+            if shared.clock.started() {
+                if let Some(front) = queue.front() {
+                    if (front.pts - now).abs() > DISCONTINUITY {
+                        shared.clock.reset(front.pts);
+                        // Onto the sound as well, as after a seek: audio
+                        // carries the same discontinuity and the two have to
+                        // agree about where playback now is.
+                        shared.align_audio.store(true, Ordering::SeqCst);
+                        shared.discontinuities.fetch_add(1, Ordering::Relaxed);
+                        now = shared.clock.now();
+                    }
+                }
+            }
 
             // Take the frame that is due, and only skip past ones that are
             // genuinely stale.
