@@ -70,6 +70,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "{#StageDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\LICENSE.md";    DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\NOTICE.md";     DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\clicker.ico";   DestDir: "{app}"; Flags: ignoreversion
 ; The LGPL text and third-party notices, next to the libraries they cover.
 Source: "{#StageDir}\licenses\*";    DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs

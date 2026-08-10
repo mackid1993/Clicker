@@ -175,7 +175,7 @@ try {
 } catch {
     Fail 'Could not stage clicker.exe. Is the app still running?'
 }
-Copy-Item (Join-Path $Root 'LICENSE.md') $Stage -Force
+Copy-Item (Join-Path $Root 'LICENSE.md'), (Join-Path $Root 'NOTICE.md') $Stage -Force
 
 # The icon travels with the app so shortcuts and the uninstall entry can name
 # it directly rather than relying on the embedded resource surviving.

@@ -212,7 +212,9 @@ that cannot seek backwards at all.
 
 Clicker is **open source** under the MIT License. Read it, build it, run it,
 change it, fork it, share it, sell it — the only condition is that the
-copyright notice travels with it. See [LICENSE.md](LICENSE.md).
+copyright notice travels with it. See [LICENSE.md](LICENSE.md), and
+[NOTICE.md](NOTICE.md) for the third party components, which carry their own
+licenses.
 
 ### mpv and FFmpeg
 
