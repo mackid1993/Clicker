@@ -126,9 +126,8 @@ pub fn library_screen(
                 let available = ui.available_width() - SPACE_L * 4.0;
                 let per_row =
                     ((available + SPACE_M) / (POSTER_W + SPACE_M)).floor().max(1.0) as usize;
-                for chunk in matching.chunks(per_row) {
-                    ui.horizontal(|ui| {
-                        ui.add_space(SPACE_L * 2.0);
+                let (drawn_rows, skipped_rows) =
+                    visible_rows(ui, &matching, per_row, |ui, chunk| {
                         for movie in chunk {
                             let year = movie
                                 .original_air_date
@@ -142,8 +141,7 @@ pub fn library_screen(
                             ui.add_space(SPACE_M);
                         }
                     });
-                    ui.add_space(SPACE_M);
-                }
+                grid_log("movies", matching.len(), per_row, drawn_rows, skipped_rows, images);
                 ui.add_space(SPACE_L * 2.0);
                 return;
             }
@@ -164,98 +162,122 @@ pub fn library_screen(
             let available = ui.available_width() - SPACE_L * 4.0;
             let per_row = ((available + SPACE_M) / (POSTER_W + SPACE_M)).floor().max(1.0) as usize;
 
-            // Only build the rows that are on screen.
-            //
-            // This used to draw every series, which on a large library is the
-            // whole cause of artwork flickering: each card asks for its poster
-            // whether or not it is visible, so five hundred cards asked for
-            // five hundred pictures every frame, and no cache of any size can
-            // hold a working set that large. Forty of them are visible.
-            //
-            // The row is measured and skipped rather than not laid out, so the
-            // scroll bar and the scroll position stay exactly what they were.
-            //
-            // It also skips the count below, which walks every recording in
-            // the library once per series — on this user's library that is
-            // five hundred series against three thousand recordings, a million
-            // and a half comparisons per frame, for rows nobody can see.
-            // Measured from the first row actually drawn rather than computed
-            // from the poster size and guessed text metrics. A skipped row
-            // reserves this much, so an estimate that is wrong by a few pixels
-            // would drift the layout as it scrolled. The top row is always
-            // visible when the view opens, so the real figure arrives before
-            // anything is skipped.
-            let mut row_h = POSTER_H + SPACE_M * 3.0 + 34.0;
-            let mut drawn_rows = 0usize;
-            let mut skipped_rows = 0usize;
-            for chunk in shows.chunks(per_row) {
-                let row = ui.available_rect_before_wrap();
-                let row = egui::Rect::from_min_size(row.min, egui::vec2(row.width(), row_h));
-                if !ui.is_rect_visible(row) {
-                    skipped_rows += 1;
-                    ui.allocate_space(egui::vec2(row.width(), row_h));
-                    continue;
-                }
-                drawn_rows += 1;
-                let drawn = ui.horizontal(|ui| {
-                    ui.add_space(SPACE_L * 2.0);
-                    for group in chunk {
-                        let episodes = data
+            let (drawn_rows, skipped_rows) = visible_rows(ui, &shows, per_row, |ui, chunk| {
+                for group in chunk {
+                    // Counted only for rows actually built: this walks every
+                    // recording in the library once per series, and on a large
+                    // library that is millions of comparisons per frame if it
+                    // runs for rows nobody can see.
+                    let episodes = data
+                        .all
+                        .iter()
+                        .filter(|r| r.show_id == group.id || r.show_id == group.series_id)
+                        .count();
+                    if poster(
+                        ui,
+                        &group.image,
+                        &group.name,
+                        &format!(
+                            "{episodes} recording{}",
+                            if episodes == 1 { "" } else { "s" }
+                        ),
+                        group.unwatched,
+                        images,
+                    ) {
+                        state.open_show = Some(if data
                             .all
                             .iter()
-                            .filter(|r| r.show_id == group.id || r.show_id == group.series_id)
-                            .count();
-                        if poster(
-                            ui,
-                            &group.image,
-                            &group.name,
-                            &format!(
-                                "{episodes} recording{}",
-                                if episodes == 1 { "" } else { "s" }
-                            ),
-                            group.unwatched,
-                            images,
-                        ) {
-                            state.open_show = Some(if data
-                                .all
-                                .iter()
-                                .any(|r| r.show_id == group.id)
-                            {
-                                group.id.clone()
-                            } else {
-                                group.series_id.clone()
-                            });
-                        }
-                        ui.add_space(SPACE_M);
+                            .any(|r| r.show_id == group.id)
+                        {
+                            group.id.clone()
+                        } else {
+                            group.series_id.clone()
+                        });
                     }
-                });
-                row_h = drawn.response.rect.height() + SPACE_M;
-                ui.add_space(SPACE_M);
-            }
-
-            // What the library page is doing, occasionally.
-            //
-            // Every few hundred builds rather than every frame: this exists to
-            // answer "why is the artwork flickering" from a user's log, and
-            // what answers it is how many rows were built against how many
-            // exist, and how much artwork is resident against how much is on
-            // screen. A line per frame would drown the log it is meant to help
-            // read.
-            static BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            if BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 600 == 0 {
-                let (resident, bytes) = images.resident();
-                crate::log::line(&format!(
-                    "[library] {} series, {per_row} per row, {drawn_rows} drawn, {skipped_rows} skipped, artwork {resident} images {} MB",
-                    shows.len(),
-                    bytes / (1024 * 1024),
-                ));
-            }
+                    ui.add_space(SPACE_M);
+                }
+            });
+            grid_log("series", shows.len(), per_row, drawn_rows, skipped_rows, images);
 
             ui.add_space(SPACE_L * 2.0);
 
         });
 
     action
+}
+
+/// Lay out a grid in rows of `per_row`, building only the rows on screen.
+///
+/// Both library grids come through here — that matters, because the last time
+/// this logic existed for one grid only, the other kept the bug. Drawing every
+/// card is the whole cause of artwork flickering on a large library: each card
+/// asks for its poster whether or not it is visible, so five hundred cards
+/// asked for five hundred pictures every frame, and no cache of any size can
+/// hold a working set that large. Forty of them are visible.
+///
+/// A row is measured and skipped rather than not laid out, so the scroll bar
+/// and the scroll position stay exactly what they were. The height reserved
+/// for a skipped row is measured from the last row actually drawn rather than
+/// computed from the poster size and guessed text metrics; until one has been
+/// drawn, an estimate stands in.
+///
+/// Returns how many rows were built and how many were skipped, for the log.
+fn visible_rows<T>(
+    ui: &mut egui::Ui,
+    items: &[T],
+    per_row: usize,
+    mut row: impl FnMut(&mut egui::Ui, &[T]),
+) -> (usize, usize) {
+    let mut row_h = POSTER_H + SPACE_M * 3.0 + 34.0;
+    let mut drawn_rows = 0usize;
+    let mut skipped_rows = 0usize;
+    for chunk in items.chunks(per_row) {
+        let space = ui.available_rect_before_wrap();
+        let space = egui::Rect::from_min_size(space.min, egui::vec2(space.width(), row_h));
+        if !ui.is_rect_visible(space) {
+            skipped_rows += 1;
+            ui.allocate_space(egui::vec2(space.width(), row_h));
+            continue;
+        }
+        drawn_rows += 1;
+        let drawn = ui.horizontal(|ui| {
+            ui.add_space(SPACE_L * 2.0);
+            row(ui, chunk);
+        });
+        row_h = drawn.response.rect.height() + SPACE_M;
+        ui.add_space(SPACE_M);
+    }
+    (drawn_rows, skipped_rows)
+}
+
+/// What the library page is doing, occasionally.
+///
+/// Every few hundred builds rather than every frame: this exists to answer
+/// "why is the artwork flickering" from a user's log, and what answers it is
+/// how many rows were built against how many exist, and how much artwork is
+/// resident against how much is on screen. A line per frame would drown the
+/// log it is meant to help read.
+///
+/// Both grids report through here and say which they are. The Movies tab
+/// going unlogged is how its flickering went undiagnosed across two releases:
+/// the log said the library was healthy, and it was — the half of it that
+/// could speak.
+fn grid_log(
+    kind: &str,
+    total: usize,
+    per_row: usize,
+    drawn: usize,
+    skipped: usize,
+    images: &Images,
+) {
+    static BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 600 == 0 {
+        let (resident, bytes) = images.resident();
+        crate::log::line(&format!(
+            "[library] {total} {kind}, {per_row} per row, {drawn} drawn, {skipped} skipped, artwork {resident} images {} MB",
+            bytes / (1024 * 1024),
+        ));
+    }
 }
 
 /// Inside one series.

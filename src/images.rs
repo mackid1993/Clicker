@@ -121,7 +121,9 @@ pub struct Images {
     tx: Sender<(String, Option<Decoded>)>,
     rx: Receiver<(String, Option<Decoded>)>,
     entries: HashMap<String, Entry>,
-    /// Monotonic use counter for eviction; bumped on every `get`.
+    /// Use counter for eviction, advanced once per frame at the end of
+    /// `pump` and stamped by every `get`, so everything a frame draws
+    /// shares one age.
     tick: u64,
 }
 
@@ -192,12 +194,14 @@ impl Images {
 
             // Never evict what was asked for most recently.
             //
-            // Everything drawn in a frame is touched on the same tick, so
-            // among the pictures currently on screen "least recently used"
-            // does not distinguish anything: the sort picks arbitrarily and
-            // takes some of them. They are visible, so they are requested
-            // again immediately, which evicts others in turn. On a large
-            // library that is a loop — artwork appearing, vanishing and
+            // Everything drawn in a frame is stamped with the same tick — the
+            // increment lives at the bottom of this function, once per frame,
+            // and nowhere else. That placement is load-bearing: when the tick
+            // advanced on every request instead, each poster in a frame had a
+            // different age, "newest" protected exactly one image, and a
+            // screen over budget evicted its own working set — which was
+            // requested again immediately, evicting others in turn. On a
+            // large library that is a loop: artwork appearing, vanishing and
             // reappearing on a screen nobody is scrolling.
             //
             // Holding the newest tick back is what breaks it. If a single
@@ -218,6 +222,11 @@ impl Images {
                 count -= 1;
             }
         }
+
+        // The next frame's requests all carry the next tick. The arrivals
+        // above were stamped with the current one — the same age as the frame
+        // that asked for them — so they are protected alongside it.
+        self.tick += 1;
     }
 
     /// How much artwork is in memory: how many pictures, and how many bytes.
@@ -253,7 +262,6 @@ impl Images {
         if url.is_empty() {
             return None;
         }
-        self.tick += 1;
 
         if !self.entries.contains_key(url) {
             self.entries.insert(url.to_string(), Entry::Loading);

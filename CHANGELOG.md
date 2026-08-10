@@ -1,6 +1,21 @@
 # Changelog
 
-## 1.1.4
+## 1.1.5
+
+**Artwork stops flickering in a large library — the Movies tab, this time.**
+The two previous fixes were real, but both stopped at the TV grid. Movies
+still built every card on every frame, and the cache rule meant to protect
+what is on screen was aging each request separately, so it protected exactly
+one poster — the last one asked for — and evicted the rest of the screen,
+which was requested again at once. Past about three hundred movies that is a
+rolling wave of posters vanishing and returning. The Movies tab now builds
+only the rows on screen through the same code as the TV grid, and everything
+drawn in a frame ages as one, so nothing visible is ever evicted.
+
+The diagnostic line the library writes to the log now covers the Movies tab
+too, and says which grid it is reporting on. Its silence there is how this
+went undiagnosed across two releases: the log said the library was healthy,
+and it was — the half of it that could speak.
 
 **Artwork stops flickering in a large library.** Every series was being drawn
 every frame, on screen or not, so a library of five hundred asked for five
