@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! Repro harness for the quality-switch crash.
 //!
 //! Opens a recording at Original (`stream.mpg`, Transport::Direct), plays it,

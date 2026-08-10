@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! Put the icon and version details into the executable.
 //!
 //! That is all there is to do here. Nothing native is compiled and nothing is
@@ -46,7 +51,7 @@ fn embed_icon(root: &std::path::Path) {
                 "A native Windows Unofficial Client for Channels DVR Server",
             )
             .set("CompanyName", "Clicker")
-            .set("LegalCopyright", "PolyForm Noncommercial 1.0.0");
+            .set("LegalCopyright", "© 2026 David Brustein. MIT License.");
 
         if let Err(e) = res.compile() {
             println!("cargo:warning=could not embed the icon: {e}");

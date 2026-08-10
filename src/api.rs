@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! The Channels DVR HTTP API.
 //!
 //! Recording is a server-side act. Pressing record does not capture anything

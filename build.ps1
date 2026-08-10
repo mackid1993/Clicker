@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: MIT
+#
+# Clicker - an unofficial, native Windows client for Channels DVR
+# Copyright (c) 2026 David Brustein
+
 <#
 .SYNOPSIS
     Build Clicker and produce a Windows installer.
@@ -193,10 +198,10 @@ Copy-Item $mpvDlls.FullName $Stage -Force
 Write-Host ("      libmpv and its libraries staged: {0} files" -f $mpvDlls.Count) -ForegroundColor DarkGray
 
 # Licenses are read out of the binaries that are actually being shipped, not
-# taken on trust from the build scripts that produced them. Clicker is
-# distributed under PolyForm Noncommercial, which cannot be combined with the
-# GPL, so a GPL component anywhere in the stage means there is nothing lawful
-# to package.
+# taken on trust from the build scripts that produced them. Clicker is MIT and
+# its media components are LGPL; a GPL library in the stage would silently
+# place the whole distribution under the GPL rather than the licenses written
+# on it, so a stage containing one is refused.
 foreach ($name in 'avutil-59.dll', 'libmpv-2.dll') {
     $file = Join-Path $Stage $name
     if (-not (Test-Path $file)) { Fail "$name is missing from the stage." }

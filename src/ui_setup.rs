@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! Onboarding, and the settings screen.
 //!
 //! Both edit the same things, so they share the pieces. The difference is

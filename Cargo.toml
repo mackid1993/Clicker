@@ -3,12 +3,9 @@ name = "clicker"
 version = "1.1.4"
 edition = "2021"
 description = "A native Windows Unofficial Client for Channels DVR Server"
-# PolyForm Noncommercial has no SPDX identifier, so the file is the license of
-# record.
-license-file = "LICENSE.md"
-# crates.io requires that anything published there be usable by anyone for any
-# purpose, which a noncommercial license is not. Refusing here means it cannot
-# happen by accident.
+license = "MIT"
+# An application, not a library. Nothing here is meant to be depended on from
+# crates.io, so publishing is refused rather than merely never done.
 publish = false
 
 [dependencies]

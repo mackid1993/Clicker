@@ -1,3 +1,8 @@
+; SPDX-License-Identifier: MIT
+;
+; Clicker - an unofficial, native Windows client for Channels DVR
+; Copyright (c) 2026 David Brustein
+
 ; Clicker installer.
 ;
 ; Packages whatever build.ps1 staged into dist\Clicker. It deliberately does

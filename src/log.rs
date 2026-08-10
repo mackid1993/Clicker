@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! A log file, because a windowed application has no console.
 //!
 //! The player already reports everything anyone needs to diagnose a stutter: a

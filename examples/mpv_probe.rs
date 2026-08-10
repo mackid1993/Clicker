@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! Play a URL through libmpv and report what it did.
 //!
 //! The counterpart to `Player::self_test`, printing the same shape of numbers

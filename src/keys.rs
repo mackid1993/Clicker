@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! What every key does, and what it can be changed to.
 //!
 //! One table, read by three things that would otherwise disagree: the handler

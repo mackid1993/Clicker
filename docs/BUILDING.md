@@ -41,9 +41,9 @@ both under mingw-w64. Three things about it are deliberate:
 **Both are built from source rather than downloaded.** mpv is
 GPL-2.0-or-later unless configured otherwise, and every prebuilt FFmpeg for
 Windows — including the ones inside libVLC and libmpv — is configured with
-`--enable-gpl`. Shipping either inside a noncommercially licensed application
-would place the whole distribution under the GPL, overriding its terms
-entirely. This passes `-Dgpl=false` to mpv and
+`--enable-gpl`. Shipping either would place the whole distribution under the
+GPL rather than the MIT terms Clicker actually states. This passes
+`-Dgpl=false` to mpv and
 `--disable-gpl --disable-nonfree` to FFmpeg, the script refuses to continue if
 the configuration disagrees, and `build.ps1` re-reads both finished DLLs before
 packaging them.

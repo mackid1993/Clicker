@@ -13,7 +13,7 @@ Live TV, recordings and a guide, in a single Rust binary.
 [![Release](https://img.shields.io/github/v/release/mackid1993/Clicker?style=flat-square&color=6ca5fa&label=release)](https://github.com/mackid1993/Clicker/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mackid1993/Clicker/total?style=flat-square&color=6ca5fa)](https://github.com/mackid1993/Clicker/releases)
 ![Platform](https://img.shields.io/badge/windows-10%201809%2B-6ca5fa?style=flat-square)
-![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-6ca5fa?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-6ca5fa?style=flat-square)
 
 </div>
 
@@ -210,16 +210,9 @@ that cannot seek backwards at all.
 
 ## License
 
-Clicker is **source available**: PolyForm Noncommercial 1.0.0. Read it, build
-it, run it, change it, fork it and share it — for any noncommercial purpose.
-What you may not do is sell it or use it to make money. See
-[LICENSE.md](LICENSE.md).
-
-That is not "open source" in the OSI sense, and the difference is worth stating
-plainly rather than letting the badge imply otherwise: the Open Source
-Definition forbids discriminating against any field of endeavour, and a
-noncommercial restriction is exactly that. Forks, patches and redistribution are
-all fine. Making money from it is not.
+Clicker is **open source** under the MIT License. Read it, build it, run it,
+change it, fork it, share it, sell it — the only condition is that the
+copyright notice travels with it. See [LICENSE.md](LICENSE.md).
 
 ### mpv and FFmpeg
 
@@ -230,20 +223,18 @@ Neither is covered by the terms above and neither is owned by this project.
 Both are built from source rather than downloaded, because the license has to be
 provable. mpv is GPL-2.0-or-later unless it is configured otherwise, and every
 prebuilt libVLC and libmpv binary for Windows embeds an FFmpeg configured with
-`--enable-gpl`; shipping one of those inside a noncommercially licensed
-application would relicense the entire distribution under the GPL and override
-the terms above entirely. These are built `-Dgpl=false` and
+`--enable-gpl`; shipping one of those would place the entire distribution
+under the GPL rather than the licenses written on it. These are built
+`-Dgpl=false` and
 `--disable-gpl --disable-nonfree`, the build script refuses to proceed if the
 configuration says otherwise, and `build.ps1` re-reads both shipped libraries
 before packaging them.
 
 They ship as **separate, unmodified DLLs loaded at runtime**, never folded into
 the executable and never renamed. That is what lets anyone receiving a copy
-substitute their own build of them, as LGPL-2.1 section 6 requires.
-`LICENSE.md` carries the exception that section also requires, granting private
-modification and reverse engineering for debugging unconditionally — including
-to someone whose purpose is commercial, and who therefore holds no license to
-Clicker itself.
+substitute their own build of them, as LGPL-2.1 section 6 requires. The MIT
+License already permits private modification and reverse engineering outright,
+so the rest of what that section requires is met with nothing to carve out.
 
 The corresponding source is mpv `v0.41.0` from
 <https://github.com/mpv-player/mpv> and FFmpeg `n7.1.1` from

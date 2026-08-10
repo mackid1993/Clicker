@@ -48,11 +48,11 @@ FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
 
 ## Section 6 of the LGPL
 
-Clicker's own license forbids modification and reverse engineering, which
-section 6 does not permit for the libraries it covers. `LICENSE.md` therefore
-carries an explicit exception allowing both, for the LGPL libraries, to the
-extent that section requires. Without it neither mpv nor FFmpeg could be
-distributed here at all.
+Section 6 requires that anyone receiving Clicker be permitted to modify the
+LGPL libraries, relink Clicker against the result, and reverse engineer as
+needed to debug that. Clicker's MIT license permits modification and reverse
+engineering outright, so those requirements are met with nothing to carve out;
+the separate, replaceable DLLs above are the relinking half of the bargain.
 
 ## Rust crates
 

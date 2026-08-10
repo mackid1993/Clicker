@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! Clicker — a native Channels DVR client.
 //!
 //! Video is decoded by FFmpeg and drawn as a texture, so the picture and the

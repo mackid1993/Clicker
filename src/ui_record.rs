@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native Windows client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
 //! The record dialog: padding, and season pass options.
 //!
 //! Channels does not pad a manually created job the way it pads one created by
