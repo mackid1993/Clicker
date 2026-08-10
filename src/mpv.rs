@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::stream::JoinAt;
+use crate::stream::{JoinAt, Transport};
 
 // --- the slice of the C API this needs ---------------------------------------
 
@@ -524,6 +524,7 @@ impl Player {
         uri: &str,
         resume_at: f64,
         join: JoinAt,
+        transport: Transport,
         software_decoding: bool,
         repaint: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, String> {
@@ -568,6 +569,33 @@ impl Player {
             // Keep the file open at the end rather than tearing down, so the
             // last frame stays on screen instead of a black window.
             ("keep-open", "yes"),
+            // Broadcast captions, which are not a subtitle track.
+            //
+            // CEA-608 and CEA-708 ride inside the video itself, in H.264 SEI
+            // user data and MPEG-2 picture user data, so there is nothing in
+            // the stream list to select and mpv does not make a track for them
+            // unless it is asked to. Without this the caption button had
+            // nothing to turn on, on files that plainly have captions.
+            ("sub-create-cc-track", "yes"),
+            // Made to look like broadcast captions rather than film subtitles.
+            //
+            // What a television draws for CEA-608 is white monospaced text in a
+            // solid black band, and that is not a style choice — it is what
+            // makes captions readable over a bright sky or a white shirt, which
+            // is exactly where mpv's default of outlined text on nothing falls
+            // apart. Consolas is on every Windows this runs on; libass falls
+            // back on its own if it ever is not.
+            ("sub-font", "Consolas"),
+            ("sub-color", "#FFFFFFFF"),
+            ("sub-border-style", "background-box"),
+            ("sub-back-color", "#FF000000"),
+            ("sub-border-size", "0"),
+            ("sub-shadow-offset", "0"),
+            ("sub-bold", "no"),
+            // Sat on the lower third, where a broadcaster puts them and where
+            // they are clear of the transport controls.
+            ("sub-align-x", "center"),
+            ("sub-align-y", "bottom"),
             // Pace the picture against the display rather than the sound.
             //
             // The default, `audio`, presents each frame at the time the audio
@@ -592,7 +620,15 @@ impl Player {
                 "demuxer-lavf-o",
                 &format!("live_start_index={}", join.live_start_index()),
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            // Only for the live buffer: `follow` belongs to the file protocol,
+            // and handing it to an HTTP stream is an option that source has
+            // never heard of.
+            (transport == Transport::Timeshift).then_some(("stream-lavf-o", "follow=1")),
+        )
+        {
             let (n, v) = (CString::new(name).unwrap(), CString::new(value).unwrap());
             // Unknown options are reported and skipped: a libmpv-only build has
             // no command line player, so options belonging to it do not exist,
@@ -632,7 +668,24 @@ impl Player {
         // The renderer cannot be created here: it needs the OpenGL context,
         // which belongs to the interface thread. So loading waits for `start`,
         // which that thread calls once the renderer is up.
-        let target = CString::new(uri).map_err(|_| "the address has a NUL in it")?;
+        // A live buffer is a file that is still being written, and mpv has no
+        // way to know that. It reads to the end, finds end-of-file, and stops —
+        // which on live television is playback halting every time it catches
+        // up with the writer, roughly every twenty seconds.
+        //
+        // FFmpeg's file protocol has a mode for precisely this: `follow` blocks
+        // at the end of the file instead of reporting the end of it, the way
+        // `tail -f` does. Reaching it means asking mpv to open the file through
+        // libavformat rather than its own reader, which is what the `lavf://`
+        // prefix does. Forward slashes because the path travels through
+        // FFmpeg's protocol parser, where a backslash is not a separator.
+        let target = match transport {
+            Transport::Timeshift => {
+                CString::new(format!("lavf://file:{}", uri.replace('\\', "/")))
+            }
+            _ => CString::new(uri),
+        }
+        .map_err(|_| "the address has a NUL in it")?;
 
         let thread = {
             let shared = Arc::clone(&shared);
@@ -931,6 +984,25 @@ impl Player {
         (rc >= 0).then_some(value)
     }
 
+    fn get_string(&self, name: &str) -> Option<String> {
+        let name = CString::new(name).ok()?;
+        let mut out: *mut c_char = std::ptr::null_mut();
+        let rc = unsafe {
+            (self.api.get_property)(
+                self.ctx.0,
+                name.as_ptr(),
+                MPV_FORMAT_STRING,
+                &mut out as *mut *mut c_char as *mut c_void,
+            )
+        };
+        if rc < 0 || out.is_null() {
+            return None;
+        }
+        let text = unsafe { CStr::from_ptr(out) }.to_string_lossy().into_owned();
+        unsafe { (self.api.free)(out as *mut c_void) };
+        Some(text)
+    }
+
     fn get_flag(&self, name: &str) -> bool {
         let Ok(name) = CString::new(name) else { return false };
         let mut value: c_int = 0;
@@ -1139,8 +1211,18 @@ impl Player {
     /// which reads from a file it is writing. mpv reads the stream directly.
     pub fn set_discarded(&self, _fraction: f64) {}
 
+    /// Whether this stream actually carries captions.
+    ///
+    /// Counted by walking the track list for subtitle tracks, rather than
+    /// asking how many tracks there are at all — which was the old test, and
+    /// was true of every file with a video stream, so the button was offered
+    /// everywhere and did nothing almost everywhere.
     pub fn captions_available(&self) -> bool {
-        self.get_i64("track-list/count").unwrap_or(0) > 0
+        let count = self.get_i64("track-list/count").unwrap_or(0);
+        (0..count).any(|i| {
+            self.get_string(&format!("track-list/{i}/type"))
+                .is_some_and(|kind| kind == "sub")
+        })
     }
 
     pub fn captions_on(&self) -> bool {

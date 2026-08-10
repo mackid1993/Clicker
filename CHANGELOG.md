@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.1.1
+
+Three fixes from a user report.
+
+**Live TV no longer stops every twenty seconds.** At original quality the live
+stream is written to a file on disk so that pause and rewind work, and playback
+reads that file while it is still being written. It was being read as an
+ordinary file, so every time playback caught up with the writer it found the
+end of the file and stopped. It now follows the file the way `tail -f` does,
+waiting for more instead of stopping. Tuning is also quicker, because the wait
+before playback starts existed to work around the same thing.
+
+**Closed captions work.** CEA-608 and CEA-708 captions ride inside the video
+rather than in a track of their own, and the player was not being asked to
+build a track from them, so the CC button had nothing to turn on. They are also
+drawn the way a television draws them — white monospaced text in a solid black
+band — rather than as outlined film subtitles, which disappear over a bright
+sky.
+
+**The Record button is gone from recordings.** It was shown on anything played
+in a wide enough window, including recordings, where recording is either
+meaningless or a way to schedule something nobody asked for. It belongs to live
+television and is now only there.
+
 ## 1.1.0
 
 Clicker plays through mpv now, the picture stays on the graphics chip, memory

@@ -2634,7 +2634,15 @@ impl App {
             // is exactly the blocking the interface must not do, and the
             // tuning animation is already on screen while it happens.
             if transport == stream::Transport::Timeshift {
-                const ENOUGH: u64 = 1024 * 1024;
+                // Enough transport stream for the demuxer to find a program,
+                // and no more. This used to wait for a megabyte, because a
+                // demuxer that ran out of file while probing gave up and
+                // reported invalid data. It no longer runs out: the buffer is
+                // opened in follow mode, so a short read waits for the writer
+                // instead of ending. The wait that remains is only so there is
+                // something rather than nothing, and at broadcast rates it is
+                // about a third of a second instead of two.
+                const ENOUGH: u64 = 192 * 1024;
                 let deadline = Instant::now() + Duration::from_secs(30);
                 while Instant::now() < deadline {
                     let size = std::fs::metadata(&uri).map(|m| m.len()).unwrap_or(0);
@@ -2645,9 +2653,14 @@ impl App {
                 }
             }
 
-            let result = mpv::Player::open(&uri, resume_at, join, software_decoding, move || {
-                frame_repaint.request_repaint()
-            })
+            let result = mpv::Player::open(
+                &uri,
+                resume_at,
+                join,
+                transport,
+                software_decoding,
+                move || frame_repaint.request_repaint(),
+            )
             .map(Arc::new);
             let _ = tx.send(Msg::PlayerOpened {
                 result,
@@ -3278,7 +3291,11 @@ impl App {
         let width = ui.available_width();
         let show_volume = width > 860.0;
         let show_quality = width > 700.0;
-        let show_record = width > 520.0;
+        // Recording is a live action. A recording already exists on the server,
+        // so offering to record it is either meaningless or a way to schedule
+        // something the viewer did not ask for; the button was gated on window
+        // width alone and appeared over every recording in the library.
+        let show_record = width > 520.0 && self.live_channel.is_some();
         let show_skips = width > 440.0;
 
         ui.horizontal(|ui| {

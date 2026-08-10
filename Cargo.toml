@@ -1,6 +1,6 @@
 [package]
 name = "clicker"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 description = "A native Windows Unofficial Client for Channels DVR Server"
 # PolyForm Noncommercial has no SPDX identifier, so the file is the license of
@@ -12,7 +12,7 @@ license-file = "LICENSE.md"
 publish = false
 
 [dependencies]
-# UI. Immediate mode suits a guide that redraws constantly, and the wgpu
+# UI. Immediate mode suits a guide that redraws constantly, and the OpenGL
 # backend is what makes video-as-a-texture possible: the decoded frame and the
 # controls drawn over it live in the same render pass, so there is no window
 # compositing to fight.
