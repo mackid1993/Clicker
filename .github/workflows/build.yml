@@ -1,0 +1,189 @@
+# SPDX-License-Identifier: MIT
+#
+# Clicker - an unofficial, native Windows client for Channels DVR
+# Copyright (c) 2026 David Brustein
+#
+# Builds an installer on demand. Manual only: there is no push or pull_request
+# trigger, deliberately. A release is a thing somebody decides to cut, and a
+# workflow that fires on every commit spends runner minutes proving what the
+# local build already proved.
+#
+# The version typed in is handed to build.ps1 exactly as it is locally, which
+# stamps it into Cargo.toml, the binary's version resource, and the installer,
+# and then it is thrown away with the runner. Nothing is committed and nothing
+# is tagged until the draft release this produces is published by hand.
+#
+# The expensive part is libmpv. FFmpeg and mpv are compiled from their pinned
+# tags the first time — half an hour of runner time that produces the same
+# bytes until somebody moves a tag or a flag — and the staged result is cached
+# after that, keyed on the script where the tags and flags live.
+
+name: Build installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp the build with, e.g. 1.1.5"
+        required: true
+        type: string
+      notes:
+        description: "Release notes for the draft release"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # Write, only because the draft-release step at the end needs it. The
+    # narrower read above stays the default for anything else added to this
+    # file later.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner image ships a current stable toolchain, so this is a
+      # no-op most days. It is here so a build is never held back by whatever
+      # rustc the image happened to freeze on.
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+
+      # actions/cache rather than a Rust-specific action: this is one job with
+      # one profile, the paths are not a mystery, and it is one less
+      # third-party action in the chain that produces a signed-adjacent
+      # artifact. The lockfile keys it, so a dependency change gets a fresh
+      # cache and everything else reuses one.
+      - name: Cache cargo and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      # The staged libmpv, cached whole. The key hashes build-mpv.ps1 because
+      # that is where the pinned tags and the licensing flags live, so moving
+      # either rebuilds from source and everything else reuses the last build.
+      # No restore-keys, deliberately: a stage built from different tags is
+      # exactly the wrong thing to fall back to silently.
+      - name: Cache libmpv
+        id: mpv
+        uses: actions/cache@v4
+        with:
+          path: third_party/mpv
+          key: ${{ runner.os }}-mpv-${{ hashFiles('scripts/build-mpv.ps1') }}
+
+      # Before the half-hour libmpv build, not after it. Through the
+      # environment rather than spliced into the script: the input is typed by
+      # a person, and a quote in it would end the string and run the rest as
+      # PowerShell.
+      - name: Check the version is a version
+        shell: pwsh
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+        run: |
+          $v = $env:RAW_VERSION.Trim()
+          if ($v -notmatch '^\d+\.\d+\.\d+$') {
+            throw "version '$v' is not major.minor.patch"
+          }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # The same packages bootstrap.ps1 installs, straight from pacman rather
+      # than through it: bootstrap installs MSYS2 itself via winget, which is
+      # not reliably on a runner, and checks Visual Studio, which is. MSYS2
+      # ships on the windows images at C:\msys64; looked for rather than
+      # assumed, because a runner image is not a contract.
+      - name: Install the mingw toolchain
+        if: steps.mpv.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\msys64\usr\bin\bash.exe')) {
+            Write-Host 'MSYS2 is not on this image; installing it.'
+            choco install msys2 --no-progress -y --params '/InstallDir:C:\msys64'
+            if (-not (Test-Path 'C:\msys64\usr\bin\bash.exe')) {
+              throw 'MSYS2 was not found and could not be installed'
+            }
+          }
+
+          C:\msys64\usr\bin\bash.exe -lc 'pacman -Sy --noconfirm --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-meson mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-libass mingw-w64-x86_64-libplacebo make diffutils nasm'
+          if ($LASTEXITCODE -ne 0) { throw "pacman failed with $LASTEXITCODE" }
+
+      # FFmpeg and mpv from their pinned tags, LGPL only, staged into
+      # third_party\mpv where the cache step above picks them up on the way
+      # out. The script verifies the license out of the binaries it built, and
+      # build.ps1 checks again before packaging.
+      - name: Build libmpv
+        if: steps.mpv.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/build-mpv.ps1
+
+      # Inno Setup ships on the windows runner images, and build.ps1 looks for
+      # it in the two Program Files directories, which is where choco puts it
+      # too. Installed only if the image has dropped it, so this workflow does
+      # not start failing on a Tuesday for reasons unrelated to the code.
+      - name: Make sure Inno Setup is there
+        shell: pwsh
+        run: |
+          $found = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ }
+
+          if (-not $found) {
+            Write-Host 'Inno Setup is not on this image; installing it.'
+            choco install innosetup --no-progress -y
+          }
+
+      # The same three stages as locally: compile, stage with the runtime,
+      # package. build.ps1 owns the version stamping, the path remapping that
+      # keeps the runner's directory layout out of the binary, and the check
+      # that refuses to package a GPL component.
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1 -Version $env:VERSION
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clicker-Setup-${{ env.VERSION }}
+          path: dist/Clicker-Setup-${{ env.VERSION }}.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      # A draft, always: nothing is public and no tag exists until somebody
+      # reads the notes with the installer in hand and clicks publish. The tag
+      # is created at that moment, pointing at the commit this run built.
+      - name: Draft a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Through the environment, not spliced into the script below. Notes
+          # are prose typed by a person: a quote or a backtick in them would
+          # end the string and run the rest as PowerShell.
+          NOTES: ${{ inputs.notes }}
+        shell: pwsh
+        run: |
+          $notes = $env:NOTES
+
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            $notes = "Built from $env:GITHUB_SHA."
+          }
+
+          # A file rather than an argument, so newlines survive.
+          $notes | Out-File -FilePath notes.md -Encoding utf8
+
+          gh release create "v$env:VERSION" `
+            "dist\Clicker-Setup-$env:VERSION.exe" `
+            --draft `
+            --target $env:GITHUB_SHA `
+            --title "Clicker $env:VERSION" `
+            --notes-file notes.md
