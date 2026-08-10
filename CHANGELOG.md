@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.3
+
+**Artwork stops flickering in a large library.** Posters would appear, vanish
+and come back on a screen nobody was scrolling. Two things caused it. Artwork
+was fetched far larger than it is ever drawn, so far less of it fitted in
+memory than should have. And when memory ran short, the rule for choosing what
+to drop could pick the pictures currently on screen, which were then requested
+again at once, pushing out others in turn. Cards are now fetched at the size
+they are shown, and nothing on screen is discarded.
+
 ## 1.1.2
 
 **A black rectangle no longer flashes over the picture.** The buffer the video

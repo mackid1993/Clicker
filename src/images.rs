@@ -62,7 +62,12 @@ const MAX_BYTES: usize = 192 * 1024 * 1024;
 
 /// How large a card's artwork is kept. Cards are around 230px and posters
 /// around 170, so this is already generous for them.
-const CARD_MAX: u32 = 640;
+/// A grid card is about 155 points wide, so 640 was asking the server for
+/// sixteen times the area ever drawn and paying for it four times over in
+/// memory: 640x960 is 2.4MB decoded, and forty of those on screen is most of
+/// the budget before anything scrolls. 360 covers the card on a 200% display
+/// and leaves room for the cache to actually be a cache.
+const CARD_MAX: u32 = 360;
 
 /// How large the hero's artwork is kept, and asked for.
 ///
@@ -179,9 +184,28 @@ impl Images {
         if held > MAX_BYTES || ready.len() > MAX_RESIDENT {
             // Oldest first, so what goes is what nothing has looked at longest.
             ready.sort_by_key(|(_, used, _)| *used);
+
+            // Never evict what was asked for most recently.
+            //
+            // Everything drawn in a frame is touched on the same tick, so
+            // among the pictures currently on screen "least recently used"
+            // does not distinguish anything: the sort picks arbitrarily and
+            // takes some of them. They are visible, so they are requested
+            // again immediately, which evicts others in turn. On a large
+            // library that is a loop — artwork appearing, vanishing and
+            // reappearing on a screen nobody is scrolling.
+            //
+            // Holding the newest tick back is what breaks it. If a single
+            // frame really does want more than the budget, the limits are
+            // exceeded for that frame rather than the cache eating itself.
+            let newest = ready.last().map(|(_, used, _)| *used).unwrap_or(0);
+
             let mut count = ready.len();
-            for (url, _, bytes) in ready {
+            for (url, used, bytes) in ready {
                 if held <= MAX_BYTES && count <= MAX_RESIDENT {
+                    break;
+                }
+                if used == newest {
                     break;
                 }
                 self.entries.remove(&url);
