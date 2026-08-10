@@ -369,7 +369,7 @@ async fn fetch(
         .error_for_status()
         .with_context(|| format!("GET {url}"))?;
 
-    // Whether the server honoured the range decides both where writing starts
+    // Whether the server honored the range decides both where writing starts
     // and what the total is. A server that ignores it answers 200 with the
     // whole file, and appending that to what is already there would produce a
     // corrupt file the size of one and a half recordings — so the only safe

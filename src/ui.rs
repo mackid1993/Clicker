@@ -240,7 +240,7 @@ pub fn home(
             // because it sat where continue watching goes and showed something
             // that was not what you last watched.
             //
-            // So it is drawn from the whole library and labelled as a pick.
+            // So it is drawn from the whole library and labeled as a pick.
             // Something surfaced from seven thousand recordings nobody was
             // going to scroll to is the point of it; pretending it is the next
             // thing to resume was the mistake.
@@ -337,7 +337,7 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
 
     // Darken the left so the text is legible over any image.
     //
-    // A mesh with the colour on its vertices, not a row of flat rectangles.
+    // A mesh with the color on its vertices, not a row of flat rectangles.
     // This was twenty-four bands, each a single alpha across fifty pixels, and
     // that reads as stripes the moment the picture behind it is sharp: the
     // step between neighbouring bands is a dozen levels of alpha and the eye
@@ -369,7 +369,7 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     // radius, so the leftmost sliver — where this is at its most opaque, and
     // where a square corner over rounded artwork is most obvious — is drawn as
     // a rounded rectangle. Across eight pixels the gradient is flat enough
-    // that one colour will do.
+    // that one color will do.
     let cap = egui::Rect::from_min_max(
         card.min,
         egui::pos2(card.min.x + RADIUS_SURFACE, card.max.y),
@@ -381,7 +381,7 @@ fn hero(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
     );
 
     // Then the gradient across the rest. Sixteen columns is plenty: within
-    // each one the colour is interpolated, so this is approximating the curve
+    // each one the color is interpolated, so this is approximating the curve
     // rather than the gradient.
     let columns = 16;
     let mut mesh = egui::Mesh::default();

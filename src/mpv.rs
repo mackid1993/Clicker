@@ -1240,7 +1240,7 @@ impl Player {
         // previous frame's swap had completed by then and so the timing would
         // be truer. In practice that reported once per *paint* rather than
         // once per *frame*, and playback started shedding frames in quantity.
-        // Measured behaviour beat the theory, so it is back where it was: the
+        // Measured behavior beat the theory, so it is back where it was: the
         // reasoning for moving it may still be right, but it was wrong about
         // what mattered.
         let render_ctx = *self.render_ctx.lock().unwrap();

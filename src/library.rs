@@ -48,7 +48,7 @@ pub struct Recording {
     /// When this was last played, in milliseconds since the epoch.
     ///
     /// The field Continue Watching is actually about, and one this client
-    /// ignored for a long time in favour of `updated_at`. They are not the
+    /// ignored for a long time in favor of `updated_at`. They are not the
     /// same thing: the server bumps `updated_at` for its own housekeeping, so
     /// on a real library twenty part-watched recordings shared one minute on
     /// one night, and a documentary nobody had got 4% into outranked an

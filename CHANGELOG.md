@@ -4,7 +4,7 @@
 
 Four fixes from a user report.
 
-**Recordings no longer play as coloured hash.** The picture and the interface
+**Recordings no longer play as colored hash.** The picture and the interface
 are drawn by two different things sharing one graphics context, and the
 settings that say how image data is laid out in memory are shared with it.
 Whichever drew last left its own settings behind, so video frames were read at
@@ -49,7 +49,7 @@ something unusual, streams that stop and start — and mpv has been having those
 solved for twenty years. Nearly every playback report is one of them, and most
 arrive attached to a recording that plays perfectly everywhere else.
 
-**The picture never leaves the graphics chip.** Decoding, colour conversion
+**The picture never leaves the graphics chip.** Decoding, color conversion
 and drawing all happen on the integrated GPU, and frames make no round trip
 through system memory on the way to the screen. Measured on a 1080p60
 recording, video costs about eight percent of one processor core. The discrete
@@ -98,7 +98,7 @@ a last watched timestamp and this client was ignoring it.
 
 **The hero is a shuffle, and says so.** It sits where continue-watching goes,
 so showing something that was not what you last watched read as a broken
-feature. It is now drawn from the whole library, labelled as a pick, and deals
+feature. It is now drawn from the whole library, labeled as a pick, and deals
 a new card every time you arrive at the home screen, including coming back
 from something you were watching. It carries the season and episode, year,
 length, rating, genres, description, director and cast, and its artwork is
