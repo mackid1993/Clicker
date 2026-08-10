@@ -2,7 +2,14 @@
 
 ## 1.1.1
 
-Three fixes from a user report.
+Four fixes from a user report.
+
+**Recordings no longer play as coloured hash.** The picture and the interface
+are drawn by two different things sharing one graphics context, and the
+settings that say how image data is laid out in memory are shared with it.
+Whichever drew last left its own settings behind, so video frames were read at
+the wrong stride and came out as horizontal noise — from a decoder that had
+just decoded them perfectly, which is why nothing anywhere reported a fault.
 
 **Live TV no longer stops every twenty seconds.** At original quality the live
 stream is written to a file on disk so that pause and rewind work, and playback

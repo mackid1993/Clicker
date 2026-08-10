@@ -247,6 +247,8 @@ pub struct GlFns {
     get_integerv: unsafe extern "system" fn(u32, *mut i32),
     blit_framebuffer:
         unsafe extern "system" fn(i32, i32, i32, i32, i32, i32, i32, i32, u32, u32),
+    pixel_storei: unsafe extern "system" fn(u32, i32),
+    bind_buffer: unsafe extern "system" fn(u32, u32),
     enable: unsafe extern "system" fn(u32),
     disable: unsafe extern "system" fn(u32),
     is_enabled: unsafe extern "system" fn(u32) -> u8,
@@ -280,6 +282,8 @@ impl GlFns {
             check_framebuffer_status: find("glCheckFramebufferStatus")?,
             get_integerv: find("glGetIntegerv")?,
             blit_framebuffer: find("glBlitFramebuffer")?,
+            pixel_storei: find("glPixelStorei")?,
+            bind_buffer: find("glBindBuffer")?,
             enable: find("glEnable")?,
             disable: find("glDisable")?,
             is_enabled: find("glIsEnabled")?,
@@ -346,6 +350,13 @@ impl GlFns {
         bound.max(0) as u32
     }
 }
+
+const GL_UNPACK_ALIGNMENT: u32 = 0x0CF5;
+const GL_UNPACK_ROW_LENGTH: u32 = 0x0CF2;
+const GL_UNPACK_SKIP_PIXELS: u32 = 0x0CF4;
+const GL_UNPACK_SKIP_ROWS: u32 = 0x0CF3;
+const GL_PIXEL_UNPACK_BUFFER: u32 = 0x88EC;
+const GL_PIXEL_UNPACK_BUFFER_BINDING: u32 = 0x88EF;
 
 const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
 const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
@@ -560,6 +571,19 @@ impl Player {
             // the vendor symbols that ask for the discrete chip. See
             // `prefer_integrated_gpu`.
             ("hwdec", if software_decoding { "no" } else { "auto-safe" }),
+            // Which codecs the graphics chip is allowed to decode.
+            //
+            // "auto-safe" whitelists decoding *methods*, not codecs, so it will
+            // hand a stream to a chip that cannot decode it and take the
+            // driver's word that it worked. Intel's Arc parts removed the
+            // MPEG-2 decoder outright, and a great deal of cable and broadcast
+            // television is still MPEG-2: the result is a picture made of
+            // macroblock hash, with the decoder reporting no dropped frames and
+            // no errors, because as far as it knows nothing went wrong.
+            //
+            // These four are the ones that are universally implemented and
+            // worth offloading. MPEG-2 and VC-1 are old enough that decoding
+            // them on the processor costs almost nothing.
             // The read-ahead this application argued itself into having: mpv
             // caches compressed packets, which is minutes of protection for
             // the memory a couple of seconds of decoded frames would cost.
@@ -876,6 +900,42 @@ impl Player {
             return Some((target.texture, target.width, target.height));
         }
 
+        // Hand mpv a clean slate for pixel uploads.
+        //
+        // mpv and egui share one OpenGL context, and egui's painter sets its
+        // own unpack state when it uploads a font atlas or an image and does
+        // not put it back. mpv then uploads each frame's planes — nv12, so two
+        // of them per frame — with whatever row length, alignment and pixel
+        // buffer binding were left behind, and reads its own frame data at the
+        // wrong stride. The picture that comes out is horizontal hash, from a
+        // decoder that succeeded and a renderer that reported no error, which
+        // is why every counter said playback was healthy.
+        //
+        // These are the OpenGL defaults. Restored afterwards, because egui is
+        // entitled to the same courtesy this was not being shown.
+        let mut unpack = [0i32; 4];
+        for (index, name) in [
+            GL_UNPACK_ALIGNMENT,
+            GL_UNPACK_ROW_LENGTH,
+            GL_UNPACK_SKIP_PIXELS,
+            GL_UNPACK_SKIP_ROWS,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            (gl.get_integerv)(name, &mut unpack[index]);
+        }
+        let mut unpack_buffer = 0i32;
+        (gl.get_integerv)(GL_PIXEL_UNPACK_BUFFER_BINDING, &mut unpack_buffer);
+
+        (gl.pixel_storei)(GL_UNPACK_ALIGNMENT, 4);
+        (gl.pixel_storei)(GL_UNPACK_ROW_LENGTH, 0);
+        (gl.pixel_storei)(GL_UNPACK_SKIP_PIXELS, 0);
+        (gl.pixel_storei)(GL_UNPACK_SKIP_ROWS, 0);
+        if unpack_buffer != 0 {
+            (gl.bind_buffer)(GL_PIXEL_UNPACK_BUFFER, 0);
+        }
+
         let cpu_before = thread_cpu_ms();
         let wall_before = Instant::now();
 
@@ -924,6 +984,16 @@ impl Player {
             },
         ];
         let rc = (self.api.render)(render_ctx.0, params.as_mut_ptr());
+
+        // Put egui's unpack state back exactly as it was found.
+        (gl.pixel_storei)(GL_UNPACK_ALIGNMENT, unpack[0]);
+        (gl.pixel_storei)(GL_UNPACK_ROW_LENGTH, unpack[1]);
+        (gl.pixel_storei)(GL_UNPACK_SKIP_PIXELS, unpack[2]);
+        (gl.pixel_storei)(GL_UNPACK_SKIP_ROWS, unpack[3]);
+        if unpack_buffer != 0 {
+            (gl.bind_buffer)(GL_PIXEL_UNPACK_BUFFER, unpack_buffer as u32);
+        }
+
         if rc < 0 {
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
             return Some((target.texture, target.width, target.height));
