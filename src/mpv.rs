@@ -501,6 +501,14 @@ struct Surface {
     texture: u32,
     width: i32,
     height: i32,
+    /// Whether mpv has drawn into it yet.
+    ///
+    /// A framebuffer is black when it is made, and one gets made on the first
+    /// frame and again whenever the picture changes size mid-stream. Blitting
+    /// it before mpv has filled it paints a black rectangle over whatever was
+    /// on screen, which is a fault that appears and clears itself and looks
+    /// like nothing in particular.
+    painted: bool,
 }
 
 pub struct Player {
@@ -890,14 +898,22 @@ impl Player {
                 texture,
                 width,
                 height,
+                painted: false,
             });
         }
-        let target = surface.as_ref()?;
+        // Copied out rather than borrowed: `painted` is set further down, and
+        // holding a reference to the surface until then would borrow it for
+        // the whole function.
+        let (texture, width, height, painted) = surface
+            .as_ref()
+            .map(|s| (s.texture, s.width, s.height, s.painted))?;
 
         // Nothing new to draw: hand back what is already there rather than
-        // asking mpv to redraw a frame it has already produced.
+        // asking mpv to redraw a frame it has already produced — unless
+        // nothing has ever been drawn into it, in which case what is there is
+        // black and had better not reach the screen.
         if (self.api.render_update)(render_ctx.0) & MPV_RENDER_UPDATE_FRAME == 0 {
-            return Some((target.texture, target.width, target.height));
+            return painted.then_some((texture, width, height));
         }
 
         // Hand mpv a clean slate for pixel uploads.
@@ -940,9 +956,9 @@ impl Player {
         let wall_before = Instant::now();
 
         let mut fbo = OpenGlFbo {
-            fbo: target.fbo as c_int,
-            w: target.width,
-            h: target.height,
+            fbo: surface.as_ref().map(|s| s.fbo).unwrap_or(0) as c_int,
+            w: width,
+            h: height,
             internal_format: 0,
         };
         // Flipped, and the reasoning that said otherwise was wrong.
@@ -984,6 +1000,11 @@ impl Player {
             },
         ];
         let rc = (self.api.render)(render_ctx.0, params.as_mut_ptr());
+        if rc >= 0 {
+            if let Some(live) = surface.as_mut() {
+                live.painted = true;
+            }
+        }
 
         // Put egui's unpack state back exactly as it was found.
         (gl.pixel_storei)(GL_UNPACK_ALIGNMENT, unpack[0]);
@@ -996,7 +1017,7 @@ impl Player {
 
         if rc < 0 {
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
-            return Some((target.texture, target.width, target.height));
+            return painted.then_some((texture, width, height));
         }
 
         // Processor time spent here, over real time since the last frame: the
@@ -1023,7 +1044,7 @@ impl Player {
             }
         }
         self.shared.rendered.fetch_add(1, Ordering::Relaxed);
-        Some((target.texture, target.width, target.height))
+        Some((texture, width, height))
     }
 
     fn get_f64(&self, name: &str) -> Option<f64> {
@@ -1301,9 +1322,34 @@ impl Player {
 
     pub fn set_captions(&self, on: bool) {
         self.set_flag("sub-visibility", on);
-        // "auto" picks the stream's own captions; "no" turns them off. mpv
-        // renders them into the picture itself, so nothing here draws them.
-        self.command(&["set", "sid", if on { "auto" } else { "no" }]);
+        if !on {
+            self.command(&["set", "sid", "no"]);
+            return;
+        }
+
+        // Pick the caption track by its own id rather than asking for "auto".
+        //
+        // "auto" chooses a track at the moment a file is loaded, and a closed
+        // caption track does not exist then: mpv builds it only once the
+        // decoder has actually seen caption data in the video, which is some
+        // way into playback. By the time the button is pressed the track is
+        // there and nothing has selected it, so "auto" resolves to nothing at
+        // all and the button appears to do nothing.
+        let count = self.get_i64("track-list/count").unwrap_or(0);
+        let track = (0..count).find(|i| {
+            self.get_string(&format!("track-list/{i}/type"))
+                .is_some_and(|kind| kind == "sub")
+        });
+        match track.and_then(|i| self.get_i64(&format!("track-list/{i}/id"))) {
+            Some(id) => {
+                self.command(&["set", "sid", &id.to_string()]);
+            }
+            // Nothing to select yet. "auto" is still the right thing to ask
+            // for: if a track appears later, mpv will take it.
+            None => {
+                self.command(&["set", "sid", "auto"]);
+            }
+        }
     }
 
     /// None, always: mpv draws captions into the frame rather than handing

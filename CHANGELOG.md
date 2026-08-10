@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.2
+
+**A black rectangle no longer flashes over the picture.** The buffer the video
+is drawn into is created empty, and a new one is made at the start of a file
+and again whenever the picture changes size partway through. It was being put
+on screen before there was anything in it.
+
+**Continue Watching shows everything it should.** Some part-watched recordings
+were being left out of the list.
+
+**The closed caption button works on recordings.** Captions carried inside the
+video only become a track once decoding has actually reached some, which is
+well after a file is opened. The button was asking for whichever track was
+chosen at the start, and at the start there was none, so pressing it did
+nothing. It now finds the caption track and selects it.
+
 ## 1.1.1
 
 Four fixes from a user report.

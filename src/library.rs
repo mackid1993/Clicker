@@ -136,10 +136,16 @@ impl Recording {
     /// screen full of those is noise. The upper bound is the credits: past
     /// ninety five percent it is finished in every sense that matters.
     pub fn in_progress(&self) -> bool {
-        !self.watched
-            && self.duration > 0.0
-            && self.playback_time > 60.0
-            && self.progress() < 0.95
+        // Anything the server has a position for, which is what Channels
+        // itself shows.
+        //
+        // This used to require a minute of playback, on the reasoning that a
+        // few seconds is an accident rather than something being watched. The
+        // reasoning was fine and the result was wrong: Continue Watching
+        // silently disagreed with the Channels web interface, missing whatever
+        // had been started and left inside the first minute. A client's job
+        // here is to show the server's answer, not a tidier one of its own.
+        !self.watched && self.duration > 0.0 && self.playback_time > 0.0 && self.progress() < 0.95
     }
 
     /// What is left, as human text.
