@@ -226,6 +226,21 @@ fn main() -> eframe::Result<()> {
     // Before anything can make a request, so every one of them carries the
     // device name from the first.
     let saved = settings::Settings::load();
+
+    // Before anything writes, reads or logs.
+    //
+    // `paths::data_dir` remembers its answer the first time it is asked, and
+    // the logger and the crash handler ask early by design, because they have
+    // to work before anything else does. So the redirection has to happen
+    // here, above the first line that could touch any of it. A configured
+    // folder that cannot be created is reported and ignored rather than
+    // silently leaving the caches somewhere the setting says they are not.
+    if let Some(dir) = saved.cache_path() {
+        if !paths::set_data_dir(dir.clone()) {
+            log::logline!("[clicker] cannot use {} for caches; using the default", dir.display());
+        }
+    }
+
     // Swept from wherever the buffer is configured to live, which is not
     // necessarily where it lived last time somebody changed the setting.
     timeshift::sweep(&saved.buffer_path());
@@ -875,6 +890,10 @@ impl App {
                         ui_setup::Folder::Buffer => {
                             self.settings.buffer_dir = text;
                             self.setup.buffer_dir_error = refused;
+                        }
+                        ui_setup::Folder::Cache => {
+                            self.settings.cache_dir = text;
+                            self.setup.cache_dir_error = refused;
                         }
                     }
                     self.handle_setup(ui_setup::SetupAction::Save);
@@ -2037,12 +2056,18 @@ impl App {
                 let start = match which {
                     ui_setup::Folder::Downloads => self.settings.download_path(),
                     ui_setup::Folder::Buffer => self.settings.buffer_path(),
+                    ui_setup::Folder::Cache => self
+                        .settings
+                        .cache_path()
+                        .or_else(paths::data_dir)
+                        .unwrap_or_else(std::env::temp_dir),
                 };
                 std::thread::spawn(move || {
                     let picked = rfd::FileDialog::new()
                         .set_title(match which {
                             ui_setup::Folder::Downloads => "Where downloads are kept",
                             ui_setup::Folder::Buffer => "Where the live buffer is written",
+                            ui_setup::Folder::Cache => "Where caches and logs are kept",
                         })
                         // Opening where the current setting points, so changing
                         // it starts from where it is rather than from wherever

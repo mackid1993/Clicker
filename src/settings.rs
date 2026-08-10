@@ -104,6 +104,14 @@ pub struct Settings {
     /// Where the live buffer is written. Empty means the same.
     #[serde(default)]
     pub buffer_dir: String,
+    /// Where everything this application caches or writes about itself goes:
+    /// the library and guide caches, the player log and the crash log.
+    ///
+    /// Empty means the default beside the application's own data. None of it
+    /// is small — a day of guide listings alone is twenty-four megabytes —
+    /// and none of it has to live on the system drive.
+    #[serde(default)]
+    pub cache_dir: String,
     /// Decode on the processor rather than the graphics chip.
     ///
     /// Off by default, which lets the player use the integrated GPU's decoder.
@@ -260,6 +268,7 @@ impl Default for Settings {
             live_buffer_gb: default_live_buffer(),
             download_dir: String::new(),
             buffer_dir: String::new(),
+            cache_dir: String::new(),
             software_decoding: false,
             shortcuts_enabled: true,
             shortcut_keys: Default::default(),
@@ -277,6 +286,15 @@ impl Settings {
     /// Where the live buffer goes, configured or default.
     pub fn buffer_path(&self) -> PathBuf {
         resolve(&self.buffer_dir, "Timeshift")
+    }
+
+    /// Where the caches and logs go.
+    ///
+    /// Deliberately not built on `resolve`: that falls back to `data_dir()`,
+    /// which is the very thing this decides.
+    pub fn cache_path(&self) -> Option<PathBuf> {
+        let configured = self.cache_dir.trim();
+        (!configured.is_empty()).then(|| PathBuf::from(configured))
     }
 }
 

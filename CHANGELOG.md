@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.4
+
+**Artwork stops flickering in a large library.** Every series was being drawn
+every frame, on screen or not, so a library of five hundred asked for five
+hundred pictures sixty times a second and no cache could hold them. Only what
+is visible is built now. Scrolling a large library is quicker for the same
+reason: the count under each poster was also being worked out for rows nobody
+could see.
+
+**Caches and logs can be moved.** A third folder setting, beside downloads and
+the live buffer, covering the guide cache, the library cache, the player log
+and the crash log. The guide cache alone is around twenty-five megabytes a day,
+and none of it has any reason to be on the system drive.
+
+**A server with no version reported no longer shows "vunknown".**
+
+The library page now writes a line to the log every so often saying how many
+series it built against how many exist and how much artwork is in memory, so a
+report of flickering artwork can be read rather than guessed at.
+
 ## 1.1.3
 
 **Artwork stops flickering in a large library.** Posters would appear, vanish

@@ -32,6 +32,7 @@ pub enum SetupAction {
 pub enum Folder {
     Downloads,
     Buffer,
+    Cache,
 }
 
 #[derive(Default)]
@@ -52,6 +53,7 @@ pub struct SetupState {
     /// Checked when the field is left, which is when the answer can change.
     pub download_dir_error: Option<String>,
     pub buffer_dir_error: Option<String>,
+    pub cache_dir_error: Option<String>,
 }
 
 /// First run: no server configured yet.
@@ -244,7 +246,14 @@ pub fn settings_screen(
                 let detail = if server.version.is_empty() {
                     server.url.clone()
                 } else {
-                    format!("{}  ·  v{}", server.url, server.version)
+                    // No version rather than a version of "unknown". A server
+                    // that has not answered yet, or answered without one, was
+                    // being labelled "vunknown", which reads as a fault in the
+                    // server rather than an absence of information here.
+                    match server.version.trim() {
+                        "" | "unknown" => server.url.clone(),
+                        version => format!("{}  ·  v{version}", server.url),
+                    }
                 };
                 ui.painter().text(
                     egui::pos2(row.min.x + SPACE_M, row.min.y + 33.0),
@@ -598,6 +607,13 @@ pub fn settings_screen(
                     &mut state.buffer_dir_error,
                     "e.g. M:\\Clicker\\Buffer",
                     Folder::Buffer,
+                ),
+                (
+                    "Caches and logs",
+                    &mut settings.cache_dir,
+                    &mut state.cache_dir_error,
+                    "e.g. M:\\Clicker\\Cache",
+                    Folder::Cache,
                 ),
             ] {
                 control_row(ui, |ui| {

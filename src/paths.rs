@@ -27,8 +27,24 @@ pub fn config_dir() -> Option<PathBuf> {
 /// Downloads, the library cache, timeshift buffers, the crash log. Local to
 /// the machine, because none of it is worth roaming and some of it is enormous.
 pub fn data_dir() -> Option<PathBuf> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| home("LOCALAPPDATA")).clone()
+}
+
+static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Point everything above at a directory of the user's choosing.
+///
+/// Must be called before anything reads `data_dir`, because the answer is
+/// memoized on first use — and the logger and the crash handler both ask
+/// early, by design, since they have to work before anything else does. Call
+/// it immediately after the settings are loaded and before anything else.
+/// Returns whether it took, so a late call is a visible failure rather than a
+/// setting that silently does nothing.
+pub fn set_data_dir(dir: PathBuf) -> bool {
+    if std::fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    DIR.set(Some(dir)).is_ok()
 }
 
 /// The directory under one of the profile roots, after taking over whatever

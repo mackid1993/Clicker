@@ -159,8 +159,40 @@ pub fn library_screen(
             let available = ui.available_width() - SPACE_L * 4.0;
             let per_row = ((available + SPACE_M) / (POSTER_W + SPACE_M)).floor().max(1.0) as usize;
 
+            // Only build the rows that are on screen.
+            //
+            // This used to draw every series, which on a large library is the
+            // whole cause of artwork flickering: each card asks for its poster
+            // whether or not it is visible, so five hundred cards asked for
+            // five hundred pictures every frame, and no cache of any size can
+            // hold a working set that large. Forty of them are visible.
+            //
+            // The row is measured and skipped rather than not laid out, so the
+            // scroll bar and the scroll position stay exactly what they were.
+            //
+            // It also skips the count below, which walks every recording in
+            // the library once per series — on this user's library that is
+            // five hundred series against three thousand recordings, a million
+            // and a half comparisons per frame, for rows nobody can see.
+            // Measured from the first row actually drawn rather than computed
+            // from the poster size and guessed text metrics. A skipped row
+            // reserves this much, so an estimate that is wrong by a few pixels
+            // would drift the layout as it scrolled. The top row is always
+            // visible when the view opens, so the real figure arrives before
+            // anything is skipped.
+            let mut row_h = POSTER_H + SPACE_M * 3.0 + 34.0;
+            let mut drawn_rows = 0usize;
+            let mut skipped_rows = 0usize;
             for chunk in shows.chunks(per_row) {
-                ui.horizontal(|ui| {
+                let row = ui.available_rect_before_wrap();
+                let row = egui::Rect::from_min_size(row.min, egui::vec2(row.width(), row_h));
+                if !ui.is_rect_visible(row) {
+                    skipped_rows += 1;
+                    ui.allocate_space(egui::vec2(row.width(), row_h));
+                    continue;
+                }
+                drawn_rows += 1;
+                let drawn = ui.horizontal(|ui| {
                     ui.add_space(SPACE_L * 2.0);
                     for group in chunk {
                         let episodes = data
@@ -192,10 +224,30 @@ pub fn library_screen(
                         ui.add_space(SPACE_M);
                     }
                 });
+                row_h = drawn.response.rect.height() + SPACE_M;
                 ui.add_space(SPACE_M);
             }
 
+            // What the library page is doing, occasionally.
+            //
+            // Every few hundred builds rather than every frame: this exists to
+            // answer "why is the artwork flickering" from a user's log, and
+            // what answers it is how many rows were built against how many
+            // exist, and how much artwork is resident against how much is on
+            // screen. A line per frame would drown the log it is meant to help
+            // read.
+            static BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            if BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 600 == 0 {
+                let (resident, bytes) = images.resident();
+                crate::log::line(&format!(
+                    "[library] {} series, {per_row} per row, {drawn_rows} drawn, {skipped_rows} skipped, artwork {resident} images {} MB",
+                    shows.len(),
+                    bytes / (1024 * 1024),
+                ));
+            }
+
             ui.add_space(SPACE_L * 2.0);
+
         });
 
     action
@@ -291,6 +343,7 @@ fn show_detail(
                 }
             }
             ui.add_space(SPACE_L * 2.0);
+
         });
 
     action
@@ -792,6 +845,7 @@ pub fn recordings_screen(
                 }
             }
             ui.add_space(SPACE_L * 2.0);
+
         });
 
     action

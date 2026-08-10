@@ -60,8 +60,8 @@ const MAX_RESIDENT: usize = 300;
 /// come out of counting entries.
 const MAX_BYTES: usize = 192 * 1024 * 1024;
 
-/// How large a card's artwork is kept. Cards are around 230px and posters
-/// around 170, so this is already generous for them.
+/// How large a card's artwork is kept.
+///
 /// A grid card is about 155 points wide, so 640 was asking the server for
 /// sixteen times the area ever drawn and paying for it four times over in
 /// memory: 640x960 is 2.4MB decoded, and forty of those on screen is most of
@@ -213,6 +213,21 @@ impl Images {
                 count -= 1;
             }
         }
+    }
+
+    /// How much artwork is in memory: how many pictures, and how many bytes.
+    ///
+    /// For the log. When someone reports artwork flickering, the question is
+    /// whether the cache is holding the working set or churning through it,
+    /// and that is this number against how many cards are on screen.
+    pub fn resident(&self) -> (usize, usize) {
+        self.entries
+            .values()
+            .filter_map(|e| match e {
+                Entry::Ready(_, _, _, bytes, _) => Some(*bytes),
+                _ => None,
+            })
+            .fold((0, 0), |(n, total), bytes| (n + 1, total + bytes))
     }
 
     /// The texture for a URL, starting the load if this is the first ask.
