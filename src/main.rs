@@ -228,7 +228,6 @@ fn prefer_integrated_gpu() {
 fn main() -> eframe::Result<()> {
     #[cfg(target_os = "linux")]
     {
-        platform::note_virtualization();
         // Before anything opens sockets or files: the graphics driver on some
         // systems leaks a descriptor per frame, and the default ceiling of
         // 1024 turns that into a one-minute death. See raise_fd_limit.

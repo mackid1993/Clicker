@@ -477,20 +477,6 @@ fn in_flatpak() -> bool {
     *INSIDE.get_or_init(|| std::path::Path::new("/.flatpak-info").exists())
 }
 
-/// Whether this is running inside a virtual machine, where emulated sound
-/// and translated graphics both earn allowances. False everywhere but Linux:
-/// on Windows and macOS nothing here changes by VM, so nothing asks.
-fn in_vm() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        crate::platform::virtualization().is_some()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
-    }
-}
-
 /// Where mpv is asked to draw its picture.
 ///
 /// `Offscreen` is the arrangement this application is built around: mpv draws
@@ -699,13 +685,12 @@ impl Player {
                 "hwdec",
                 if software_decoding {
                     "no"
-                } else if in_flatpak() || in_vm() {
-                    // A sandbox and a virtual machine share the failure: the
-                    // decode stack and the display stack are not the matched
-                    // pair a desktop has, and full hardware decode trusts
-                    // that match. auto-copy decodes on whatever the chip
-                    // offers and copies the frame back to memory it owns,
-                    // which survives both.
+                } else if in_flatpak() {
+                    // A sandbox's decode stack and its display stack are not
+                    // the matched pair a desktop has, and full hardware
+                    // decode trusts that match. auto-copy decodes on whatever
+                    // the chip offers and copies the frame back to memory it
+                    // owns, which survives the mismatch.
                     "auto-copy"
                 } else {
                     "auto-safe"
@@ -839,9 +824,9 @@ impl Player {
             // at its display time, so showing it immediately is correct.
             ("video-timing-offset", "0"),
             // mpv's own remedy for an untrustworthy audio clock, on every
-            // Linux rather than only in a VM: the axis that matters is the
-            // audio clock pacing the video, which is all Linux, not the
-            // hypervisor. The manual names the exact symptom: "an uneven video
+            // Linux, because the axis that matters is the audio clock pacing
+            // the video and that is all of Linux. The manual names the symptom:
+            // "an uneven video
             // framerate in a movie which plays fine with --no-audio" — which
             // is word for word what this machine showed — and prescribes
             // autosync to smooth video timing against jittery audio delay
