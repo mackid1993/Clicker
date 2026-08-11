@@ -17,6 +17,7 @@
 # Clicker, and installs the result with its menu entry and icon. Twenty
 # minutes to an hour, mostly FFmpeg.
 #
+#   ... | bash -s -- --uninstall      remove it again, either kind of install
 #   ... | bash -s -- --from-source    skip the question, build from source
 #   ... | bash -s -- --yes            skip every question, take the package
 #   ... | bash -s -- --prefix=/opt    install somewhere other than /usr/local
@@ -31,11 +32,13 @@ REPO="mackid1993/Clicker"
 PREFIX="/usr/local"
 ASSUME_YES=no
 FORCE_SOURCE=no
-BUILD_DIR="${TMPDIR:-/tmp}/clicker-build"
+UNINSTALL=no
+BUILD_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/clicker-build"
 
 for argument in "$@"; do
   case "$argument" in
     --from-source) FORCE_SOURCE=yes ;;
+    --uninstall)   UNINSTALL=yes ;;
     --yes|-y)      ASSUME_YES=yes ;;
     --prefix=*)    PREFIX="${argument#--prefix=}" ;;
     --help|-h)
@@ -87,6 +90,47 @@ ask_method() {
 [[ $EUID -ne 0 ]] || oops "Do not run this as root. It asks for sudo where it needs it, and nowhere else."
 
 command -v sudo >/dev/null || oops "sudo is needed to install packages."
+
+# ------------------------------------------------------------- uninstall ---
+
+# Both kinds of install, without needing to remember which one happened.
+uninstall_everything() {
+  local found=no
+
+  if command -v dpkg >/dev/null && dpkg -s clicker >/dev/null 2>&1; then
+    say "Removing the clicker package"
+    sudo apt-get remove -y clicker
+    found=yes
+  fi
+
+  # And a source install, wherever it went. Only the prefixes this script
+  # offers, because guessing at others means guessing at paths to delete.
+  local prefix
+  for prefix in "$PREFIX" /usr/local /opt/clicker /usr; do
+    if [[ -x "$prefix/lib/clicker/uninstall.sh" ]]; then
+      say "Removing the source install under $prefix"
+      sudo "$prefix/lib/clicker/uninstall.sh"
+      found=yes
+    fi
+  done
+
+  if [[ "$found" == "no" ]]; then
+    oops "No Clicker found. If it was built from source with a PREFIX of its own, run: sudo <prefix>/lib/clicker/uninstall.sh"
+  fi
+
+  echo
+  say "Done."
+  echo "    Settings and downloads were left alone, deliberately:"
+  echo "      ${XDG_CONFIG_HOME:-$HOME/.config}/Clicker"
+  echo "      ${XDG_DATA_HOME:-$HOME/.local/share}/Clicker"
+  exit 0
+}
+
+# `if`, not `&&`. Under `set -e` a test that comes out false is the whole
+# command failing, and the script would exit here on every ordinary install.
+if [[ "$UNINSTALL" == "yes" ]]; then
+  uninstall_everything
+fi
 
 # ------------------------------------------------------- which machine is this ---
 
@@ -207,4 +251,4 @@ install_from_source
 echo
 say "Done. Clicker is in your menu, or run: clicker"
 echo "    Built in $BUILD_DIR — delete it if you want the space back."
-echo "    Remove Clicker with: sudo make -C $BUILD_DIR uninstall"
+echo "    Remove Clicker with: sudo $PREFIX/lib/clicker/uninstall.sh"

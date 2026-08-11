@@ -8,7 +8,8 @@
 #   make deps        install what is needed to build (asks for sudo)
 #   make             build it
 #   make install     install it, with its menu entry and icon
-#   make uninstall   take it away again
+#   make uninstall   take it away again (or the uninstall.sh it installs,
+#                    which keeps working once this directory is gone)
 #   make deb         build a .deb instead of installing (Debian, Ubuntu)
 #   make run         build and run without installing
 #
@@ -181,10 +182,18 @@ install: build
 	  > $(APPSDIR)/$(APP_ID).desktop
 	install -m644 LICENSE.md NOTICE.md $(DOCDIR)/
 	install -m644 licenses/* $(DOCDIR)/licenses/
+	@# An uninstaller that outlives the source tree it came from.
+	@#
+	@# `make uninstall` needs this checkout, and install.sh builds under a
+	@# cache directory anybody is entitled to delete. Pointing somebody at a
+	@# directory that may not exist is not an uninstall procedure.
+	sed 's|@PREFIX@|$(PREFIX)|' scripts/uninstall-linux.sh > $(LIBDIR)/uninstall.sh
+	chmod 755 $(LIBDIR)/uninstall.sh
 	-command -v update-desktop-database >/dev/null && update-desktop-database -q $(APPSDIR) 2>/dev/null
 	-command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -f -t $(DESTDIR)$(PREFIX)/share/icons/hicolor 2>/dev/null
 	@echo
 	@echo "Clicker $(VERSION) installed. It is in your menu, or run: clicker"
+	@echo "Remove it with:  sudo $(PREFIX)/lib/clicker/uninstall.sh"
 
 uninstall:
 	rm -rf $(LIBDIR)

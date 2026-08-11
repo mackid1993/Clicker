@@ -302,12 +302,22 @@ sudo apt remove clicker          # or `purge`, which is the same here
 **Linux, installed from source:**
 
 ```sh
-sudo make uninstall              # from the directory you built in
+sudo /usr/local/lib/clicker/uninstall.sh
 ```
 
-`install.sh` prints the exact command with the right path when it finishes,
-because the build directory it used is `/tmp/clicker-build` rather than
-wherever you happen to be standing.
+`make install` writes that alongside the binary with the prefix already
+substituted in, so it keeps working after the source tree is gone — which
+matters, because `make uninstall` needs the checkout it was built from and
+nobody keeps a build directory forever.
+
+**Linux, either kind, without having to remember which:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash -s -- --uninstall
+```
+
+That removes the package if there is one and the source install if there is
+one, and says so if it finds neither.
 
 ### What is left behind
 
