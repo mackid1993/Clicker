@@ -13,7 +13,7 @@
 use eframe::egui;
 
 use crate::images::Images;
-use crate::library::{Home, Recording, Upcoming};
+use crate::library::{Home, Recording, Sort, Upcoming};
 use crate::theme::{self, Fluent, RADIUS_SURFACE, SPACE_L, SPACE_M, SPACE_S, SPACE_XS};
 use crate::ui::Action;
 
@@ -37,6 +37,9 @@ pub struct LibraryState {
 }
 
 /// The library: everything playable, recorded and imported alike, by series.
+///
+/// Returns what the user asked for, and whether the sort choice changed and
+/// settings need saving — the same contract as the guide's filter bar.
 pub fn library_screen(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -44,22 +47,27 @@ pub fn library_screen(
     state: &mut LibraryState,
     images: &mut Images,
     downloads: &crate::downloads::Downloads,
+    settings: &mut crate::settings::Settings,
     loading: bool,
-) -> Action {
+) -> (Action, bool) {
     let mut action = Action::None;
+    let mut settings_changed = false;
 
     if loading && data.all.is_empty() {
         crate::ui::centered_message(ui, rect, "Loading your library", "Reading recordings from the DVR");
-        return action;
+        return (action, settings_changed);
     }
     if data.all.is_empty() {
         crate::ui::centered_message(ui, rect, "Nothing recorded yet", "Anything you record will appear here");
-        return action;
+        return (action, settings_changed);
     }
 
     // Inside a series: the episode list.
     if let Some(show_id) = state.open_show.clone() {
-        return show_detail(ui, rect, data, state, images, downloads, &show_id);
+        return (
+            show_detail(ui, rect, data, state, images, downloads, &show_id),
+            settings_changed,
+        );
     }
 
     let mut content = ui.new_child(
@@ -85,6 +93,49 @@ pub fn library_screen(
                 // of chips, and the chips' height on its own looks like a
                 // control that failed to load.
                 theme::search_field(ui, &mut state.search, 300.0, theme::SEARCH_H);
+                ui.add_space(SPACE_M);
+
+                // Which order the grid below is in — the guide's filter chip,
+                // wearing a sort menu. One chip serves both tabs, each tab
+                // keeping its own choice and offering only the orders that
+                // mean something for what it shows.
+                let sort = match state.tab {
+                    LibraryTab::Shows => &mut settings.sort_shows,
+                    LibraryTab::Movies => &mut settings.sort_movies,
+                };
+                let options: &[Sort] = match state.tab {
+                    LibraryTab::Shows => &Sort::SHOWS,
+                    LibraryTab::Movies => &Sort::MOVIES,
+                };
+                ui.spacing_mut().interact_size.y = theme::SEARCH_H;
+                let sort_id = egui::Id::new("library-sort");
+                let sort_chip = crate::ui_guide::chip(
+                    ui,
+                    sort_id,
+                    &format!("Sort: {}", sort.label()),
+                    *sort != Sort::default(),
+                    190.0,
+                );
+                if sort_chip.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(sort_id.with("popup")));
+                }
+                egui::popup::popup_below_widget(
+                    ui,
+                    sort_id.with("popup"),
+                    &sort_chip,
+                    egui::PopupCloseBehavior::CloseOnClick,
+                    |ui| {
+                        ui.set_min_width(190.0);
+                        for &option in options {
+                            if ui.selectable_label(*sort == option, option.label()).clicked()
+                                && *sort != option
+                            {
+                                *sort = option;
+                                settings_changed = true;
+                            }
+                        }
+                    },
+                );
             });
             ui.add_space(SPACE_S);
 
@@ -114,10 +165,11 @@ pub fn library_screen(
             let needle = state.search.trim().to_lowercase();
 
             if state.tab == LibraryTab::Movies {
-                let matching: Vec<&Recording> = movies
+                let mut matching: Vec<&Recording> = movies
                     .into_iter()
                     .filter(|m| needle.is_empty() || m.title.to_lowercase().contains(&needle))
                     .collect();
+                settings.sort_movies.apply_movies(&mut matching);
                 if matching.is_empty() {
                     ui.add_space(SPACE_L);
                     empty_note(ui, "No movies match that");
@@ -129,12 +181,13 @@ pub fn library_screen(
                 let (drawn_rows, skipped_rows) =
                     visible_rows(ui, &matching, per_row, |ui, chunk| {
                         for movie in chunk {
+                            // The same year the year sorts use — release year
+                            // first, air date second — so the label under a
+                            // poster always agrees with where it sorted.
                             let year = movie
-                                .original_air_date
-                                .split('-')
-                                .next()
-                                .unwrap_or("")
-                                .to_string();
+                                .year()
+                                .map(|y| y.to_string())
+                                .unwrap_or_default();
                             if poster(ui, movie.art(), &movie.title, &year, 0, images) {
                                 action = Action::Play((*movie).clone());
                             }
@@ -146,11 +199,18 @@ pub fn library_screen(
                 return;
             }
 
-            let shows: Vec<_> = data
+            // One pass over the library for every series' episode count and
+            // newest recording. Two of the sorts order by it, and the count
+            // under each tile reads from it, which replaces the scan of every
+            // recording that used to run once per drawn row.
+            let stats = data.series_stats();
+
+            let mut shows: Vec<_> = data
                 .groups
                 .iter()
                 .filter(|g| needle.is_empty() || g.name.to_lowercase().contains(&needle))
                 .collect();
+            settings.sort_shows.apply_shows(&mut shows, &stats);
 
             if shows.is_empty() {
                 ui.add_space(SPACE_L);
@@ -164,15 +224,7 @@ pub fn library_screen(
 
             let (drawn_rows, skipped_rows) = visible_rows(ui, &shows, per_row, |ui, chunk| {
                 for group in chunk {
-                    // Counted only for rows actually built: this walks every
-                    // recording in the library once per series, and on a large
-                    // library that is millions of comparisons per frame if it
-                    // runs for rows nobody can see.
-                    let episodes = data
-                        .all
-                        .iter()
-                        .filter(|r| r.show_id == group.id || r.show_id == group.series_id)
-                        .count();
+                    let (episodes, _) = group.stats(&stats);
                     if poster(
                         ui,
                         &group.image,
@@ -184,11 +236,7 @@ pub fn library_screen(
                         group.unwatched,
                         images,
                     ) {
-                        state.open_show = Some(if data
-                            .all
-                            .iter()
-                            .any(|r| r.show_id == group.id)
-                        {
+                        state.open_show = Some(if stats.contains_key(group.id.as_str()) {
                             group.id.clone()
                         } else {
                             group.series_id.clone()
@@ -203,7 +251,7 @@ pub fn library_screen(
 
         });
 
-    action
+    (action, settings_changed)
 }
 
 /// Lay out a grid in rows of `per_row`, building only the rows on screen.

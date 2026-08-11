@@ -67,6 +67,14 @@ pub struct Settings {
     pub last_collection: Option<String>,
     #[serde(default)]
     pub last_source: Option<String>,
+    /// How the library's two tabs are ordered, restored on launch for the
+    /// same reason as the collection above: picking a sort IS picking the
+    /// default. One per tab, because "most unwatched" for series and "year"
+    /// for films are both right and cannot share a slot.
+    #[serde(default)]
+    pub sort_shows: crate::library::Sort,
+    #[serde(default)]
+    pub sort_movies: crate::library::Sort,
     /// Suppress the "server version not approved" warning.
     ///
     /// Defaults to suppressed and is not exposed in the interface. Everyone
@@ -268,6 +276,8 @@ impl Default for Settings {
             favorite_collections: Vec::new(),
             last_collection: None,
             last_source: None,
+            sort_shows: Default::default(),
+            sort_movies: Default::default(),
             dismissed_version_warning: true,
             minimize_to_tray: false,
             live_buffer_gb: default_live_buffer(),

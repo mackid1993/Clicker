@@ -216,7 +216,10 @@ pub fn guide(
 /// derive their height from different things — button padding for one, text
 /// margin for the other — and no amount of setting `interact_size` made them
 /// agree. Drawing the pill means the height is simply the number given.
-fn chip(ui: &mut egui::Ui, id: egui::Id, label: &str, active: bool, width: f32) -> egui::Response {
+///
+/// Public because the library's sort menu is this same control; a second
+/// hand-drawn pill would drift from this one the first time either changed.
+pub fn chip(ui: &mut egui::Ui, id: egui::Id, label: &str, active: bool, width: f32) -> egui::Response {
     let height = ui.spacing().interact_size.y;
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());

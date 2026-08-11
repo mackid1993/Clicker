@@ -1988,15 +1988,21 @@ impl App {
                 }
             }
             Screen::Library => {
-                let action = ui_library::library_screen(
+                let (action, settings_changed) = ui_library::library_screen(
                     ui,
                     content,
                     &self.home,
                     &mut self.library_state,
                     &mut self.images,
                     &self.downloads,
+                    &mut self.settings,
                     self.home_loading,
                 );
+                if settings_changed {
+                    if let Err(e) = self.settings.save() {
+                        self.announce(format!("Could not save settings: {e:#}"));
+                    }
+                }
                 self.handle_item(action);
             }
             Screen::Recordings => {

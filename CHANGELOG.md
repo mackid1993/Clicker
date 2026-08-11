@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.0
+
+**The library can be sorted, not just searched.** A sort menu stands beside
+the search box, and each tab offers the orders that mean something for what
+it shows. Films sort by name in either direction, by year in either
+direction, by what arrived most recently, and by length. Series sort by
+name, by unwatched episodes, by how many recordings they hold, and by which
+recorded something most recently. Each tab keeps its own choice, and the
+choice is remembered across launches on the same reasoning as the guide's
+collection: picking a sort is picking the default.
+
+Films without a year sort to the end of the year orders rather than the
+front — a missing year is not a claim to be the newest thing in the library.
+The year under a film's poster now prefers the release year over the air
+date, which is what the year orders use, so the label and the position
+always agree.
+
+Scrolling the TV grid does slightly less work than before: the recording
+count under each poster now comes from one pass over the library instead of
+one scan of every recording per visible row.
+
 ## 1.1.5
 
 **Artwork stops flickering in a large library — the Movies tab, this time.**

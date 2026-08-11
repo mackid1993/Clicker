@@ -264,6 +264,155 @@ impl Group {
     pub fn up_next_id(&self) -> Option<String> {
         (!self.up_next.is_empty()).then(|| self.up_next.clone())
     }
+
+    /// This series' entry in [`Home::series_stats`].
+    ///
+    /// Recordings point at their group by either of the two ids a group
+    /// carries, depending on where the DVR got them, so both are tried.
+    pub fn stats(&self, stats: &std::collections::HashMap<&str, (usize, i64)>) -> (usize, i64) {
+        stats
+            .get(self.id.as_str())
+            .or_else(|| stats.get(self.series_id.as_str()))
+            .copied()
+            .unwrap_or((0, 0))
+    }
+}
+
+/// One ordering of the library, picked from the sort menu beside the search.
+///
+/// One enum for both tabs rather than one each: "A to Z" means the same thing
+/// wherever it appears, and each tab simply offers the variants that mean
+/// something for what it shows — a film has a year and a length, a series has
+/// unwatched episodes and a newest recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Sort {
+    #[default]
+    NameAZ,
+    NameZA,
+    /// Newest year first. Films without one go last, not first: a missing
+    /// year is not a claim to be the newest thing in the library.
+    YearNew,
+    YearOld,
+    /// Whatever the DVR got most recently, recorded or imported. On a series
+    /// this is the group whose newest recording is newest.
+    Added,
+    Longest,
+    Shortest,
+    /// The most unwatched episodes first, which is "what am I behind on".
+    Unwatched,
+    /// The most recordings first.
+    Episodes,
+}
+
+/// Case-insensitive name order, without allocating.
+///
+/// `to_lowercase()` on both sides of a comparison is two heap strings per
+/// comparison, and sorting seven thousand films is ninety thousand
+/// comparisons — every frame, because an immediate-mode grid is sorted each
+/// time it is drawn. Lowercasing the characters as they stream costs nothing.
+fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
+}
+
+impl Sort {
+    /// What the Movies tab offers.
+    pub const MOVIES: [Sort; 7] = [
+        Sort::NameAZ,
+        Sort::NameZA,
+        Sort::YearNew,
+        Sort::YearOld,
+        Sort::Added,
+        Sort::Longest,
+        Sort::Shortest,
+    ];
+
+    /// What the TV tab offers.
+    pub const SHOWS: [Sort; 5] = [
+        Sort::NameAZ,
+        Sort::NameZA,
+        Sort::Unwatched,
+        Sort::Episodes,
+        Sort::Added,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::NameAZ => "A to Z",
+            Sort::NameZA => "Z to A",
+            Sort::YearNew => "Year, newest",
+            Sort::YearOld => "Year, oldest",
+            Sort::Added => "Recently added",
+            Sort::Longest => "Longest",
+            Sort::Shortest => "Shortest",
+            Sort::Unwatched => "Most unwatched",
+            Sort::Episodes => "Most recordings",
+        }
+    }
+
+    /// Arrange a flat list of films.
+    ///
+    /// Every order breaks its ties by name, so two films from 1954 stand in a
+    /// predictable order rather than whichever the server sent this refresh.
+    pub fn apply_movies(self, list: &mut [&Recording]) {
+        use std::cmp::Reverse;
+        match self {
+            Sort::NameZA => list.sort_by(|a, b| name_order(&b.title, &a.title)),
+            Sort::YearNew => list.sort_by(|a, b| {
+                let key = |r: &Recording| (r.year().is_none(), Reverse(r.year().unwrap_or(0)));
+                key(a).cmp(&key(b)).then_with(|| name_order(&a.title, &b.title))
+            }),
+            Sort::YearOld => list.sort_by(|a, b| {
+                let key = |r: &Recording| (r.year().is_none(), r.year().unwrap_or(0));
+                key(a).cmp(&key(b)).then_with(|| name_order(&a.title, &b.title))
+            }),
+            Sort::Added => list.sort_by_key(|r| Reverse(r.created_at)),
+            Sort::Longest => list.sort_by(|a, b| {
+                b.duration
+                    .total_cmp(&a.duration)
+                    .then_with(|| name_order(&a.title, &b.title))
+            }),
+            Sort::Shortest => list.sort_by(|a, b| {
+                a.duration
+                    .total_cmp(&b.duration)
+                    .then_with(|| name_order(&a.title, &b.title))
+            }),
+            // A to Z, and any persisted choice that means nothing for films.
+            _ => list.sort_by(|a, b| name_order(&a.title, &b.title)),
+        }
+    }
+
+    /// Arrange the series grid. `stats` is [`Home::series_stats`].
+    pub fn apply_shows(
+        self,
+        list: &mut [&Group],
+        stats: &std::collections::HashMap<&str, (usize, i64)>,
+    ) {
+        match self {
+            Sort::NameZA => list.sort_by(|a, b| name_order(&b.name, &a.name)),
+            Sort::Unwatched => list.sort_by(|a, b| {
+                b.unwatched
+                    .cmp(&a.unwatched)
+                    .then_with(|| name_order(&a.name, &b.name))
+            }),
+            Sort::Episodes => list.sort_by(|a, b| {
+                b.stats(stats)
+                    .0
+                    .cmp(&a.stats(stats).0)
+                    .then_with(|| name_order(&a.name, &b.name))
+            }),
+            Sort::Added => list.sort_by(|a, b| {
+                b.stats(stats)
+                    .1
+                    .cmp(&a.stats(stats).1)
+                    .then_with(|| name_order(&a.name, &b.name))
+            }),
+            // A to Z — the order groups already arrive in — and any persisted
+            // choice that means nothing for series.
+            _ => list.sort_by(|a, b| name_order(&a.name, &b.name)),
+        }
+    }
 }
 
 /// A program the DVR intends to record but has not yet.
@@ -319,6 +468,23 @@ impl Home {
             std::cmp::Reverse((r.season_number, r.episode_number, r.created_at))
         });
         list
+    }
+
+    /// Each series' episode count and newest recording, in one pass.
+    ///
+    /// One walk over every recording rather than one per series: the count
+    /// under each poster used to be counted by scanning the whole library
+    /// once per drawn row, and the sorts by episode count and newest
+    /// recording would have scanned it once per comparison.
+    pub fn series_stats(&self) -> std::collections::HashMap<&str, (usize, i64)> {
+        let mut stats: std::collections::HashMap<&str, (usize, i64)> =
+            std::collections::HashMap::new();
+        for recording in &self.all {
+            let entry = stats.entry(recording.show_id.as_str()).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 = entry.1.max(recording.created_at);
+        }
+        stats
     }
 
     /// Where the last successful load is kept.
