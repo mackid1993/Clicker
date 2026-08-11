@@ -39,84 +39,125 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
 
 // --- the menu bar ------------------------------------------------------------
 
-/// The menu bar's accelerators, by the action id they belong to.
-///
-/// One table, read twice: [`install_menu_bar`] turns each into a real
-/// accelerator, and the settings page prints it beside the rebindable key, so
-/// the two lists cannot describe different keyboards.
-///
-/// The strings are what a Mac shows — ⌘ ⇧ ⌃ ⌥ — because that is what has to
-/// appear on screen; [`accelerator`] reads them back to build the menu.
-pub const MENU_SHORTCUTS: &[(&str, &str)] = &[
-    ("home", "\u{2318}1"),
-    ("guide", "\u{2318}2"),
-    ("library", "\u{2318}3"),
-    ("recordings", "\u{2318}4"),
-    ("downloads", "\u{2318}5"),
-    ("settings", "\u{2318},"),
-    ("refresh", "\u{2318}R"),
-    ("back", "\u{2318}\u{2190}"),
-    ("forward", "\u{2318}\u{2192}"),
-    ("volume_up", "\u{2318}\u{2191}"),
-    ("volume_down", "\u{2318}\u{2193}"),
-    ("mute", "\u{21e7}\u{2318}M"),
-    ("channel_up", "\u{2318}["),
-    ("channel_down", "\u{2318}]"),
-    ("stop", "\u{2318}."),
-    ("rail", "\u{2303}\u{2318}S"),
-    // The system's own item provides this one; it is here so the settings
-    // page can say so.
-    ("fullscreen", "\u{2303}\u{2318}F"),
-];
-
-/// What the menu bar offers for an action, if anything.
-pub fn menu_shortcut(id: &str) -> Option<&'static str> {
-    MENU_SHORTCUTS
-        .iter()
-        .find(|(action, _)| *action == id)
-        .map(|(_, keys)| *keys)
+// The menu items this program owns, kept so their accelerators can be
+// changed when somebody rebinds one. A menu is built once and lives for the
+// life of the application, so the items have to be reachable afterwards;
+// without this the menu could only ever show the shortcuts it was born with.
+//
+// Thread-local rather than static, because a menu item is not `Send`: it
+// belongs to the main thread, which is the only thread that may touch a menu
+// at all. Both the building and the syncing happen there.
+thread_local! {
+    static ITEMS: std::cell::RefCell<Vec<(String, muda::MenuItem)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Turn a printed shortcut back into an accelerator.
+/// The two accelerators this program does not let go of.
 ///
-/// Reading the display string rather than keeping a second list of key codes
-/// beside it: two lists is how a menu ends up promising ⌘4 and doing ⌘5.
-fn accelerator(id: &str) -> Option<muda::accelerator::Accelerator> {
-    use muda::accelerator::{Accelerator, Code, Modifiers};
-
-    let printed = menu_shortcut(id)?;
-    let mut modifiers = Modifiers::empty();
-    let mut last = None;
-    for character in printed.chars() {
-        match character {
-            '\u{2318}' => modifiers |= Modifiers::META,
-            '\u{21e7}' => modifiers |= Modifiers::SHIFT,
-            '\u{2303}' => modifiers |= Modifiers::CONTROL,
-            '\u{2325}' => modifiers |= Modifiers::ALT,
-            other => last = Some(other),
-        }
+/// Command-comma is Settings on every Mac ever made, and Command-R is
+/// refresh in everything that fetches. They are not in the rebindable table
+/// at all — Refresh has no key of its own — so they are written here.
+fn fixed(id: &str) -> Option<(muda::accelerator::Modifiers, muda::accelerator::Code)> {
+    use muda::accelerator::{Code, Modifiers};
+    match id {
+        "settings" => Some((Modifiers::META, Code::Comma)),
+        "refresh" => Some((Modifiers::META, Code::KeyR)),
+        _ => None,
     }
-    let code = match last? {
-        '1' => Code::Digit1,
-        '2' => Code::Digit2,
-        '3' => Code::Digit3,
-        '4' => Code::Digit4,
-        '5' => Code::Digit5,
-        ',' => Code::Comma,
-        '.' => Code::Period,
-        '[' => Code::BracketLeft,
-        ']' => Code::BracketRight,
-        '\u{2190}' => Code::ArrowLeft,
-        '\u{2192}' => Code::ArrowRight,
-        '\u{2191}' => Code::ArrowUp,
-        '\u{2193}' => Code::ArrowDown,
-        'F' => Code::KeyF,
-        'M' => Code::KeyM,
-        'R' => Code::KeyR,
-        'S' => Code::KeyS,
+}
+
+/// egui's name for a key, as muda's code for the same key.
+///
+/// Only the keys a person might reasonably put a shortcut on. Anything not
+/// here simply gets no menu accelerator, which is a menu item that still
+/// works by clicking — the honest outcome for a key the menu cannot express.
+fn code_for(key: eframe::egui::Key) -> Option<muda::accelerator::Code> {
+    use eframe::egui::Key;
+    use muda::accelerator::Code;
+    Some(match key {
+        Key::A => Code::KeyA, Key::B => Code::KeyB, Key::C => Code::KeyC,
+        Key::D => Code::KeyD, Key::E => Code::KeyE, Key::F => Code::KeyF,
+        Key::G => Code::KeyG, Key::H => Code::KeyH, Key::I => Code::KeyI,
+        Key::J => Code::KeyJ, Key::K => Code::KeyK, Key::L => Code::KeyL,
+        Key::M => Code::KeyM, Key::N => Code::KeyN, Key::O => Code::KeyO,
+        Key::P => Code::KeyP, Key::Q => Code::KeyQ, Key::R => Code::KeyR,
+        Key::S => Code::KeyS, Key::T => Code::KeyT, Key::U => Code::KeyU,
+        Key::V => Code::KeyV, Key::W => Code::KeyW, Key::X => Code::KeyX,
+        Key::Y => Code::KeyY, Key::Z => Code::KeyZ,
+        Key::Num0 => Code::Digit0, Key::Num1 => Code::Digit1,
+        Key::Num2 => Code::Digit2, Key::Num3 => Code::Digit3,
+        Key::Num4 => Code::Digit4, Key::Num5 => Code::Digit5,
+        Key::Num6 => Code::Digit6, Key::Num7 => Code::Digit7,
+        Key::Num8 => Code::Digit8, Key::Num9 => Code::Digit9,
+        Key::ArrowLeft => Code::ArrowLeft, Key::ArrowRight => Code::ArrowRight,
+        Key::ArrowUp => Code::ArrowUp, Key::ArrowDown => Code::ArrowDown,
+        Key::OpenBracket => Code::BracketLeft, Key::CloseBracket => Code::BracketRight,
+        Key::Comma => Code::Comma, Key::Period => Code::Period,
+        Key::Semicolon => Code::Semicolon, Key::Slash => Code::Slash,
+        Key::Backslash => Code::Backslash, Key::Minus => Code::Minus,
+        Key::Equals => Code::Equal, Key::Backtick => Code::Backquote,
+        Key::PageUp => Code::PageUp, Key::PageDown => Code::PageDown,
+        Key::Home => Code::Home, Key::End => Code::End,
+        Key::Delete => Code::Delete, Key::Backspace => Code::Backspace,
+        Key::Enter => Code::Enter, Key::Tab => Code::Tab,
+        Key::F1 => Code::F1, Key::F2 => Code::F2, Key::F3 => Code::F3,
+        Key::F4 => Code::F4, Key::F5 => Code::F5, Key::F6 => Code::F6,
+        Key::F7 => Code::F7, Key::F8 => Code::F8, Key::F9 => Code::F9,
+        Key::F10 => Code::F10, Key::F11 => Code::F11, Key::F12 => Code::F12,
         _ => return None,
-    };
-    Some(Accelerator::new(Some(modifiers), code))
+    })
+}
+
+/// Put each menu item's accelerator in step with what the settings page says.
+///
+/// Called once the menu exists and again every time a binding changes, so the
+/// menu bar shows the shortcut that will actually happen rather than the one
+/// it was built with.
+///
+/// **A bare key never becomes an accelerator.** A menu accelerator belongs to
+/// the system, which fires it before any window sees the keystroke; put a
+/// plain G on the Guide item and typing "Golf" into the search box changes
+/// screen twice. Bare bindings still work — the application reads them
+/// itself, and knows when something is being typed into — they simply are
+/// not printed beside the menu item, because the menu is not the thing that
+/// would deliver them.
+pub fn sync_menu_shortcuts(settings: &crate::settings::Settings) {
+    use muda::accelerator::Accelerator;
+
+    ITEMS.with_borrow(|items| {
+    for (id, item) in items.iter() {
+        let accelerator = if let Some((modifiers, code)) = fixed(id) {
+            Some(Accelerator::new(Some(modifiers), code))
+        } else {
+            crate::keys::binding(settings, id)
+                .filter(|binding| binding.has_modifier())
+                .and_then(|binding| {
+                    let mut modifiers = muda::accelerator::Modifiers::empty();
+                    if binding.command {
+                        modifiers |= muda::accelerator::Modifiers::META;
+                    }
+                    if binding.shift {
+                        modifiers |= muda::accelerator::Modifiers::SHIFT;
+                    }
+                    if binding.alt {
+                        modifiers |= muda::accelerator::Modifiers::ALT;
+                    }
+                    Some(Accelerator::new(Some(modifiers), code_for(binding.key)?))
+                })
+        };
+        let _ = item.set_accelerator(accelerator);
+    }
+    });
+}
+
+/// What the menu bar will show for an action, for the settings page to print
+/// beside the binding. `None` where the menu offers nothing.
+pub fn menu_shortcut(id: &str) -> Option<&'static str> {
+    match id {
+        "settings" => Some("\u{2318},"),
+        "fullscreen" => Some("\u{2303}\u{2318}F"),
+        _ => None,
+    }
 }
 
 /// Build the application menu and hand it to the running NSApplication.
@@ -157,9 +198,15 @@ fn accelerator(id: &str) -> Option<muda::accelerator::Accelerator> {
 pub fn install_menu_bar() {
     use muda::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
-    fn item(id: &str, label: &str) -> MenuItem {
-        MenuItem::with_id(id, label, true, accelerator(id))
+    // Built with no accelerator; `sync_menu_shortcuts` fills them in from the
+    // bindings a moment later, and again whenever those change.
+    fn item(id: &str, label: &str, registry: &mut Vec<(String, MenuItem)>) -> MenuItem {
+        let item = MenuItem::with_id(id, label, true, None);
+        registry.push((id.to_string(), item.clone()));
+        item
     }
+
+    let mut registry: Vec<(String, MenuItem)> = Vec::new();
 
     let about = AboutMetadata {
         name: Some(crate::APP_NAME.into()),
@@ -168,7 +215,7 @@ pub fn install_menu_bar() {
         ..Default::default()
     };
 
-    let settings = item("settings", "Settings\u{2026}");
+    let settings = item("settings", "Settings\u{2026}", &mut registry);
     let app = Submenu::new(crate::APP_NAME, true);
     let _ = app.append_items(&[
         &PredefinedMenuItem::about(Some(&format!("About {}", crate::APP_NAME)), Some(about)),
@@ -202,11 +249,11 @@ pub fn install_menu_bar() {
     // The screens, on the numbers. Every Mac application with tabs or views
     // puts them on Command-1 upward, and five screens are exactly that shape.
     let go_items = [
-        item("home", "Home"),
-        item("guide", "Guide"),
-        item("library", "Library"),
-        item("recordings", "Recordings"),
-        item("downloads", "Downloads"),
+        item("home", "Home", &mut registry),
+        item("guide", "Guide", &mut registry),
+        item("library", "Library", &mut registry),
+        item("recordings", "Recordings", &mut registry),
+        item("downloads", "Downloads", &mut registry),
     ];
     let go = Submenu::new("Go", true);
     for entry in &go_items {
@@ -214,15 +261,15 @@ pub fn install_menu_bar() {
     }
 
     let play_items = [
-        item("play", "Play or Pause"),
-        item("back", "Skip Back"),
-        item("forward", "Skip Forward"),
-        item("volume_up", "Volume Up"),
-        item("volume_down", "Volume Down"),
-        item("mute", "Mute"),
-        item("channel_up", "Previous Channel"),
-        item("channel_down", "Next Channel"),
-        item("stop", "Stop Playback"),
+        item("play", "Play or Pause", &mut registry),
+        item("back", "Skip Back", &mut registry),
+        item("forward", "Skip Forward", &mut registry),
+        item("volume_up", "Volume Up", &mut registry),
+        item("volume_down", "Volume Down", &mut registry),
+        item("mute", "Mute", &mut registry),
+        item("channel_up", "Previous Channel", &mut registry),
+        item("channel_down", "Next Channel", &mut registry),
+        item("stop", "Stop Playback", &mut registry),
     ];
     let playback = Submenu::new("Playback", true);
     let _ = playback.append(&play_items[0]);
@@ -235,8 +282,8 @@ pub fn install_menu_bar() {
         let _ = playback.append(entry);
     }
 
-    let refresh = item("refresh", "Refresh from the DVR");
-    let rail = item("rail", "Show or Hide Labels");
+    let refresh = item("refresh", "Refresh from the DVR", &mut registry);
+    let rail = item("rail", "Show or Hide Labels", &mut registry);
     let view = Submenu::new("View", true);
     let _ = view.append_items(&[
         &refresh,
@@ -272,8 +319,12 @@ pub fn install_menu_bar() {
     // its Bring All to Front stay empty.
     window.set_as_windows_menu_for_nsapp();
 
-    // Leaked deliberately. These own the native menu objects, and dropping
-    // them at the end of this function would tear the menu bar down again.
+    // The items are kept, not leaked: their accelerators are set from the
+    // bindings now and reset whenever those change.
+    ITEMS.with_borrow_mut(|kept| *kept = registry);
+
+    // The menus themselves are leaked deliberately — they own the native menu
+    // objects, and dropping them here would tear the menu bar down again.
     std::mem::forget((menu, app, edit, go, playback, view, window, help));
     std::mem::forget((settings, refresh, rail, github, go_items, play_items));
 }
@@ -313,9 +364,44 @@ pub const LOCAL_NETWORK_HINT: &str =
 /// to while the welcome card is still being read. Asked once per launch;
 /// the system only ever prompts the first time.
 pub fn request_local_network() {
-    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        let _ = socket.send_to(&[0u8], "224.0.0.251:5353");
-    }
+    // On its own thread, and more than once.
+    //
+    // A single packet at startup is not enough to rely on: it is sent in the
+    // same breath as the window being created, and if the interface is not
+    // ready yet — a laptop a second after waking, a machine still associating
+    // with the network — it goes nowhere and the system never registers that
+    // this program wants the local network. No prompt appears, and the first
+    // Connect fails with a permission that was never asked for.
+    //
+    // Three tries a second apart covers a slow interface without delaying
+    // anything: nothing waits on this thread, and the packets are one byte to
+    // a multicast address nobody is listening on.
+    std::thread::spawn(|| {
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+                continue;
+            };
+            // mDNS, which is unambiguously "local network" to the classifier
+            // that decides whether to raise the dialog.
+            let asked = socket.send_to(&[0u8], "224.0.0.251:5353");
+            // And the all-hosts group, for a network where multicast to the
+            // mDNS address is filtered.
+            let _ = socket.send_to(&[0u8], "224.0.0.1:5353");
+            crate::log::line(&match &asked {
+                Ok(_) => format!("[macos] local network requested (try {})", attempt + 1),
+                Err(e) => format!(
+                    "[macos] local network request failed (try {}): {e}",
+                    attempt + 1
+                ),
+            });
+            if asked.is_ok() {
+                break;
+            }
+        }
+    });
 }
 
 // --- where files go ----------------------------------------------------------

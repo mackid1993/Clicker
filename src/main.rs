@@ -649,6 +649,9 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let settings = settings::Settings::load();
+        // The menu bar's accelerators, from the bindings actually in force
+        // rather than the empty ones it was built with a moment ago.
+        platform::sync_menu_shortcuts(&settings);
         let server = settings.server_url();
         let dvr = api::Dvr::new(&server);
         let lib = library::Library::new(&server);
@@ -2130,6 +2133,10 @@ impl App {
                 if let Err(e) = self.settings.save() {
                     self.announce(format!("Could not save settings: {e:#}"));
                 }
+                // A rebinding may have just happened, and the menu bar has to
+                // agree with it. Cheap enough to do on every save rather than
+                // trying to work out whether this one touched the keyboard.
+                platform::sync_menu_shortcuts(&self.settings);
             }
             ui_setup::SetupAction::PickFolder(which) => {
                 // On its own thread. The picker runs its own message loop and

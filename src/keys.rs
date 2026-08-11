@@ -86,16 +86,159 @@ pub const ACTIONS: &[Action] = &[
 /// back.
 pub const TOGGLE: &str = "toggle";
 
-/// The key currently bound to an action, or none if it has been cleared.
-pub fn binding(settings: &Settings, id: &str) -> Option<egui::Key> {
-    let name = match settings.shortcut_keys.get(id) {
+/// A key, and the modifiers that must be held with it.
+///
+/// Modifiers are stored and compared *exactly*: a binding of Command-G does
+/// not fire on Command-Shift-G, and a bare G does not fire when Command is
+/// down. Anything looser produces shortcuts that go off while somebody is
+/// using a different one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Binding {
+    pub key: egui::Key,
+    /// Command on a Mac, Control everywhere else. One flag rather than two,
+    /// because it is one idea — "the modifier this desktop uses for
+    /// shortcuts" — and egui already reports it that way.
+    pub command: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+impl Binding {
+    pub fn bare(key: egui::Key) -> Self {
+        Self { key, command: false, shift: false, alt: false }
+    }
+
+    pub fn has_modifier(self) -> bool {
+        self.command || self.shift || self.alt
+    }
+
+    /// How it is written into the settings file: `Cmd+Shift+G`, or `G`.
+    ///
+    /// Deliberately words rather than symbols. A settings file is read in a
+    /// text editor, sometimes on the other platform, and ⌘ there is a box.
+    pub fn to_setting(self) -> String {
+        let mut out = String::new();
+        if self.command {
+            out.push_str("Cmd+");
+        }
+        if self.shift {
+            out.push_str("Shift+");
+        }
+        if self.alt {
+            out.push_str("Alt+");
+        }
+        out.push_str(self.key.name());
+        out
+    }
+
+    /// The reverse, tolerant of what a person might type by hand and of the
+    /// bare key names every settings file written before modifiers existed
+    /// contains.
+    pub fn from_setting(text: &str) -> Option<Self> {
+        let mut binding = Self { key: egui::Key::Space, command: false, shift: false, alt: false };
+        let mut named = None;
+        for part in text.split('+') {
+            match part.trim().to_ascii_lowercase().as_str() {
+                "" => continue,
+                "cmd" | "command" | "ctrl" | "control" | "super" | "win" => binding.command = true,
+                "shift" => binding.shift = true,
+                "alt" | "option" | "opt" => binding.alt = true,
+                _ => named = Some(part.trim().to_string()),
+            }
+        }
+        binding.key = egui::Key::from_name(&named?)?;
+        Some(binding)
+    }
+
+    /// How it reads on screen: `⌘⇧G` on a Mac, `Ctrl+Shift+G` elsewhere,
+    /// because those are the two things people's eyes are trained on.
+    pub fn display(self) -> String {
+        let key = self.key.name();
+        if cfg!(target_os = "macos") {
+            let mut out = String::new();
+            if self.command {
+                out.push('\u{2318}');
+            }
+            if self.alt {
+                out.push('\u{2325}');
+            }
+            if self.shift {
+                out.push('\u{21e7}');
+            }
+            out.push_str(key);
+            out
+        } else {
+            let mut out = String::new();
+            if self.command {
+                out.push_str("Ctrl+");
+            }
+            if self.alt {
+                out.push_str("Alt+");
+            }
+            if self.shift {
+                out.push_str("Shift+");
+            }
+            out.push_str(key);
+            out
+        }
+    }
+}
+
+/// Why a binding is refused, or `None` if it is allowed.
+///
+/// The list is short and every entry is something that would take a working
+/// keyboard away from somebody:
+///
+///   * **The desktop's own shortcuts.** Command-Q quits, Command-W closes,
+///     Command-Tab switches applications. Binding one of those here does not
+///     win — the system gets there first — so the action would simply never
+///     fire, and the settings page would be listing a lie.
+///   * **The clipboard.** Command-C, V, X, A and Z belong to the Edit menu
+///     and to every text field in the program. Taking one would mean not
+///     being able to paste a server address into the box that asks for one.
+///   * **Command-comma**, which is Settings on every Mac ever made and is
+///     already in the menu.
+///
+/// Not refused, deliberately: two actions on one key. That is shown rather
+/// than blocked, because swapping two keys over passes through a clash on
+/// the way and refusing the first half makes the swap impossible.
+pub fn refusal(binding: Binding) -> Option<&'static str> {
+    use egui::Key;
+
+    // Modifier-free keys cannot collide with the desktop, so nothing here
+    // applies to them.
+    if !binding.command {
+        return None;
+    }
+    let plain_command = binding.command && !binding.shift && !binding.alt;
+    if !plain_command {
+        return None;
+    }
+    match binding.key {
+        Key::Q => Some("the desktop uses this to quit"),
+        Key::W => Some("the desktop uses this to close a window"),
+        Key::H => Some("the desktop uses this to hide the application"),
+        Key::M => Some("the desktop uses this to minimize the window"),
+        Key::Tab => Some("the desktop uses this to switch applications"),
+        Key::Space => Some("the desktop uses this for search"),
+        Key::C | Key::V | Key::X | Key::A | Key::Z => {
+            Some("copy, paste and friends need this")
+        }
+        Key::Comma => Some("this is Settings, and already in the menu"),
+        _ => None,
+    }
+}
+
+/// The binding currently on an action, or none if it has been cleared.
+pub fn binding(settings: &Settings, id: &str) -> Option<Binding> {
+    let text = match settings.shortcut_keys.get(id) {
         // An empty string is a deliberate unbinding, not a missing entry, and
         // means the action has no key at all.
         Some(name) if name.trim().is_empty() => return None,
         Some(name) => name.clone(),
         None => default_for(id)?.to_string(),
     };
-    egui::Key::from_name(&name)
+    Binding::from_setting(&text)
 }
 
 pub fn default_for(id: &str) -> Option<&'static str> {
@@ -113,12 +256,12 @@ pub fn label_for(id: &str) -> &str {
 /// How a binding reads on the settings page.
 pub fn display(settings: &Settings, id: &str) -> String {
     match binding(settings, id) {
-        Some(key) => key.name().to_string(),
+        Some(binding) => binding.display(),
         None => "—".to_string(),
     }
 }
 
-/// Whether the key bound to `id` was pressed this frame.
+/// Whether the binding on `id` was pressed this frame.
 ///
 /// Respects the master switch, except for the switch itself. Everything else
 /// about when a key counts — a text field having the keyboard, or something
@@ -127,21 +270,26 @@ pub fn pressed(ctx: &egui::Context, settings: &Settings, id: &str) -> bool {
     if !settings.shortcuts_enabled && id != TOGGLE {
         return false;
     }
-    let Some(key) = binding(settings, id) else { return false };
-    ctx.input(|i| i.key_pressed(key))
+    let Some(binding) = binding(settings, id) else { return false };
+    ctx.input(|i| {
+        i.key_pressed(binding.key)
+            && i.modifiers.command == binding.command
+            && i.modifiers.shift == binding.shift
+            && i.modifiers.alt == binding.alt
+    })
 }
 
-/// Which other actions are on the same key, if any.
+/// Which other actions are on the same binding, if any.
 ///
 /// Two actions on one key is not refused: it is shown. Refusing means deciding
 /// for someone that their remap is wrong, when they may be part way through
 /// swapping two keys over, and a clash that is visible is a clash that gets
 /// fixed.
 pub fn conflicts(settings: &Settings, id: &str) -> Vec<&'static str> {
-    let Some(key) = binding(settings, id) else { return Vec::new() };
+    let Some(binding) = binding(settings, id) else { return Vec::new() };
     ACTIONS
         .iter()
-        .filter(|a| a.id != id && binding(settings, a.id) == Some(key))
+        .filter(|a| a.id != id && crate::keys::binding(settings, a.id) == Some(binding))
         .map(|a| a.label)
         .collect()
 }

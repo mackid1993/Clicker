@@ -51,6 +51,9 @@ pub struct SetupState {
     pub message: Option<(String, bool)>,
     /// Which shortcut is listening for a new key, by action id.
     pub capturing: Option<String>,
+    /// The last binding that was refused, and why, so the page can say so
+    /// rather than appearing to ignore a keypress.
+    pub shortcut_refused: Option<String>,
     /// Why the configured folders were refused, if they were.
     ///
     /// Held rather than recomputed, because finding out means writing a file
@@ -699,11 +702,12 @@ pub fn settings_screen(
             section(
                 ui,
                 "Keyboard",
-                if crate::platform::menu_shortcut("home").is_some() {
+                if cfg!(target_os = "macos") {
                     "The whole application can be driven without a mouse. Click a key \
-                     to change it, then press the one you want. The grey shortcut \
-                     beside an action is the menu bar's own, which belongs to the \
-                     system and cannot be changed here."
+                     to change it, then press the one you want. Anything bound with \
+                     Command, Control, Shift or Option also appears in the menu bar; \
+                     a plain key does not, because the menu would then swallow it \
+                     while you were typing."
                 } else {
                     "The whole application can be driven without a mouse. Click a key \
                      to change it, then press the one you want."
@@ -737,10 +741,21 @@ pub fn settings_screen(
             // The key being rebound, if any. Taken before the rows are drawn so
             // that pressing a key binds it to the row that asked, and not to
             // whichever row happens to be drawn when the event arrives.
+            // The modifiers come from the same event, not from asking the
+            // input state afterwards: by then Command may already have been
+            // let go, and the binding would record a bare key that fires
+            // whenever that letter is typed.
             let captured = state.capturing.as_ref().and_then(|_| {
                 ui.input(|i| {
                     i.events.iter().find_map(|event| match event {
-                        egui::Event::Key { key, pressed: true, .. } => Some(*key),
+                        egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                            Some(crate::keys::Binding {
+                                key: *key,
+                                command: modifiers.command,
+                                shift: modifiers.shift,
+                                alt: modifiers.alt,
+                            })
+                        }
                         _ => None,
                     })
                 })
@@ -776,23 +791,18 @@ pub fn settings_screen(
                             .color(Fluent::TEXT_SECONDARY),
                     );
 
-                    // What the menu bar offers for the same action, where
-                    // there is a menu bar. Two ways to reach one action is
-                    // normal on a Mac and confusing only when one of them is
-                    // invisible: the menu shows ⌘2 for the guide, this page
-                    // showed G, and nothing on either said the other existed.
-                    //
-                    // Not editable, deliberately. A menu accelerator belongs
-                    // to the system, which presses it before this program
-                    // sees the key, so offering to rebind it here would be
-                    // offering something that cannot be done.
-                    if let Some(menu_key) = crate::platform::menu_shortcut(entry.id) {
+                    // The few shortcuts the menu bar owns outright and this
+                    // page cannot change: Settings on Command-comma, full
+                    // screen on Control-Command-F. Every other menu item now
+                    // takes its accelerator from the binding on this row, so
+                    // there is nothing extra to print for those.
+                    if let Some(fixed) = crate::platform::menu_shortcut(entry.id) {
                         ui.label(
-                            egui::RichText::new(menu_key)
+                            egui::RichText::new(fixed)
                                 .size(11.5)
                                 .color(Fluent::TEXT_TERTIARY),
                         )
-                        .on_hover_text("From the menu bar. Not rebindable.");
+                        .on_hover_text("Also on the menu bar. That one cannot be changed.");
                     }
 
                     // Said rather than refused. Somebody swapping two keys over
@@ -809,34 +819,63 @@ pub fn settings_screen(
                 });
 
                 if state.capturing.as_deref() == Some(entry.id) {
-                    if let Some(key) = captured {
+                    if let Some(binding) = captured {
                         // Escape leaves it as it was. Backspace clears it, so
                         // an action can be left with no key at all, which is
                         // the only way to be sure a stray press does nothing.
-                        match key {
-                            egui::Key::Escape => {}
-                            egui::Key::Backspace => {
-                                settings
-                                    .shortcut_keys
-                                    .insert(entry.id.to_string(), String::new());
-                                action = SetupAction::Save;
-                            }
-                            key => {
-                                settings
-                                    .shortcut_keys
-                                    .insert(entry.id.to_string(), key.name().to_string());
-                                action = SetupAction::Save;
-                            }
+                        // Both only when pressed alone: Command-Backspace is
+                        // a binding somebody may well want.
+                        let bare_escape =
+                            binding.key == egui::Key::Escape && !binding.has_modifier();
+                        let bare_backspace =
+                            binding.key == egui::Key::Backspace && !binding.has_modifier();
+
+                        if bare_escape {
+                            state.capturing = None;
+                        } else if bare_backspace {
+                            settings
+                                .shortcut_keys
+                                .insert(entry.id.to_string(), String::new());
+                            action = SetupAction::Save;
+                            state.capturing = None;
+                        } else if let Some(why) = crate::keys::refusal(binding) {
+                            // Refused, and said out loud. Silently ignoring
+                            // the press would read as the keyboard being
+                            // broken; taking it would record a shortcut the
+                            // desktop will never let through.
+                            state.shortcut_refused =
+                                Some(format!("{} — {why}", binding.display()));
+                            state.capturing = None;
+                        } else {
+                            settings
+                                .shortcut_keys
+                                .insert(entry.id.to_string(), binding.to_setting());
+                            state.shortcut_refused = None;
+                            action = SetupAction::Save;
+                            state.capturing = None;
                         }
-                        state.capturing = None;
                     }
                 }
             }
+            // What was just refused, if anything. Above the footnote, because
+            // it is about the press that just happened.
+            if let Some(refused) = &state.shortcut_refused {
+                ui.add_space(SPACE_S);
+                control_row(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{refused}. Nothing was changed."))
+                            .size(11.5)
+                            .color(Fluent::CAUTION),
+                    );
+                });
+            }
+
             ui.label(
                 egui::RichText::new(
-                    "Escape keeps the current key, Backspace removes it. Escape \
-                     always leaves full screen and stops playback, whatever else \
-                     is bound.",
+                    "Hold Command, Control, Shift or Option while pressing to bind a \
+                     combination. Escape keeps the current key, Backspace removes it. \
+                     Escape always leaves full screen and stops playback, whatever \
+                     else is bound.",
                 )
                 .size(11.0)
                 .color(Fluent::TEXT_TERTIARY),
