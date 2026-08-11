@@ -57,13 +57,13 @@ cat <<METAINFO
        exactly. See /usr/share/doc/clicker/copyright. -->
   <project_license>MIT AND LGPL-2.1-or-later</project_license>
   <name>Clicker</name>
-  <summary>Unofficial native client for Channels DVR</summary>
+  <summary>An Unofficial Client for Channels DVR Server</summary>
   <developer id="io.github.mackid1993">
     <name>David Brustein</name>
   </developer>
   <description>
     <p>
-      A native client for a Channels DVR server: live TV with a real guide,
+      A client for a Channels DVR server: live TV with a real guide,
       recordings, and downloads for watching away from the network.
     </p>
     <p>

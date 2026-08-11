@@ -272,8 +272,8 @@ Architecture: $ARCH
 Depends: $DEPENDS
 Maintainer: David Brustein <mackid1993@users.noreply.github.com>
 Homepage: https://github.com/mackid1993/Clicker
-Description: Unofficial native client for Channels DVR
- A native client for a Channels DVR server: live TV with a real guide,
+Description: An Unofficial Client for Channels DVR Server
+ A client for a Channels DVR server: live TV with a real guide,
  recordings, and downloads for watching away from the network.
  .
  Playback is mpv, built LGPL and bundled, so nothing needs installing first.
