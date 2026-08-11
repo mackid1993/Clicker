@@ -28,7 +28,7 @@
 # For everything that is not Debian-shaped — Fedora, Arch, openSUSE, anything
 # — there is the source path, which is also one line:
 #
-#   curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/setup.sh | bash
 #
 # libmpv IS bundled, from scripts/build-mpv.sh — FFmpeg and mpv from their
 # pinned tags, LGPL only, exactly as the Windows installer carries them.

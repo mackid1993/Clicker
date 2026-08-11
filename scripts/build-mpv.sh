@@ -79,6 +79,19 @@ have_new_enough() {
   pkg-config --exists --print-errors "$1 >= $2" 2>/dev/null
 }
 
+# Nothing in this repository's root may be called install.sh, install-sh or
+# shtool.
+#
+# Autoconf picks a package's auxiliary directory by searching `.`, `..` and
+# `../..` for a file with one of those names. libass unpacks to
+# third_party/libass-src, so `../..` is the root of this repository — and when
+# a curl installer lived there as install.sh, libtoolize decided the
+# repository root was libass's aux directory, wrote ltmain.sh into it, and
+# automake then stopped on `required file './ltmain.sh' not found`. It looked
+# for all the world like a missing libtool.
+#
+# The installer is setup.sh for that reason and no other.
+#
 # A source tree from an attempt that died halfway is not a source tree.
 #
 # The first run of this on a machine without autoconf stopped inside

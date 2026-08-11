@@ -15,7 +15,7 @@
 # "Uninstall Clicker" entry pointing here.
 #
 # That it survives the source tree matters more than it sounds. `make
-# uninstall` needs the checkout it was built from, and install.sh builds under
+# uninstall` needs the checkout it was built from, and setup.sh builds under
 # a cache directory anybody is entitled to delete — pointing somebody at a
 # directory that may not exist is not an uninstall procedure.
 #

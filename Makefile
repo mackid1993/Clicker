@@ -215,7 +215,7 @@ install: check-built
 	install -m644 licenses/* $(DOCDIR)/licenses/
 	@# An uninstaller that outlives the source tree it came from.
 	@#
-	@# `make uninstall` needs this checkout, and install.sh builds under a
+	@# `make uninstall` needs this checkout, and setup.sh builds under a
 	@# cache directory anybody is entitled to delete. Pointing somebody at a
 	@# directory that may not exist is not an uninstall procedure.
 	sed 's|@PREFIX@|$(PREFIX)|' scripts/uninstall-linux.sh > $(LIBDIR)/uninstall.sh

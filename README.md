@@ -48,7 +48,7 @@ Downloads are on the
 |---|---|
 | **Windows** | `Clicker-Setup-<version>.exe` — 10 1809 and up |
 | **macOS** | `Clicker-macOS-<version>-universal.zip` — one app, Apple silicon and Intel, signed and notarized |
-| **Linux** | `clicker_<version>_amd64.deb` / `_arm64.deb`, or one line: <br>`curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh \| bash` |
+| **Linux** | `clicker_<version>_amd64.deb` / `_arm64.deb`, or one line: <br>`curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/setup.sh \| bash` |
 
 The Linux one-liner asks what you want — install the package, build from
 source, or uninstall — and only offers what the machine can actually do.
@@ -217,7 +217,7 @@ keychain holds, and CI reads five secrets that belong to whoever runs it.
 **One line, any distribution — install, build or remove:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/setup.sh | bash
 ```
 
 It works out what the machine can do and asks:
@@ -340,7 +340,7 @@ and pick **Uninstall Clicker**, which only appears when there is something to
 remove:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/setup.sh | bash
 ```
 
 or go straight there with `bash -s -- --uninstall`. It removes the package if

@@ -6,7 +6,7 @@
 #
 # Install Clicker on Linux, one line:
 #
-#   curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/setup.sh | bash
 #
 # It asks what you want to do, and offers what this machine can actually do:
 # install the .deb, build from source, or uninstall what is already there.
