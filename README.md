@@ -151,38 +151,57 @@ Once `third_party\mpv` exists, `cargo build` on its own needs nothing but a
 Rust toolchain: libmpv is loaded by name at runtime rather than linked, so
 there is no native compilation step and no headers to find.
 
-### macOS and Linux
+### macOS
 
-The same codebase and the same interface run on macOS and Linux, over a
-small `src/platform` module that holds the handful of things the systems do
-differently. Windows remains the flagship; the ports are younger and less
-travelled.
-
-**macOS** — Apple silicon only. Build the app bundle locally:
+Three commands, and nothing is installed outside the repository except the
+build tools:
 
 ```sh
-brew install mpv          # libmpv, loaded at runtime as on every platform
-./scripts/build-macos.sh  # target/macos/Clicker.app, ad-hoc signed
+brew install meson ninja nasm pkg-config libass libplacebo
+./scripts/build-mpv.sh        # FFmpeg and mpv, LGPL, into third_party/mpv
+./scripts/build-macos.sh      # Clicker.app in target/macos
 ```
 
-The window is a real Mac window — traffic lights, rounded corners, system
-resizing — around the same interface. Settings live in
-`~/Library/Application Support/Clicker`.
+The first is slow — FFmpeg and mpv compile from source, which is the whole
+point — and the result is cached in `third_party/`, so it happens once.
 
-**Linux** — an AppImage, built by the manual `Build Linux` workflow for
-x86_64 and aarch64. One file: make it executable and run it. mpv and FFmpeg
-are compiled from the same pinned tags with the same LGPL-only flags as the
-Windows installer and bundled inside it, so nothing has to be installed
-first.
+* **Universal by default where it can be.** `rustup target add
+  x86_64-apple-darwin` and the build produces one binary carrying both
+  architectures; without it, arm64 alone and a line saying so.
+* **Signing is optional and automatic.** With a "Developer ID Application"
+  certificate in the keychain the app is signed with the hardened runtime and
+  a timestamp; with none, it falls back to the ad-hoc signature a local build
+  needs. Nobody has to have a certificate to build this.
+* **Notarizing is opt-in.** It happens only if a `notarytool` keychain profile
+  exists — `notary` by default, `NOTARY_PROFILE=…` to name another — so a
+  build on a machine that has never heard of Apple's notary service simply
+  does not attempt it. `--no-notarize` skips it regardless, which is what
+  `scripts/dev-macos.sh` uses for iterating.
 
-Graphics deliberately come from the machine — Mesa, Wayland or X11, and the
-cursor theme — which is why this is an AppImage rather than the Flatpak it
-started as. A Flatpak brings its own graphics stack, and when that fails to
-match the host's it falls back to software rendering silently: measured on
-one machine from one commit, the plain binary was perfect and the sandboxed
-build tore constantly and lost the mouse pointer. The manifest is still in
-`packaging/flatpak/` and Flathub is still worth doing, on hardware somebody
-can test properly.
+No account details live in this repository. The identity is whatever the
+keychain holds, and CI reads five secrets that belong to whoever runs it.
+
+### Linux
+
+```sh
+sudo apt install build-essential pkg-config meson ninja-build nasm patchelf \
+  libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libgl1-mesa-dev \
+  libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev \
+  libunibreak-dev libva-dev libvdpau-dev
+pip install --upgrade meson   # distributions ship one too old for libplacebo
+./scripts/build-mpv.sh        # FFmpeg and mpv, LGPL, into third_party/mpv
+./scripts/build-appimage.sh   # Clicker-<version>-<arch>.AppImage
+```
+
+Build on the oldest distribution you intend to support: an AppImage cannot
+run on a glibc older than the one it was compiled against. CI uses Ubuntu
+22.04 for that reason.
+
+### Either, while working on it
+
+Once `third_party/mpv` exists, `cargo run` is enough — the application looks
+for its player there as well as inside a bundle, so there is no packaging
+step in the edit-and-run loop.
 
 ## Playback
 

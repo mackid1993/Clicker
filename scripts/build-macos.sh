@@ -21,19 +21,26 @@
 #     to anyone. Without a staged build the bundle is still made, and still
 #     falls back to a system libmpv, which is what a developer wants when
 #     iterating.
-#   * Signing rises to whatever is available. With a "Developer ID
-#     Application" certificate in the keychain (or one named in
-#     CLICKER_SIGN_IDENTITY) the app is signed properly — hardened
-#     runtime, timestamp, the entitlements in packaging/macos — and if a
-#     notarytool keychain profile called "notary" exists (or whatever
-#     NOTARY_PROFILE names) it is
-#     notarized and stapled too, which is what lets it run on machines
-#     that are not this one. With none of that present it falls back to
-#     the ad-hoc signature a local build needs and nothing more. One
-#     ad-hoc consequence worth knowing: macOS ties permission grants —
+#   * Signing rises to whatever is available, and nothing here is anybody's
+#     in particular. With a "Developer ID Application" certificate in the
+#     keychain — or one named in CLICKER_SIGN_IDENTITY — the app is signed
+#     properly: hardened runtime, timestamp, the entitlements in
+#     packaging/macos. With none, it falls back to the ad-hoc signature a
+#     local build needs, so anyone can build this without an Apple account.
+#
+#     Notarizing is opt-in on top of that: it happens only when a notarytool
+#     keychain profile exists, named by NOTARY_PROFILE and "notary" by
+#     default. A machine that has never stored one does not attempt it.
+#     --no-notarize skips it regardless.
+#
+#     No Apple ID, team identifier or password appears in this script or
+#     anywhere else in the repository. The certificate comes from the
+#     keychain and CI reads secrets belonging to whoever runs it.
+#
+#     One ad-hoc consequence worth knowing: macOS ties permission grants —
 #     the local network prompt included — to the signature, and an ad-hoc
-#     signature changes with every build, so a rebuild may ask again.
-#     A stable identity ends that.
+#     signature changes with every build, so a rebuild may ask again. A
+#     stable identity ends that.
 #
 # Produces target/macos/Clicker.app and a zip beside it.
 
