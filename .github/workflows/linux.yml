@@ -90,7 +90,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
-            libgl1-mesa-dev pkg-config
+            libgl1-mesa-dev pkg-config meson ninja-build nasm \
+            libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev \
+            libunibreak-dev python3-setuptools
+
+      # The staged libmpv, cached whole, keyed on the script where the tags
+      # and the licensing flags live — the same arrangement the Windows job
+      # uses. Moving either rebuilds from source; everything else reuses it.
+      - name: Cache libmpv
+        id: mpv
+        uses: actions/cache@v4
+        with:
+          path: third_party
+          key: ${{ matrix.arch }}-mpv-${{ hashFiles('scripts/build-mpv.sh') }}
+
+      - name: Build libmpv and FFmpeg (LGPL)
+        if: steps.mpv.outputs.cache-hit != 'true'
+        run: ./scripts/build-mpv.sh
 
       - name: Cache cargo
         uses: actions/cache@v4

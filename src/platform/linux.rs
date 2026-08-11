@@ -159,15 +159,30 @@ pub fn punch_hole(file: &tokio::fs::File, from: u64, len: u64) -> bool {
 /// What the mpv library is called here, for messages about not finding it.
 pub const MPV_LIBRARY: &str = "libmpv.so.2";
 
-/// Where libmpv might be: beside the binary, then the system linker paths,
-/// which is where a distribution package or a Flatpak runtime puts it.
+/// Where libmpv might be, and deliberately nowhere else.
+///
+/// The AppImage's own lib directory first, then beside a bare binary, then
+/// the repository's staged build for anyone running this out of `cargo`.
+/// What is *not* here is the system loader's search path: a distribution's
+/// FFmpeg is frequently built with GPL components, and this application ships
+/// under MIT with an LGPL player. The only libmpv it loads is one built by
+/// `scripts/build-mpv.sh` with `-Dgpl=false` and `--disable-gpl`.
 pub fn mpv_candidates() -> Vec<String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from));
     let mut candidates = Vec::new();
-    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
+    if let Some(dir) = &exe_dir {
+        // usr/bin/../lib, which is where the AppImage puts them.
+        candidates.push(dir.join("../lib").join(MPV_LIBRARY).display().to_string());
         candidates.push(dir.join(MPV_LIBRARY).display().to_string());
+        candidates.push(
+            dir.join("../../third_party/mpv")
+                .join(MPV_LIBRARY)
+                .display()
+                .to_string(),
+        );
     }
-    candidates.push(MPV_LIBRARY.to_string());
-    candidates.push("libmpv.so".to_string());
     candidates
 }
 

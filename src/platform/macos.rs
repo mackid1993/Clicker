@@ -516,10 +516,20 @@ pub fn punch_hole(file: &tokio::fs::File, from: u64, len: u64) -> bool {
 /// What the mpv library is called here, for messages about not finding it.
 pub const MPV_LIBRARY: &str = "libmpv.2.dylib";
 
-/// Where libmpv might be, most specific first: inside the app bundle, beside
-/// a bare binary, then Homebrew — which on Apple silicon lives under
-/// /opt/homebrew and nowhere else — and finally wherever the loader's own
-/// search paths reach.
+/// Where libmpv might be, and deliberately nowhere else.
+///
+/// The bundle first, then beside a bare binary, then the repository's own
+/// staged build for anyone running this out of `cargo`. What is *not* here
+/// is `/opt/homebrew`, and its absence is the point: Homebrew's FFmpeg is
+/// built `--enable-gpl` and its mpv links librubberband, so a copy picked up
+/// from there is a GPL-combined work inside an MIT application — the exact
+/// thing the Windows build refuses to package. The only libmpv this program
+/// loads is one built by `scripts/build-mpv.sh` with `-Dgpl=false` and
+/// `--disable-gpl`, which is LGPL and may be replaced by anyone who wants to.
+///
+/// Falling back to whatever a package manager has would also mean the
+/// application behaves differently on two machines for reasons nobody can
+/// see, which is its own argument.
 pub fn mpv_candidates() -> Vec<String> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -529,10 +539,14 @@ pub fn mpv_candidates() -> Vec<String> {
         // Contents/MacOS/../Frameworks is where a .app carries its libraries.
         candidates.push(dir.join("../Frameworks").join(MPV_LIBRARY).display().to_string());
         candidates.push(dir.join(MPV_LIBRARY).display().to_string());
+        // target/release/../../third_party/mpv, for a build being run in place.
+        candidates.push(
+            dir.join("../../third_party/mpv")
+                .join(MPV_LIBRARY)
+                .display()
+                .to_string(),
+        );
     }
-    candidates.push(format!("/opt/homebrew/lib/{MPV_LIBRARY}"));
-    candidates.push(MPV_LIBRARY.to_string());
-    candidates.push("libmpv.dylib".to_string());
     candidates
 }
 

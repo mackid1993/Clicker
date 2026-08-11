@@ -13,12 +13,14 @@
 #     one binary that runs on any Mac; if it is not, the build says so and
 #     produces an arm64-only bundle rather than failing. Add the target
 #     with: rustup target add x86_64-apple-darwin
-#   * libmpv is NOT bundled. The app looks in Contents/Frameworks first and
-#     then in /opt/homebrew/lib, so `brew install mpv` is the runtime
-#     prerequisite. Bundling means carrying mpv's entire dylib closure —
-#     FFmpeg and forty friends — with install_name_tool surgery on each; a
-#     job worth doing when this ships to strangers, and pure liability while
-#     the only user has Homebrew anyway.
+#   * libmpv is bundled when third_party/mpv has been built, which is what
+#     scripts/build-mpv.sh does: FFmpeg and mpv from their pinned tags,
+#     LGPL only. Copying a package manager's copy instead is not an option —
+#     Homebrew's FFmpeg is --enable-gpl — and an application somebody has to
+#     run `brew install mpv` before using is not an application you can hand
+#     to anyone. Without a staged build the bundle is still made, and still
+#     falls back to a system libmpv, which is what a developer wants when
+#     iterating.
 #   * Signing rises to whatever is available. With a "Developer ID
 #     Application" certificate in the keychain (or one named in
 #     CLICKER_SIGN_IDENTITY) the app is signed properly — hardened
@@ -116,6 +118,38 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# libmpv and FFmpeg, inside the bundle.
+#
+# Every library is copied in, its own id rewritten to @rpath, and every
+# reference it makes to its build location rewritten the same way; the
+# executable gets an rpath pointing at Frameworks. That is what makes the
+# bundle self-contained rather than a set of paths that happened to exist on
+# the build machine.
+STAGE="$ROOT/third_party/mpv"
+BUNDLED=no
+if [[ -f "$STAGE/libmpv.2.dylib" ]]; then
+  echo "==> bundling libmpv and FFmpeg"
+  cp -a "$STAGE"/*.dylib "$APP/Contents/Frameworks/"
+
+  for lib in "$APP/Contents/Frameworks/"*.dylib; do
+    base="$(basename "$lib")"
+    install_name_tool -id "@rpath/$base" "$lib" 2>/dev/null || true
+    # Anything it points at that we also carry becomes an @rpath reference.
+    otool -L "$lib" | awk 'NR>1 {print $1}' | while read -r ref; do
+      refbase="$(basename "$ref")"
+      if [[ -f "$APP/Contents/Frameworks/$refbase" && "$ref" != @rpath/* ]]; then
+        install_name_tool -change "$ref" "@rpath/$refbase" "$lib" 2>/dev/null || true
+      fi
+    done
+  done
+
+  install_name_tool -add_rpath "@executable_path/../Frameworks" \
+    "$APP/Contents/MacOS/Clicker" 2>/dev/null || true
+  BUNDLED=yes
+else
+  echo "==> no staged libmpv (run scripts/build-mpv.sh); the app will look for a system one"
+fi
+
 # The licences, inside the bundle where they travel with it.
 #
 # Not a formality: Clicker's own terms are MIT and require the notice to go
@@ -151,6 +185,12 @@ IDENTITY="${CLICKER_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>
 
 if [[ -n "$IDENTITY" ]]; then
   echo "==> signing as: $IDENTITY"
+  # Inside out: a hardened bundle is only as signed as the code nested in it,
+  # and codesign will not sign an outer bundle over unsigned libraries.
+  for lib in "$APP/Contents/Frameworks/"*.dylib; do
+    [[ -e "$lib" ]] || continue
+    codesign --force --options runtime --timestamp -s "$IDENTITY" "$lib"
+  done
   codesign --force --options runtime --timestamp \
     --entitlements "$ROOT/packaging/macos/entitlements.plist" \
     -s "$IDENTITY" "$APP"
@@ -223,4 +263,8 @@ echo "       $ZIP"
 if [[ "$INSTALL" == "yes" ]]; then
   echo "Installed /Applications/Clicker.app"
 fi
-echo "Needs: brew install mpv"
+if [[ "$BUNDLED" == "yes" ]]; then
+  echo "libmpv: bundled (LGPL, built by scripts/build-mpv.sh)"
+else
+  echo "libmpv: not bundled — needs one on the system (brew install mpv)"
+fi

@@ -80,6 +80,23 @@ jobs:
       - name: Add the Intel target
         run: rustup target add x86_64-apple-darwin
 
+      - name: Build dependencies
+        run: brew install meson ninja nasm pkg-config
+
+      # The staged libmpv, cached whole, keyed on the script where the tags
+      # and the licensing flags live — the same arrangement the Windows job
+      # uses.
+      - name: Cache libmpv
+        id: mpv
+        uses: actions/cache@v4
+        with:
+          path: third_party
+          key: macos-mpv-${{ hashFiles('scripts/build-mpv.sh') }}
+
+      - name: Build libmpv and FFmpeg (LGPL)
+        if: steps.mpv.outputs.cache-hit != 'true'
+        run: ./scripts/build-mpv.sh
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:

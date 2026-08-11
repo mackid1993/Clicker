@@ -15,17 +15,15 @@
 # compositor libraries and the host's cursor theme, because it is not a
 # sandbox: it is the binary, in a squashfs, with a launcher.
 #
-# libmpv is deliberately NOT bundled, for the same reason it is not bundled
-# in the .app on macOS: it is loaded by name at runtime, so the system's own
-# copy is used, which is the copy that matches the system's FFmpeg and the
-# system's video drivers. What that costs is one line of instruction —
+# libmpv IS bundled, from scripts/build-mpv.sh: FFmpeg and mpv from their
+# pinned tags, LGPL only, exactly as the Windows installer carries them.
+# Nothing is taken from the distribution, because a distribution's FFmpeg is
+# frequently GPL and because an application that needs a package installed
+# first is not one you can hand to anybody.
 #
-#   Debian, Ubuntu:  sudo apt install libmpv2
-#   Fedora:          sudo dnf install mpv-libs
-#   Arch:            sudo pacman -S mpv
-#
-# — and what it buys is hardware decoding that works, which a bundled mpv
-# built against the wrong drivers does not.
+# What is NOT bundled is anything to do with graphics — Mesa, libwayland,
+# libGL, the cursor theme. Those come from the machine, which is the entire
+# difference between this and the Flatpak that tore and lost its pointer.
 #
 # Build it on the oldest distribution you intend to support: an AppImage's
 # glibc requirement is whatever it was compiled against, and it cannot run
@@ -53,6 +51,17 @@ mkdir -p "$APPDIR/usr/bin" \
 
 install -m755 "$ROOT/target/release/clicker" "$APPDIR/usr/bin/clicker"
 
+# libmpv and its FFmpeg, ours, beside the binary.
+STAGE="$ROOT/third_party/mpv"
+if [[ -f "$STAGE/libmpv.so.2" ]]; then
+  echo "==> bundling libmpv and FFmpeg"
+  mkdir -p "$APPDIR/usr/lib"
+  cp -a "$STAGE"/*.so* "$APPDIR/usr/lib/"
+else
+  echo "no staged libmpv — run scripts/build-mpv.sh first" >&2
+  exit 1
+fi
+
 # The licences travel with it, as they do in the installer and the .app.
 install -m644 "$ROOT/LICENSE.md" "$ROOT/NOTICE.md" "$APPDIR/usr/share/licenses/$APP_ID/"
 install -m644 "$ROOT"/licenses/* "$APPDIR/usr/share/licenses/$APP_ID/"
@@ -79,9 +88,15 @@ cat > "$APPDIR/AppRun" <<'APPRUN'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="${HERE}/usr/bin:${PATH}"
-# Not LD_LIBRARY_PATH. Everything this needs — libmpv, Mesa, Wayland — comes
-# from the system on purpose; pointing the loader at bundled copies first is
-# exactly the mistake that makes the sandboxed build render in software.
+# Deliberately no LD_LIBRARY_PATH.
+#
+# libmpv is found by the application itself, which looks in usr/lib beside
+# its own binary — see mpv_candidates in src/platform/linux.rs — so the
+# bundled player is used without putting anything in front of the system's
+# loader. That matters: pointing LD_LIBRARY_PATH at bundled copies is how an
+# application ends up using its own idea of Mesa, libwayland and libstdc++
+# instead of the machine's, which is what made the sandboxed build render in
+# software and lose its cursor.
 exec "${HERE}/usr/bin/clicker" "$@"
 APPRUN
 chmod +x "$APPDIR/AppRun"
@@ -104,4 +119,4 @@ chmod +x "$OUT/Clicker-$VERSION-$ARCH.AppImage"
 ls -lh "$OUT/Clicker-$VERSION-$ARCH.AppImage"
 echo
 echo "Built $OUT/Clicker-$VERSION-$ARCH.AppImage"
-echo "Needs: libmpv on the system (apt install libmpv2)"
+echo "libmpv: bundled (LGPL, built by scripts/build-mpv.sh)"
