@@ -52,10 +52,17 @@ cat <<METAINFO
 <component type="desktop-application">
   <id>$APP_ID</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <!-- An SPDX expression rather than "MIT", because the package is an MIT
-       program and an LGPL player together and the expression says so
-       exactly. See /usr/share/doc/clicker/copyright. -->
-  <project_license>MIT AND LGPL-2.1-or-later</project_license>
+  <!-- The licence of this project's own source, which is what AppStream
+       means by it and what a software centre renders: plain MIT, one
+       identifier, recognised.
+       It said "MIT AND LGPL-2.1-or-later" first, on the reasoning that the
+       package is an MIT program and an LGPL player together — true of the
+       package and not what this field asks. GNOME's own documentation names
+       that mistake: software shows as proprietary or unknown when licences
+       belonging to something else are folded in here. The bundled players'
+       terms live in /usr/share/doc/clicker/copyright, which is the file that
+       exists to carry them. -->
+  <project_license>MIT</project_license>
   <name>Clicker</name>
   <summary>An Unofficial Client for Channels DVR Server</summary>
   <developer id="io.github.mackid1993">
