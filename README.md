@@ -294,14 +294,14 @@ worth knowing because on Linux mpv paces video against the audio clock.
 
 **Video is rendered on a thread of its own** on Linux, into a texture the
 interface then draws. That is not how it works on Windows or macOS, and the
-reason is drivers that make a caller wait: a translated OpenGL — a virtual
-machine, a remote display — can hold a render call for most of a frame while
-doing no work at all, and on the interface's own thread that is a window that
-stops answering the mouse and a picture that sheds half its frames. On the
-worker it is a thread whose whole job is to wait. Measured on a Parallels
-guest against a 1080p60 channel: 60fps with one frame dropped in a minute,
-where the same build with `CLICKER_RENDER_THREAD=0` — which is the off switch
-— managed 50fps and dropped frames the whole way through.
+reason is drivers that make a caller wait: where OpenGL is translated rather
+than native, a render call can hold for most of a frame while doing no work
+at all, and on the interface's own thread that is a window that stops
+answering the mouse and a picture that sheds half its frames. On a worker it
+is a thread whose whole job is to wait. Measured against a 1080p60 channel:
+60fps with one frame dropped in a minute, where the same build with
+`CLICKER_RENDER_THREAD=0` — which is the off switch — managed 50fps and
+dropped frames the whole way through.
 
 **Three environment variables exist for testing**, and are the reason a
 playback question no longer costs an evening. `CLICKER_PLAY=<file or URL>`
