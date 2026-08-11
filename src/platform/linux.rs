@@ -235,3 +235,42 @@ pub unsafe extern "C" fn gl_proc_address(_ctx: *mut c_void, name: *const c_char)
     }
     super::library_symbol(libgl, name as *const u8)
 }
+
+/// Point the bundled PipeWire client at the machine's own plugins.
+///
+/// The client library we may carry was built with our staging prefix baked in
+/// as its plugin path — a directory that exists on no user's machine. The
+/// daemon, the SPA plugins and the modules are the machine's own and live
+/// where its distribution put them, so name the first directory that exists.
+/// A user's explicit setting is always left alone.
+pub fn audio_environment() {
+    let pick = |var: &str, candidates: &[&str]| {
+        if std::env::var_os(var).is_some() {
+            return;
+        }
+        for dir in candidates {
+            if std::path::Path::new(dir).is_dir() {
+                std::env::set_var(var, dir);
+                return;
+            }
+        }
+    };
+    pick(
+        "SPA_PLUGIN_DIR",
+        &[
+            "/usr/lib/aarch64-linux-gnu/spa-0.2",
+            "/usr/lib/x86_64-linux-gnu/spa-0.2",
+            "/usr/lib64/spa-0.2",
+            "/usr/lib/spa-0.2",
+        ],
+    );
+    pick(
+        "PIPEWIRE_MODULE_DIR",
+        &[
+            "/usr/lib/aarch64-linux-gnu/pipewire-0.3",
+            "/usr/lib/x86_64-linux-gnu/pipewire-0.3",
+            "/usr/lib64/pipewire-0.3",
+            "/usr/lib/pipewire-0.3",
+        ],
+    );
+}

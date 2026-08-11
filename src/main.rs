@@ -226,6 +226,11 @@ fn prefer_integrated_gpu() {
 }
 
 fn main() -> eframe::Result<()> {
+    // Before anything loads libraries: the bundled PipeWire client needs to
+    // know where this machine keeps its plugins.
+    #[cfg(target_os = "linux")]
+    platform::audio_environment();
+
     install_panic_log();
     // Buffers left by a process that did not live to clean up after itself.
     // Before anything can make a request, so every one of them carries the
