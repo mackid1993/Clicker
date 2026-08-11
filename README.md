@@ -299,16 +299,23 @@ lives inside the bundle, so there is nothing else to remove.
 sudo apt remove clicker          # or `purge`, which is the same here
 ```
 
-**Linux, installed from source:**
+**Linux, installed from source** — **Uninstall Clicker** in the applications
+menu, or:
 
 ```sh
-sudo /usr/local/lib/clicker/uninstall.sh
+/usr/local/lib/clicker/uninstall.sh
 ```
 
-`make install` writes that alongside the binary with the prefix already
-substituted in, so it keeps working after the source tree is gone — which
-matters, because `make uninstall` needs the checkout it was built from and
-nobody keeps a build directory forever.
+`make install` writes both: the script alongside the binary with the prefix
+already substituted in, and a menu entry pointing at it. The script keeps
+working after the source tree is gone, which matters because `make uninstall`
+needs the checkout it was built from and nobody keeps a build directory
+forever. No `sudo` needed either — it asks for root itself, through the
+desktop's own authentication dialog when it was launched from the menu.
+
+The package does not get a menu entry of its own: on Debian and Ubuntu the
+software centre already offers to remove it, and a second way to do the same
+thing is a way to get it wrong.
 
 **Linux, either kind, without having to remember which:**
 

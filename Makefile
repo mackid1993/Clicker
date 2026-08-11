@@ -214,16 +214,36 @@ install: check-built
 	@# directory that may not exist is not an uninstall procedure.
 	sed 's|@PREFIX@|$(PREFIX)|' scripts/uninstall-linux.sh > $(LIBDIR)/uninstall.sh
 	chmod 755 $(LIBDIR)/uninstall.sh
+	@# And an entry for it in the menu, because a source install has no
+	@# package manager behind it. Somebody who arrived here by pasting one
+	@# curl command should not have to find a shell to leave again.
+	@#
+	@# Terminal=true so the list of what was left behind is readable, and no
+	@# pkexec here — the script elevates itself, so the command-line path gets
+	@# the same treatment.
+	printf '%s\n' \
+	  '[Desktop Entry]' \
+	  'Name=Uninstall Clicker' \
+	  'Comment=Remove Clicker. Settings and downloads are kept.' \
+	  'Exec=$(PREFIX)/lib/clicker/uninstall.sh' \
+	  'Icon=$(APP_ID)' \
+	  'Terminal=true' \
+	  'Type=Application' \
+	  'Categories=AudioVideo;Video;TV;' \
+	  'Keywords=clicker;remove;uninstall;' \
+	  > $(APPSDIR)/$(APP_ID).uninstall.desktop
 	-command -v update-desktop-database >/dev/null && update-desktop-database -q $(APPSDIR) 2>/dev/null
 	-command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -f -t $(DESTDIR)$(PREFIX)/share/icons/hicolor 2>/dev/null
 	@echo
 	@echo "Clicker $(VERSION) installed. It is in your menu, or run: clicker"
-	@echo "Remove it with:  sudo $(PREFIX)/lib/clicker/uninstall.sh"
+	@echo "Remove it with:  $(PREFIX)/lib/clicker/uninstall.sh"
+	@echo "                 or \"Uninstall Clicker\" in your applications menu"
 
 uninstall:
 	rm -rf $(LIBDIR)
 	rm -f $(BINDIR)/clicker
 	rm -f $(APPSDIR)/$(APP_ID).desktop
+	rm -f $(APPSDIR)/$(APP_ID).uninstall.desktop
 	rm -f $(ICONDIR)/$(APP_ID).png
 	rm -rf $(DOCDIR)
 	-command -v update-desktop-database >/dev/null && update-desktop-database -q $(APPSDIR) 2>/dev/null

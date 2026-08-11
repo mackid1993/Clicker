@@ -109,7 +109,9 @@ uninstall_everything() {
   for prefix in "$PREFIX" /usr/local /opt/clicker /usr; do
     if [[ -x "$prefix/lib/clicker/uninstall.sh" ]]; then
       say "Removing the source install under $prefix"
-      sudo "$prefix/lib/clicker/uninstall.sh"
+      # It asks for root itself, so no sudo here — under sudo it would find
+      # SUDO_USER and report the right home either way, but there is no need.
+      "$prefix/lib/clicker/uninstall.sh"
       found=yes
     fi
   done
@@ -254,4 +256,5 @@ install_from_source
 echo
 say "Done. Clicker is in your menu, or run: clicker"
 echo "    Built in $BUILD_DIR — delete it if you want the space back."
-echo "    Remove Clicker with: sudo $PREFIX/lib/clicker/uninstall.sh"
+echo "    Remove Clicker with: $PREFIX/lib/clicker/uninstall.sh"
+echo "    or \"Uninstall Clicker\" in your applications menu."
