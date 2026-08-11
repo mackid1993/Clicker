@@ -31,6 +31,15 @@ LAUNCH=yes
 
 "$ROOT/scripts/build-macos.sh" --no-notarize --install
 
+# One bundle on the machine, not two.
+#
+# macOS records a privacy decision — the local network one included — per
+# app *location*, so a copy left in target/ and the copy in /Applications
+# become two entries in System Settings, one of which is always the stale
+# one somebody is about to toggle by mistake. The staging copy has already
+# been zipped and installed by this point; keeping it buys nothing.
+rm -rf "$ROOT/target/macos/Clicker.app"
+
 if [[ "$LAUNCH" == "yes" ]]; then
   echo "==> launching"
   open /Applications/Clicker.app
