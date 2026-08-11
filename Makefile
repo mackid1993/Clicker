@@ -232,6 +232,11 @@ install: check-built
 	  > $(APPSDIR)/$(APP_ID).desktop
 	install -m644 LICENSE.md NOTICE.md $(DOCDIR)/
 	install -m644 licenses/* $(DOCDIR)/licenses/
+	@# The same licence the .deb carries, for the same reason: what is
+	@# installed is an MIT program beside LGPL libraries, and the file that
+	@# travels with it has to say so. One script, called from both places.
+	./scripts/copyright.sh > $(DOCDIR)/copyright
+	chmod 644 $(DOCDIR)/copyright
 	@# An uninstaller that outlives the source tree it came from.
 	@#
 	@# `make uninstall` needs this checkout, and setup.sh builds under a

@@ -163,12 +163,13 @@ Categories=AudioVideo;Video;TV;
 StartupWMClass=$APP_ID
 DESKTOP
 
-# Debian wants the licence at a fixed path, and the rest travel beside it as
-# they do in the installer and the .app.
-cp "$ROOT/LICENSE.md" "$PKGDIR/usr/share/doc/clicker/copyright"
-cp "$ROOT/NOTICE.md" "$PKGDIR/usr/share/doc/clicker/"
+# The licence, at the path Debian fixes, covering everything in the package
+# rather than only the part that was written here. scripts/copyright.sh says
+# why, and `make install` calls the same script so the two cannot drift.
 mkdir -p "$PKGDIR/usr/share/doc/clicker/licenses"
+cp "$ROOT/NOTICE.md" "$PKGDIR/usr/share/doc/clicker/"
 cp "$ROOT"/licenses/* "$PKGDIR/usr/share/doc/clicker/licenses/"
+"$ROOT/scripts/copyright.sh" > "$PKGDIR/usr/share/doc/clicker/copyright"
 
 # ------------------------------------------------------------- dependencies ---
 #
