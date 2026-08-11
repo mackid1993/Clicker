@@ -8,14 +8,17 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
 #
-# On Debian, Ubuntu, Mint and Pop it downloads the .deb for this machine's
-# architecture and installs it — a few seconds, nothing compiled. Anywhere
-# else it installs the build dependencies, compiles FFmpeg, mpv and Clicker
-# from source, and installs the result with its menu entry and icon. That path
-# takes twenty minutes to an hour, mostly FFmpeg.
+# On Debian, Ubuntu, Mint and Pop it offers two ways in and asks which you
+# want: the .deb for this machine's architecture, which takes seconds and
+# compiles nothing, or a build from source. Anywhere else — Fedora, Arch,
+# openSUSE, anything — source is the only way, so it goes straight there.
 #
-#   ... | bash -s -- --from-source    build from source even on Debian
-#   ... | bash -s -- --yes            do not ask before installing anything
+# The source path installs the build dependencies, compiles FFmpeg, mpv and
+# Clicker, and installs the result with its menu entry and icon. Twenty
+# minutes to an hour, mostly FFmpeg.
+#
+#   ... | bash -s -- --from-source    skip the question, build from source
+#   ... | bash -s -- --yes            skip every question, take the package
 #   ... | bash -s -- --prefix=/opt    install somewhere other than /usr/local
 #
 # It says what it is about to do and waits for you to agree, which a script
