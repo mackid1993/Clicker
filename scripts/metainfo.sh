@@ -85,6 +85,13 @@ cat <<METAINFO
     </p>
   </description>
   <launchable type="desktop-id">$APP_ID.desktop</launchable>
+  <!-- What binds this component to the installed package, and without which a
+       software centre has a component and a package and no idea they are the
+       same thing: it resolves the id, finds nothing installed under it, and
+       leaves the application out of its Installed list entirely. Distribution
+       metadata generators add this automatically; a metainfo file installed
+       straight from a package has to say it. -->
+  <pkgname>clicker</pkgname>
   <url type="homepage">https://github.com/mackid1993/Clicker</url>
   <url type="bugtracker">https://github.com/mackid1993/Clicker/issues</url>
   <categories>
