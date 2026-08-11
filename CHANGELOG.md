@@ -64,6 +64,14 @@ repeats the DVR had no intention of recording. A cell is marked when the pass
 will actually take that showing; cancelling a pass is still offered from any
 showing of the series.
 
+**Closed captions stay off until they are asked for.** Every channel and
+every recording opened with captions across the picture. `sub-create-cc-track`
+asks mpv to build a track out of the caption data riding inside the video,
+which is the only way the caption button has anything to turn on, and mpv
+then selected it: it chooses a subtitle track by itself and a broadcast
+offers nothing else to choose. The track is still built; nothing is selected
+until the button says so.
+
 **Text no longer smears on a virtualised GPU.** egui keeps every
 glyph in one texture and sizes it to whatever the driver says its maximum
 side is — virgl answers 16384, so the atlas came out 8192 pixels wide and a
