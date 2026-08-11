@@ -400,6 +400,18 @@ struct Shared {
     error: Mutex<Option<String>>,
     /// What share of one core the renderer costs, smoothed, for the stats card.
     render_load: Mutex<f32>,
+    /// How long `render` actually takes on the clock, smoothed.
+    ///
+    /// Processor time is the wrong measure for deciding whether the interface
+    /// is being starved. On a machine where OpenGL is translated somewhere
+    /// else — a virtual machine, a remote display — the call spends its time
+    /// waiting rather than working: the processor figure stays low, the
+    /// interface thread sits inside the call for tens of milliseconds, and
+    /// the window stops answering the mouse while every counter says the
+    /// renderer is healthy.
+    render_ms: Mutex<f32>,
+    /// Frames offered to the renderer, for the skipping below.
+    offered: AtomicU64,
     /// When the last frame was drawn, so the figure above is per second of
     /// real time rather than per second of drawing.
     last_render: Mutex<Option<Instant>>,
@@ -713,6 +725,8 @@ impl Player {
             dropped: AtomicU64::new(0),
             error: Mutex::new(None),
             render_load: Mutex::new(0.0),
+            render_ms: Mutex::new(0.0),
+            offered: AtomicU64::new(0),
             last_render: Mutex::new(None),
             size: AtomicU64::new(0),
             repaint: Box::new(repaint),
@@ -945,6 +959,36 @@ impl Player {
             return painted.then_some((texture, width, height));
         }
 
+        // Skip a frame rather than starve the interface.
+        //
+        // This runs inside egui's paint, on the thread that also answers the
+        // mouse, so however long `render` takes is time the window is not
+        // responding. On hardware that keeps up it is a millisecond or two and
+        // this never triggers. Where it does not — 60fps through a translated
+        // OpenGL, which is a virtual machine or a remote display — the call
+        // can cost most of a frame interval, and asking for every frame leaves
+        // nothing for anything else: the picture is smooth and the program is
+        // deaf.
+        //
+        // So the renderer gets a budget. Past it, every second frame is
+        // skipped; well past it, two in three. What that costs is frames of
+        // video, which is the right thing to spend: a video player that drops
+        // to thirty is worse than one at sixty, and a window that ignores the
+        // mouse is broken.
+        let offered = self.shared.offered.fetch_add(1, Ordering::Relaxed);
+        let smoothed_ms = *self.shared.render_ms.lock().unwrap();
+        let every = if smoothed_ms > 20.0 {
+            3
+        } else if smoothed_ms > 10.0 {
+            2
+        } else {
+            1
+        };
+        if every > 1 && offered % every != 0 {
+            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+            return painted.then_some((texture, width, height));
+        }
+
         // Hand mpv a clean slate for pixel uploads.
         //
         // mpv and egui share one OpenGL context, and egui's painter sets its
@@ -1058,6 +1102,35 @@ impl Player {
         // call last a frame interval. Now that it returns immediately, that
         // sum divides a millisecond of work by a millisecond of wall clock and
         // reports a third of a core for something costing eight percent.
+        // What the call cost on the clock, which is what the interface felt.
+        let spent_ms = wall_before.elapsed().as_secs_f32() * 1000.0;
+        {
+            let mut smoothed = self.shared.render_ms.lock().unwrap();
+            *smoothed = if *smoothed > 0.0 {
+                *smoothed * 0.85 + spent_ms * 0.15
+            } else {
+                spent_ms
+            };
+            // Said once a second at most, and only when it is bad enough to
+            // be the reason somebody is complaining that the window has gone
+            // stiff.
+            if *smoothed > 10.0 {
+                static SAID: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let now = wall_before.elapsed().as_secs();
+                let _ = now;
+                if self.shared.offered.load(Ordering::Relaxed) % 300 == 0
+                    && SAID.fetch_add(1, Ordering::Relaxed) < 20
+                {
+                    crate::log::line(&format!(
+                        "[mpv] render is costing {:.1}ms of wall clock; frames are \
+                         being skipped to keep the window responsive",
+                        *smoothed
+                    ));
+                }
+            }
+        }
+
         let cpu = thread_cpu_ms() - cpu_before;
         let mut last = self.shared.last_render.lock().unwrap();
         if let Some(previous) = last.replace(wall_before) {
