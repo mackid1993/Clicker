@@ -995,9 +995,20 @@ impl Player {
             }
             SCALE_LEVELS[level.0]
         };
+        // The height comes from the width by the rectangle's own ratio, so
+        // the framebuffer has exactly the aspect of the rectangle it will be
+        // stretched into. Rounding each axis up to 32 independently — which
+        // is what stood here — skewed the aspect by up to two percent, and by
+        // a different amount at every scale step: mpv letterboxed the
+        // mismatch inside the framebuffer, the blit stretched bars and all,
+        // and each step visibly squeezed the picture. Width alone is rounded,
+        // so a drag still does not reallocate per pixel; the height merely
+        // follows it.
         let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
         let width = round32((target.0 as f32 * scale) as i32).min(video_w);
-        let height = round32((target.1 as f32 * scale) as i32).min(video_h);
+        let height = (((width as i64 * target.1 as i64) / target.0.max(1) as i64) as i32
+            & !1)
+            .max(2);
         let mut surface = self.surface.lock().unwrap();
         let stale = surface
             .as_ref()
