@@ -478,15 +478,24 @@ fn in_flatpak() -> bool {
 }
 
 /// Whether video is paced against the display rather than against the audio
-/// clock, which is one decision with two consequences: it chooses `video-sync`
-/// below, and it decides whether mpv has to be told that a frame reached the
-/// screen. Getting those two out of step is a bug you can see and not name —
-/// see `threaded_present`.
+/// clock. Two things depend on the answer — `video-sync` below, and whether
+/// the interface tells mpv a frame reached the screen — and letting those two
+/// drift apart is a bug you can see and cannot name.
 ///
-/// Linux pays against the audio clock because the display timing there cannot
-/// be trusted: the session may be Wayland, X11, a virtual GPU or a remote
-/// desktop, and nothing says which. Windows and macOS each have one compositor
-/// with honest vsync.
+/// Windows and macOS pace against the display, where `display-resample` was
+/// measured fixing a real fault: a drop counter climbing beside a healthy
+/// decoder on 60fps content. Linux paces against the audio clock, because the
+/// display timing there cannot be trusted — the session may be Wayland, X11,
+/// a virtual GPU or a remote desktop, and nothing says which.
+///
+/// Tried and reverted, in this order, on a Mac: pacing on the audio clock
+/// there instead was worse; feeding display-sync `render_report_swap` from
+/// the render thread was worse still, and unstably so. Display-sync assumes
+/// that drawing a frame and putting it on screen are one loop it can time
+/// against, and a render thread makes them two — mpv drawing at its own pace,
+/// the interface swapping at the compositor's. That is the real reason the
+/// render thread is not the default where the display sets the pace, and it
+/// is written here rather than in a commit nobody will find.
 const PACES_ON_DISPLAY: bool = !cfg!(target_os = "linux");
 
 /// Where mpv is asked to draw its picture.
@@ -1097,11 +1106,11 @@ impl Player {
     ///
     /// An OpenGL context must be current on the calling thread.
     pub unsafe fn render_to_texture(&self, gl: &GlFns, target: (i32, i32)) -> Option<(u32, i32, i32)> {
+        // Only as a guard: a stream with no size yet has nothing to draw.
         let (video_w, video_h) = self.video_size();
         if video_w == 0 || video_h == 0 {
             return None;
         }
-        let video_w = video_w as i32;
 
         if !self.ensure_renderer(gl) {
             return None;
@@ -1141,9 +1150,16 @@ impl Player {
         // nothing. Which is subtle enough to live a long time: it does not
         // look like a fault, it looks like a slightly soft picture.
         //
-        // Clamped to the stream's own size, because rendering larger than the
-        // source only invents pixels more expensively than the blit would,
-        // and both are bilinear anyway.
+        // Not clamped to the stream's own size, and the argument that it
+        // should be — that rendering above the source only invents pixels the
+        // blit could invent more cheaply — is wrong in the case that matters.
+        // On a high-DPI display the rectangle is nearly twice the stream's
+        // width, so the cap meant mpv drew 1920 pixels and the blit stretched
+        // them to 3200. Those are not the same operation: mpv scales from the
+        // source planes, doing chroma reconstruction and scaling in one pass
+        // with the scaler it was configured with, while the blit is a bilinear
+        // stretch of a finished picture. The second is visibly softer, which
+        // is what "a bit blurry, is there a reason" turned out to be.
         //
         // The height follows the width by the rectangle's own ratio rather
         // than being rounded itself. Rounding each axis independently — which
@@ -1152,7 +1168,7 @@ impl Player {
         // mismatch inside the framebuffer, and the blit stretched the bars
         // along with the picture.
         let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-        let width = target.0.min(video_w).max(2);
+        let width = target.0.max(2);
         let height = (((width as i64 * target.1 as i64) / target.0.max(1) as i64) as i32
             & !1)
             .max(2);
@@ -1854,20 +1870,35 @@ impl Player {
     /// Spawns it on first ask, which needs the interface's context current —
     /// true at every call site, all of which sit inside a paint.
     fn threaded_active(&self) -> bool {
-        // On by default, on every platform. It was parked once, over white
-        // flashes that turned out to be the cross-context fence handoff — on
-        // the driver this thread was built for, fences are the broken
-        // primitive — and the handoff no longer uses one: the worker publishes
-        // only frames the GPU has finished, so a published frame is whole by
-        // construction and the interface waits on nothing.
+        // One code path, two defaults, and the difference is measured rather
+        // than assumed.
         //
-        // CLICKER_RENDER_THREAD=0 is the off switch, and it is a real one: the
-        // in-paint path is still here, still correct, and still what runs
-        // wherever a shared context cannot be had.
-        if std::env::var("CLICKER_RENDER_THREAD")
-            .map(|v| v == "0")
-            .unwrap_or(false)
-        {
+        // The thread exists because a driver can hold a render call for most
+        // of a frame while doing no work — a translated OpenGL, a remote
+        // display — and on the interface's own thread that is a window that
+        // stops answering and a picture shedding half its frames. Where that
+        // happens it is worth a great deal: on a virtualised GPU it turned
+        // 50fps with frames dropping continuously into a steady 60 with one
+        // lost a minute.
+        //
+        // Where it does not happen it costs something instead. Rendering and
+        // presenting become two loops, and display-sync — which Windows and
+        // macOS use, and which was measured fixing a real fault there — needs
+        // them to be one. On a Mac the offset it produced was visible in the
+        // stats card and would not sit still. So the thread is the default
+        // where video is paced by the audio clock, and opt-in elsewhere.
+        //
+        // The code is one path on every platform regardless, which is the
+        // point: a bug found here is fixed once, and either default can be
+        // tried on any machine in ten seconds.
+        let default_on = !PACES_ON_DISPLAY;
+        let asked = std::env::var("CLICKER_RENDER_THREAD");
+        let on = match asked.as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => default_on,
+        };
+        if !on {
             return false;
         }
         match self.threaded.get_or_init(|| worker::spawn(self)) {
@@ -1956,32 +1987,13 @@ impl Player {
             (gl.enable)(GL_SCISSOR_TEST);
         }
 
-        // Tell mpv the frame reached the screen, where that is a thing it is
-        // waiting to hear.
-        //
-        // This was left out when the worker was Linux-only, and the reasoning
-        // held exactly as far as Linux: display-resample is what consumes it,
-        // Linux paces against the audio clock, so nothing was listening. On
-        // the platforms that do pace against the display it is half of the
-        // arrangement, and leaving it out cost a steady one to two
-        // milliseconds of A/V offset — small enough to shrug at and, on a
-        // build where it had always read zero, exactly the kind of change
-        // worth chasing down rather than explaining away.
-        //
-        // The other half of the original reasoning still stands and is why
-        // this is not simply called everywhere: it takes mpv's internal render
-        // lock, which the worker holds while rendering, so the interface can
-        // wait on the worker here. That was a freeze when the worker slept
-        // inside that lock waiting for a frame's display time; it no longer
-        // does, and what remains is the length of one render — but it is a
-        // cost with no benefit on a platform that ignores the result, so it
-        // is not paid there.
-        if PACES_ON_DISPLAY {
-            let render_ctx = *link.render_ctx.lock().unwrap();
-            if !render_ctx.0.is_null() {
-                (self.api.render_report_swap)(render_ctx.0);
-            }
-        }
+        // No report_swap here. It exists to feed display-sync's estimate of
+        // the refresh, and this path is only the default where video is paced
+        // against the audio clock instead — see PACES_ON_DISPLAY, which
+        // records what happened when that was not true. It also takes mpv's
+        // internal render lock, which the worker holds while rendering, so
+        // the interface would be waiting on the worker to hand over a number
+        // nothing reads.
         self.note_present((sw, sh));
         Some(true)
     }
@@ -2462,7 +2474,7 @@ mod worker {
                 // under it is rounded up so a window drag does not reallocate
                 // on every pixel. See `render_to_texture`.
                 let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-                let width = want.0.min(vw).max(2);
+                let width = want.0.max(2);
                 let height = ((((width as i64 * want.1 as i64) / want.0.max(1) as i64) as i32) & !1).max(2);
                 let alloc = (round32(width), round32(height));
 
