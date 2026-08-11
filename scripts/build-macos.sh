@@ -131,6 +131,33 @@ if [[ -f "$STAGE/libmpv.2.dylib" ]]; then
   echo "==> bundling libmpv and FFmpeg"
   cp -a "$STAGE"/*.dylib "$APP/Contents/Frameworks/"
 
+  # Everything they depend on that is not the system's, brought in with them.
+  #
+  # libmpv links libass and libplacebo, those link FreeType, HarfBuzz,
+  # FriBidi and Fontconfig, and every one of those references the path it was
+  # built at. A bundle that carries only the first layer works perfectly on
+  # the machine that built it and on no other. So: walk the graph, copy
+  # anything living under a package manager's prefix, and repeat until
+  # nothing new appears.
+  pending=1
+  while [[ $pending -eq 1 ]]; do
+    pending=0
+    for lib in "$APP/Contents/Frameworks/"*.dylib; do
+      [[ -e "$lib" ]] || continue
+      while read -r ref; do
+        case "$ref" in
+          /opt/homebrew/*|/usr/local/*)
+            refbase="$(basename "$ref")"
+            if [[ ! -f "$APP/Contents/Frameworks/$refbase" ]]; then
+              cp -L "$ref" "$APP/Contents/Frameworks/$refbase" 2>/dev/null && pending=1
+              chmod u+w "$APP/Contents/Frameworks/$refbase" 2>/dev/null || true
+            fi
+            ;;
+        esac
+      done < <(otool -L "$lib" | awk 'NR>1 {print $1}')
+    done
+  done
+
   for lib in "$APP/Contents/Frameworks/"*.dylib; do
     base="$(basename "$lib")"
     install_name_tool -id "@rpath/$base" "$lib" 2>/dev/null || true

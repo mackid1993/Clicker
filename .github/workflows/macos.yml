@@ -80,8 +80,13 @@ jobs:
       - name: Add the Intel target
         run: rustup target add x86_64-apple-darwin
 
+      # libass and libplacebo come from Homebrew rather than from source: both
+      # are permissive or LGPL (ISC and LGPL-2.1), so bundling them raises
+      # nothing, and building them here would drag in FreeType, HarfBuzz,
+      # FriBidi and Fontconfig as well. FFmpeg is the one that has to be ours,
+      # because Homebrew's is --enable-gpl.
       - name: Build dependencies
-        run: brew install meson ninja nasm pkg-config
+        run: brew install meson ninja nasm pkg-config libass libplacebo
 
       # The staged libmpv, cached whole, keyed on the script where the tags
       # and the licensing flags live — the same arrangement the Windows job

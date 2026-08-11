@@ -92,7 +92,11 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
             libgl1-mesa-dev pkg-config meson ninja-build nasm \
             libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev \
-            libunibreak-dev python3-setuptools
+            libunibreak-dev python3-setuptools python3-pip autoconf automake libtool
+          # 22.04 ships meson 0.61 and libplacebo wants 0.63 or newer. From
+          # pip rather than a newer distribution, because the point of
+          # building on 22.04 is its old glibc.
+          sudo pip3 install --upgrade meson
 
       # The staged libmpv, cached whole, keyed on the script where the tags
       # and the licensing flags live — the same arrangement the Windows job
