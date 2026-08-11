@@ -335,9 +335,20 @@ pub fn permission_denied(message: &str) -> bool {
 /// The one place someone can actually fix this, and three levels down a
 /// settings application otherwise.
 pub fn open_local_network_settings() {
-    let _ = std::process::Command::new("open")
-        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
-        .spawn();
+    // The modern identifier first, the old one behind it. System Settings was
+    // rewritten in Ventura and the pane identifiers changed with it; the
+    // pre-Ventura URL still "opens" on a current system — `open` reports
+    // success — it simply lands somewhere else, which is worse than not
+    // trying, because the person is then looking at the wrong panel being
+    // told the setting is there.
+    for target in [
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork",
+    ] {
+        if std::process::Command::new("open").arg(target).status().is_ok() {
+            return;
+        }
+    }
 }
 
 /// Appended to a failed connection attempt.
