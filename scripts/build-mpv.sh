@@ -198,20 +198,55 @@ rm -f "$STAGE"/*.a "$STAGE"/*.la 2>/dev/null || true
 
 # ----------------------------------------------------------------- licence ---
 #
-# Asked of the binary rather than assumed from the flags above, which is what
-# makes this a check rather than a comment. build.ps1 does the same before it
-# packages anything on Windows.
+# Read out of what was built, not assumed from the flags above.
+#
+# This used to grep the libraries for a licence string and print "<nothing
+# found>" — which passed, having checked nothing at all. The build's own
+# config headers are the authority: FFmpeg writes CONFIG_GPL and mpv writes
+# HAVE_GPL, both as literal 0 or 1, and neither can disagree with the binary
+# beside it because both were generated while producing it.
 echo "==> licence"
-LICENSE_STRING=$(strings "$STAGE"/libmpv.* 2>/dev/null | grep -m1 -E "GPL version|LGPL version" || true)
-echo "    libmpv says: ${LICENSE_STRING:-<nothing found>}"
-if echo "$LICENSE_STRING" | grep -q "^GPL"; then
-  echo "libmpv was built GPL; refusing to stage it" >&2
+
+FFMPEG_CONFIG="$FFMPEG_SRC/ffbuild/config.h"
+if [[ -f "$FFMPEG_CONFIG" ]]; then
+  if grep -qE '^#define CONFIG_GPL 1' "$FFMPEG_CONFIG"; then
+    echo "FFmpeg was configured with GPL components; refusing to stage it" >&2
+    exit 1
+  fi
+  if grep -qE '^#define CONFIG_NONFREE 1' "$FFMPEG_CONFIG"; then
+    echo "FFmpeg was configured nonfree; refusing to stage it" >&2
+    exit 1
+  fi
+  echo "    FFmpeg: CONFIG_GPL 0, CONFIG_NONFREE 0"
+else
+  echo "cannot find FFmpeg's config.h; refusing to stage an unverified build" >&2
   exit 1
 fi
-if strings "$DEPS/lib/"libavcodec.* 2>/dev/null | grep -q -- "--enable-gpl"; then
-  echo "FFmpeg was configured --enable-gpl; refusing to stage it" >&2
+
+MPV_CONFIG="$MPV_SRC/build/config.h"
+if [[ -f "$MPV_CONFIG" ]]; then
+  if grep -qE '^#define HAVE_GPL 1' "$MPV_CONFIG"; then
+    echo "mpv was built GPL; refusing to stage it" >&2
+    exit 1
+  fi
+  echo "    mpv: HAVE_GPL 0"
+else
+  echo "cannot find mpv's config.h; refusing to stage an unverified build" >&2
   exit 1
 fi
+
+# And nothing GPL linked in behind them. librubberband is the one that turns
+# up by accident, because a package manager's mpv links it as a matter of
+# course and it is GPL.
+for lib in "$STAGE"/*; do
+  [[ -f "$lib" ]] || continue
+  case "$(basename "$lib")" in
+    *rubberband*|*x264*|*x265*|*xvid*)
+      echo "a GPL library reached the staging directory: $(basename "$lib")" >&2
+      exit 1
+      ;;
+  esac
+done
 
 ls -1 "$STAGE"
 echo
