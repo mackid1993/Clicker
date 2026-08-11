@@ -6,33 +6,55 @@ accounting the rest deserves.
 
 ## mpv — LGPL-2.1-or-later
 
-Clicker plays all video through mpv, distributed here as `libmpv-2.dll`: one
-unmodified library beside the executable, with no plugin or script directories
-and nothing loaded from outside the installation folder. Clicker opens it by
-name at runtime and drives it through the public `libmpv` client and render
-APIs, so it may be replaced with any compatible build.
+Clicker plays all video through mpv: one unmodified library, with no plugin or
+script directories and nothing loaded from outside the installation. Clicker
+opens it by name at runtime and drives it through the public `libmpv` client
+and render APIs, so it may be replaced with any compatible build.
+
+Where it lives, per platform:
+
+| Platform | The library | Where it sits |
+|---|---|---|
+| Windows | `libmpv-2.dll` | beside the executable |
+| macOS | `libmpv.2.dylib` | `Clicker.app/Contents/Frameworks` |
+| Linux | `libmpv.so.2` | `usr/lib` inside the AppImage |
 
 * Source: <https://github.com/mpv-player/mpv>, tag `v0.41.0`
-* Configuration: built by `scripts/build-mpv.ps1` in the Clicker source tree,
-  with `-Dgpl=false -Dlibmpv=true`. mpv is GPL-2.0-or-later by default and only
-  LGPL when built this way; `build.ps1` reads the license string out of the
-  finished DLL and refuses to package a GPL one.
+* Configuration: built from that tag by `scripts/build-mpv.ps1` (Windows) or
+  `scripts/build-mpv.sh` (macOS and Linux) in the Clicker source tree, with
+  `-Dgpl=false -Dlibmpv=true`. mpv is GPL-2.0-or-later by default and only
+  LGPL when built this way. Both scripts read the license string back out of
+  the finished library and refuse to stage a GPL one, and `build.ps1` checks
+  again before packaging.
+* Nothing is taken from a package manager on any platform. Homebrew's FFmpeg
+  is built `--enable-gpl` and its mpv links librubberband; a distribution's
+  FFmpeg is frequently GPL too. Using either would put a GPL-combined work
+  inside an MIT application, so Clicker loads only the library its own build
+  produced — see `mpv_candidates` in `src/platform`.
 * License text: `LGPL-2.1.txt`, distributed alongside this file.
 
-The other libraries beside the executable are what mpv was linked against:
+The other libraries shipped alongside are what mpv was linked against:
 libass, libplacebo, FreeType, HarfBuzz, FriBidi, Fontconfig, GLib, libpng,
 libjpeg, lcms2, Graphite, Brotli, expat, libiconv, gettext, libunibreak,
-libdovi, zlib, bzip2, shaderc, SPIRV-Cross, and the GCC and winpthreads
-runtimes. They are permissively or weakly licensed (MIT, ISC, BSD, zlib,
+libdovi, zlib, bzip2, shaderc, SPIRV-Cross, and each platform's own compiler
+runtime. They are permissively or weakly licensed (MIT, ISC, BSD, zlib,
 LGPL-2.1, MPL-2.0, and the FreeType license), each carries its own terms in its
-own source tree, and every one of them is a separate, replaceable file here for
-the same reason FFmpeg is.
+own source tree, and every one of them is a separate, replaceable file for the
+same reason FFmpeg is. On macOS they sit in `Contents/Frameworks`; on Linux in
+`usr/lib` inside the AppImage; on Windows beside the executable. Which of them
+are present varies by platform, because each build links what that platform
+needs and nothing else.
+
+Not shipped anywhere: anything GPL. That is a build-time decision — `-Dgpl=false`
+for mpv, `--disable-gpl --disable-nonfree --disable-autodetect` for FFmpeg — and
+a packaging-time check, not a promise.
 
 ## FFmpeg — LGPL-2.1-or-later
 
-FFmpeg does the decoding underneath mpv. It is distributed here as separate,
-unmodified DLLs (`avcodec`, `avformat`, `avfilter`, `avutil`, `swscale`,
-`swresample`) which may be replaced with any compatible build; nothing about
+FFmpeg does the decoding underneath mpv. It is distributed as separate,
+unmodified libraries (`avcodec`, `avformat`, `avfilter`, `avutil`, `swscale`,
+`swresample`) — DLLs on Windows, dylibs on macOS, shared objects on Linux —
+which may be replaced with any compatible build; nothing about
 Clicker prevents or penalizes that, and section 6 of the LGPL is what
 guarantees it. Clicker does not link against FFmpeg itself; it reaches it only
 through mpv.

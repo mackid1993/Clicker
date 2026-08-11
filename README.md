@@ -169,11 +169,20 @@ The window is a real Mac window — traffic lights, rounded corners, system
 resizing — around the same interface. Settings live in
 `~/Library/Application Support/Clicker`.
 
-**Linux** — a Flatpak, built by the manual `Flatpak` workflow in CI from
-`packaging/flatpak/`. It compiles mpv from the same pinned tag with the same
-LGPL-only flags as the Windows installer and leans on the freedesktop
-runtime's `ffmpeg-full` extension for codecs. Install the produced bundle
-with `flatpak install --user Clicker.flatpak`.
+**Linux** — an AppImage, built by the manual `Build Linux` workflow for
+x86_64 and aarch64. One file: make it executable and run it. mpv and FFmpeg
+are compiled from the same pinned tags with the same LGPL-only flags as the
+Windows installer and bundled inside it, so nothing has to be installed
+first.
+
+Graphics deliberately come from the machine — Mesa, Wayland or X11, and the
+cursor theme — which is why this is an AppImage rather than the Flatpak it
+started as. A Flatpak brings its own graphics stack, and when that fails to
+match the host's it falls back to software rendering silently: measured on
+one machine from one commit, the plain binary was perfect and the sandboxed
+build tore constantly and lost the mouse pointer. The manifest is still in
+`packaging/flatpak/` and Flathub is still worth doing, on hardware somebody
+can test properly.
 
 ## Playback
 
@@ -246,17 +255,21 @@ Clicker uses [mpv](https://mpv.io/) and [FFmpeg](https://ffmpeg.org/), both
 licensed under the **GNU Lesser General Public License version 2.1 or later**.
 Neither is covered by the terms above and neither is owned by this project.
 
-Both are built from source rather than downloaded, because the license has to be
-provable. mpv is GPL-2.0-or-later unless it is configured otherwise, and every
-prebuilt libVLC and libmpv binary for Windows embeds an FFmpeg configured with
-`--enable-gpl`; shipping one of those would place the entire distribution
-under the GPL rather than the licenses written on it. These are built
-`-Dgpl=false` and
-`--disable-gpl --disable-nonfree`, the build script refuses to proceed if the
-configuration says otherwise, and `build.ps1` re-reads both shipped libraries
-before packaging them.
+Both are built from source rather than downloaded, on every platform, because
+the license has to be provable. mpv is GPL-2.0-or-later unless it is
+configured otherwise; every prebuilt libmpv for Windows embeds an FFmpeg
+configured with `--enable-gpl`; Homebrew's FFmpeg is `--enable-gpl` and its
+mpv links librubberband; a distribution's FFmpeg is frequently GPL as well.
+Shipping any of those would place the entire distribution under the GPL
+rather than the licenses written on it — so Clicker builds its own with
+`-Dgpl=false` and `--disable-gpl --disable-nonfree`, and loads no other:
+`scripts/build-mpv.ps1` for Windows, `scripts/build-mpv.sh` for macOS and
+Linux, each reading the license string back out of the finished library and
+refusing to stage a GPL one.
 
-They ship as **separate, unmodified DLLs loaded at runtime**, never folded into
+They ship as **separate, unmodified libraries loaded at runtime** — DLLs
+beside the executable on Windows, dylibs in `Contents/Frameworks` on macOS,
+shared objects in `usr/lib` inside the AppImage on Linux — never folded into
 the executable and never renamed. That is what lets anyone receiving a copy
 substitute their own build of them, as LGPL-2.1 section 6 requires. The MIT
 License already permits private modification and reverse engineering outright,
