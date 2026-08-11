@@ -30,11 +30,12 @@
 //!
 //! Drawing is paced by mpv, through `on_frame_ready`, rather than by a timer.
 //!
-//! The library is loaded by name at runtime rather than linked. mpv cannot be
-//! built with MSVC, so the DLL comes from mingw and ships with a mingw import
-//! library that an MSVC target cannot use. Loading it by name sidesteps that
-//! entirely, and means a missing DLL is a message rather than a program that
-//! will not start.
+//! The library is loaded by name at runtime rather than linked — through
+//! `platform`, which knows what it is called and how to open it on each
+//! system. The habit started on Windows out of necessity: mpv cannot be built
+//! with MSVC, so the DLL comes from mingw with an import library an MSVC
+//! target cannot use. It turned out to be the porting seam too, and it means
+//! a missing library is a message rather than a program that will not start.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -107,74 +108,11 @@ struct LogMessage {
     log_level: c_int,
 }
 
-#[link(name = "opengl32")]
-extern "system" {
-    fn wglGetProcAddress(name: *const u8) -> *mut c_void;
-}
-
-/// How mpv finds the OpenGL functions of the context eframe created.
-///
-/// `wglGetProcAddress` answers only for OpenGL 1.2 and later; everything from
-/// 1.1 lives in `opengl32.dll` itself and has to be looked up there. mpv asks
-/// for both kinds, so a loader that consults only one of them fails at
-/// context creation with nothing useful to say about why.
-unsafe extern "C" fn gl_proc_address(_ctx: *mut c_void, name: *const c_char) -> *mut c_void {
-    let found = wglGetProcAddress(name as *const u8);
-    // These four are what WGL returns for "no such function", rather than null.
-    let bad = [0usize, 1, 2, 3, usize::MAX];
-    if !bad.contains(&(found as usize)) {
-        return found;
-    }
-    static OPENGL32: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let module = *OPENGL32.get_or_init(|| {
-        let name = wide("opengl32.dll");
-        LoadLibraryW(name.as_ptr()) as usize
-    }) as *mut c_void;
-    if module.is_null() {
-        return std::ptr::null_mut();
-    }
-    GetProcAddress(module, name as *const u8)
-}
-
-#[link(name = "kernel32")]
-extern "system" {
-    fn LoadLibraryW(name: *const u16) -> *mut c_void;
-    fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
-    fn GetCurrentThread() -> *mut c_void;
-    fn GetThreadTimes(
-        thread: *mut c_void,
-        creation: *mut u64,
-        exit: *mut u64,
-        kernel: *mut u64,
-        user: *mut u64,
-    ) -> c_int;
-}
-
-/// Processor time this thread has used, in milliseconds.
-///
-/// Wall time is useless here and was actively misleading. `mpv_render_context_render`
-/// returns when the frame is *due*, not when the work is done, so timing it
-/// with a clock measures the video's frame interval: it read 16.6ms on 60fps
-/// content whatever the machine or the picture size, which looks exactly like
-/// a player that is only just keeping up. Measured properly the same frames
-/// cost 13.6ms of processor at 1080p and 7.8ms at a third of the size.
-fn thread_cpu_ms() -> f64 {
-    let (mut created, mut exited, mut kernel, mut user) = (0u64, 0u64, 0u64, 0u64);
-    let ok = unsafe {
-        GetThreadTimes(
-            GetCurrentThread(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
-        )
-    };
-    if ok == 0 {
-        return 0.0;
-    }
-    // Both are in 100-nanosecond units.
-    (kernel + user) as f64 / 10_000.0
-}
+// How mpv finds the OpenGL functions of the context eframe created, how this
+// program finds mpv itself, and how a thread's processor time is read all
+// live in `platform`: they are the three places this file used to speak
+// Win32, and the three places a port has anything to say.
+use crate::platform::{gl_proc_address, thread_cpu_ms};
 
 macro_rules! api {
     ($($field:ident: $name:literal => fn($($arg:ty),*) $(-> $ret:ty)?;)*) => {
@@ -182,7 +120,8 @@ macro_rules! api {
         impl Api {
             unsafe fn load(module: *mut c_void) -> Result<Self, String> {
                 $(
-                    let $field = GetProcAddress(module, concat!($name, "\0").as_ptr());
+                    let $field =
+                        crate::platform::library_symbol(module, concat!($name, "\0").as_ptr());
                     if $field.is_null() {
                         return Err(format!("{} is missing from libmpv", $name));
                     }
@@ -378,34 +317,21 @@ struct Ptr(*mut c_void);
 unsafe impl Send for Ptr {}
 unsafe impl Sync for Ptr {}
 
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-/// Load the library once, from beside the executable or the build tree.
+/// Load the library once, from wherever the platform says it might be.
 fn library() -> Result<&'static Api, String> {
     static LOADED: std::sync::OnceLock<Result<Api, String>> = std::sync::OnceLock::new();
     LOADED
         .get_or_init(|| {
-            let beside = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("libmpv-2.dll")))
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            for candidate in [
-                beside.as_str(),
-                "libmpv-2.dll",
-                "third_party/mpv/libmpv-2.dll",
-            ] {
-                if candidate.is_empty() {
-                    continue;
-                }
-                let module = unsafe { LoadLibraryW(wide(candidate).as_ptr()) };
+            for candidate in crate::platform::mpv_candidates() {
+                let module = crate::platform::open_library(&candidate);
                 if !module.is_null() {
                     return unsafe { Api::load(module) };
                 }
             }
-            Err("libmpv-2.dll was not found beside the application".into())
+            Err(format!(
+                "{} was not found beside the application",
+                crate::platform::MPV_LIBRARY
+            ))
         })
         .as_ref()
         .map_err(|e| e.clone())

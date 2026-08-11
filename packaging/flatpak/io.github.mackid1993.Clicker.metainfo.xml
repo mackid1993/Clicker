@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<component type="desktop-application">
+  <id>io.github.mackid1993.Clicker</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Clicker</name>
+  <summary>An unofficial client for Channels DVR</summary>
+  <description>
+    <p>
+      Live TV, recordings, a guide, a library and offline downloads for a
+      Channels DVR server, in one native window. Not affiliated with
+      Fancy Bits, LLC.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.mackid1993.Clicker.desktop</launchable>
+  <url type="homepage">https://github.com/mackid1993/Clicker</url>
+  <categories>
+    <category>Video</category>
+    <category>TV</category>
+  </categories>
+</component>

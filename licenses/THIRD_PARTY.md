@@ -62,7 +62,18 @@ the full inventory.
 
 ## Segoe UI Variable and Segoe Fluent Icons
 
-Microsoft fonts, read from the operating system at runtime. Not redistributed.
+Microsoft fonts, read from the operating system at runtime on Windows. Not
+redistributed.
+
+## Fluent UI System Icons
+
+Microsoft's MIT-licensed icon set, used on the platforms that do not ship
+Segoe. `assets/FluentIcons-Clicker.ttf` is a subset of
+`FluentSystemIcons-Regular.ttf` cut down to the glyphs the interface draws,
+and is compiled into the macOS and Linux binaries only.
+
+* Source: <https://github.com/microsoft/fluentui-system-icons>
+* License text: `FluentSystemIcons-MIT.txt`, distributed alongside this file.
 
 ## Channels DVR
 

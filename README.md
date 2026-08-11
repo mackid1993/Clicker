@@ -151,6 +151,30 @@ Once `third_party\mpv` exists, `cargo build` on its own needs nothing but a
 Rust toolchain: libmpv is loaded by name at runtime rather than linked, so
 there is no native compilation step and no headers to find.
 
+### macOS and Linux
+
+The same codebase and the same interface run on macOS and Linux, over a
+small `src/platform` module that holds the handful of things the systems do
+differently. Windows remains the flagship; the ports are younger and less
+travelled.
+
+**macOS** — Apple silicon only. Build the app bundle locally:
+
+```sh
+brew install mpv          # libmpv, loaded at runtime as on every platform
+./scripts/build-macos.sh  # target/macos/Clicker.app, ad-hoc signed
+```
+
+The window is a real Mac window — traffic lights, rounded corners, system
+resizing — around the same interface. Settings live in
+`~/Library/Application Support/Clicker`.
+
+**Linux** — a Flatpak, built by the manual `Flatpak` workflow in CI from
+`packaging/flatpak/`. It compiles mpv from the same pinned tag with the same
+LGPL-only flags as the Windows installer and leans on the freedesktop
+runtime's `ffmpeg-full` extension for codecs. Install the produced bundle
+with `flatpak install --user Clicker.flatpak`.
+
 ## Playback
 
 mpv plays. All of it: demuxing, decoding, audio output, timing, subtitles.

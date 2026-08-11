@@ -248,7 +248,7 @@ fn row(
         ui.painter().text(
             thumb.center(),
             egui::Align2::CENTER_CENTER,
-            "\u{E768}", // Play
+            theme::icon::PLAY,
             egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
             Fluent::TEXT_PRIMARY,
         );
@@ -374,7 +374,7 @@ fn row(
         ui.painter().text(
             toggle.center(),
             egui::Align2::CENTER_CENTER,
-            if stoppable { "\u{E769}" } else { "\u{E768}" }, // Pause / Play
+            if stoppable { theme::icon::PAUSE } else { theme::icon::PLAY },
             egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
             Fluent::TEXT_SECONDARY,
         );
@@ -417,9 +417,9 @@ fn row(
         button.center(),
         egui::Align2::CENTER_CENTER,
         if status.is_finished() {
-            "\u{E74D}" // Delete
+            theme::icon::DELETE
         } else {
-            "\u{E711}" // Cancel
+            theme::icon::CANCEL
         },
         egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
         if response.hovered() {

@@ -511,7 +511,7 @@ fn episode_row(
                 ui.painter().text(
                     corner.center(),
                     egui::Align2::CENTER_CENTER,
-                    "\u{E73E}", // CheckMark
+                    theme::icon::CHECK,
                     egui::FontId::new(14.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
                     Fluent::SUCCESS,
                 );
@@ -532,7 +532,8 @@ fn episode_row(
                 ui.painter().text(
                     corner.center(),
                     egui::Align2::CENTER_CENTER,
-                    "\u{E712}", // More — waiting for a slot
+                    // More — waiting for a slot.
+                    theme::icon::MORE,
                     egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
                     Fluent::TEXT_TERTIARY,
                 );
@@ -595,7 +596,7 @@ fn episode_row(
                 ui.painter().text(
                     corner.center(),
                     egui::Align2::CENTER_CENTER,
-                    "\u{E896}", // Download
+                    theme::icon::DOWNLOAD,
                     egui::FontId::new(14.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
                     Fluent::TEXT_SECONDARY,
                 );
@@ -1032,7 +1033,7 @@ fn upcoming_row(
         ui.painter().text(
             cancel.center(),
             egui::Align2::CENTER_CENTER,
-            "\u{E711}", // Cancel
+            theme::icon::CANCEL,
             egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
             if cancel_response.hovered() { Fluent::LIVE } else { Fluent::TEXT_SECONDARY },
         );

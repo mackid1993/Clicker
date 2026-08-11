@@ -115,24 +115,7 @@ impl Tray {
 
 /// Bring the window back and put it in front.
 fn restore(hwnd: isize) {
-    #[cfg(windows)]
-    unsafe {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
-        };
-
-        let hwnd = HWND(hwnd as *mut _);
-        // Both, in this order: SW_SHOW undoes the hide, SW_RESTORE undoes a
-        // minimise. Whichever way it left the screen, it comes back.
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = ShowWindow(hwnd, SW_RESTORE);
-        let _ = SetForegroundWindow(hwnd);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = hwnd;
-    }
+    crate::platform::restore_window(hwnd);
 }
 
 /// Exit, from a thread that is not the one running the event loop.

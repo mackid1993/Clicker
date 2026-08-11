@@ -106,12 +106,12 @@ impl Screen {
     /// than as a web app that happens to run on it.
     pub fn glyph(self) -> &'static str {
         match self {
-            Screen::Home => "\u{E80F}",       // Home
-            Screen::Guide => "\u{E8BC}",      // GridView
-            Screen::Library => "\u{E8F1}",    // Library
-            Screen::Recordings => "\u{E7C8}", // Record
-            Screen::Downloads => "\u{E896}",  // Download
-            Screen::Settings => "\u{E713}",   // Settings
+            Screen::Home => theme::icon::HOME,
+            Screen::Guide => theme::icon::GRID,
+            Screen::Library => theme::icon::LIBRARY,
+            Screen::Recordings => theme::icon::RECORD,
+            Screen::Downloads => theme::icon::DOWNLOAD,
+            Screen::Settings => theme::icon::SETTINGS,
         }
     }
 }
@@ -698,7 +698,7 @@ fn card(ui: &mut egui::Ui, item: &Recording, images: &mut Images) -> Option<Acti
         ui.painter().text(
             art_rect.center(),
             egui::Align2::CENTER_CENTER,
-            "\u{E7F4}", // Video
+            theme::icon::VIDEO,
             egui::FontId::new(22.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
             with_alpha(Fluent::TEXT_PRIMARY, 40),
         );

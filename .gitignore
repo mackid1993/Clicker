@@ -15,3 +15,4 @@
 # mpv needs FFmpeg built by gcc, and the tree above is patched for MSVC, so
 # the two cannot share one checkout.
 /third_party/ffmpeg-mingw-src
+packaging/flatpak/generated-sources.json

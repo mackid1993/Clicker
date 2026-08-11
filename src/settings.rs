@@ -204,7 +204,7 @@ impl Window {
         if !(self.x.is_finite() && self.y.is_finite()) {
             return false;
         }
-        let Some((left, top, right, bottom)) = desktop_bounds() else {
+        let Some((left, top, right, bottom)) = crate::platform::desktop_bounds() else {
             // No idea what the desktop looks like; assume it is fine rather
             // than throwing away a good position.
             return true;
@@ -223,28 +223,6 @@ impl Window {
             && self.y >= top
             && self.y + GRAB < bottom
     }
-}
-
-/// The bounding box of every monitor together, in logical pixels.
-#[cfg(windows)]
-fn desktop_bounds() -> Option<(f32, f32, f32, f32)> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-        SM_YVIRTUALSCREEN,
-    };
-    unsafe {
-        let (x, y) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
-        let (w, h) = (GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
-        if w <= 0 || h <= 0 {
-            return None;
-        }
-        Some((x as f32, y as f32, (x + w) as f32, (y + h) as f32))
-    }
-}
-
-#[cfg(not(windows))]
-fn desktop_bounds() -> Option<(f32, f32, f32, f32)> {
-    None
 }
 
 fn default_live_buffer() -> u32 {
@@ -456,10 +434,7 @@ fn config_path() -> Option<PathBuf> {
 /// A DVR shows connected clients by name, and "DESKTOP-4F2K1A" is at least
 /// recognizable, where a blank or a generic default is not.
 pub fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| crate::APP_NAME.to_string())
+    crate::platform::machine_name().unwrap_or_else(|| crate::APP_NAME.to_string())
 }
 
 /// What a server said when asked to identify itself.

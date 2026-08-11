@@ -15,7 +15,6 @@
 mod api;
 mod backdrop;
 mod downloads;
-mod fluent;
 mod guide;
 mod images;
 mod keys;
@@ -23,6 +22,7 @@ mod library;
 mod log;
 mod mpv;
 mod paths;
+mod platform;
 mod settings;
 mod stream;
 mod theme;
@@ -257,19 +257,22 @@ fn main() -> eframe::Result<()> {
     // without GPL components, so it is worth being able to check.
     log::logline!("[clicker] {}", mpv::Player::backend());
 
-    let mut viewport = egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 760.0])
         .with_min_inner_size([420.0, 280.0])
         .with_title(APP_NAME)
-        // Opaque, and the system caption goes so the app can draw its own.
+        // Opaque, whatever the platform does about the frame.
         //
         // The window used to be transparent, because Mica is drawn by the
         // desktop compositor *behind* the window and only shows through one
         // that lets it. That is what made this Windows 11 only. The material
         // is painted here now (see `backdrop`), which needs a surface to paint
         // on rather than a hole to look through.
-        .with_transparent(false)
-        .with_decorations(false);
+        .with_transparent(false);
+    // Whether the frame is the system's or ours is the platform's call: no
+    // caption and self-drawn everything on Windows and Linux, native traffic
+    // lights floating over the same surface on macOS.
+    let mut viewport = platform::shape_window(viewport);
     if let Some(icon) = app_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -603,8 +606,8 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        if let Some(handle) = window_handle(cc) {
-            fluent::apply_chrome(handle, true);
+        if let Some(handle) = platform::window_handle(cc) {
+            platform::apply_chrome(handle, true);
         }
 
         // Maximize by command rather than by `ViewportBuilder::with_maximized`.
@@ -717,7 +720,7 @@ impl App {
             open_generation: 0,
             timeshift: None,
             tray: None,
-            hwnd: window_handle(cc),
+            hwnd: platform::window_handle(cc),
             online: true,
             probing_server: false,
             next_health_check: Instant::now() + Duration::from_secs(30),
@@ -2987,7 +2990,7 @@ impl App {
             ui.painter().text(
                 egui::pos2(card.max.x - SPACE_M, card.center().y),
                 egui::Align2::RIGHT_CENTER,
-                "\u{E72A}", // Forward
+                theme::icon::FORWARD,
                 egui::FontId::new(12.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
                 Fluent::TEXT_SECONDARY,
             );
@@ -3752,6 +3755,12 @@ fn resize_borders(ui: &mut egui::Ui, ctx: &egui::Context, full: egui::Rect, full
     use egui::viewport::ResizeDirection as Dir;
     use egui::CursorIcon as Cursor;
 
+    // A native frame resizes itself; a second set of grab zones inside the
+    // window would only fight the system's own.
+    if platform::NATIVE_FRAME {
+        return;
+    }
+
     // A maximized or full-screen window has no edges to drag, and offering
     // them would resize it out of its own maximized state on a stray click.
     if fullscreen || ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
@@ -3802,9 +3811,12 @@ fn resize_borders(ui: &mut egui::Ui, ctx: &egui::Context, full: egui::Rect, full
 /// what lets the material run edge to edge instead of stopping below a system
 /// title bar.
 fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: bool) {
+    // Past the traffic lights, where a platform has put some. On the others
+    // the inset is zero and this is the same left margin it always was.
+    let left = rect.min.x + SPACE_L + platform::CAPTION_INSET;
     let painter = ui.painter();
     painter.text(
-        egui::pos2(rect.min.x + SPACE_L, rect.center().y),
+        egui::pos2(left, rect.center().y),
         egui::Align2::LEFT_CENTER,
         APP_NAME,
         egui::FontId::proportional(13.0),
@@ -3818,7 +3830,7 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: b
     // being interesting — which is how one ends up being relaunched instead of
     // waited for.
     if !online {
-        let at = egui::pos2(rect.min.x + SPACE_L + 68.0, rect.center().y);
+        let at = egui::pos2(left + 68.0, rect.center().y);
         painter.circle_filled(egui::pos2(at.x + 5.0, at.y), 4.0, Fluent::LIVE);
         painter.text(
             egui::pos2(at.x + 16.0, at.y),
@@ -3833,6 +3845,14 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: b
     let drag = ui.interact(rect, egui::Id::new("caption"), egui::Sense::click_and_drag());
     if drag.is_pointer_button_down_on() {
         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+
+    // With a native frame the system provides the buttons, and drawing a
+    // second set — in the wrong corner, in another platform's order — is the
+    // quickest way to look like a port. Everything above still applies; only
+    // the buttons are the system's.
+    if platform::NATIVE_FRAME {
+        return;
     }
 
     // Caption buttons, laid out right to left in the Windows order.
@@ -4132,24 +4152,3 @@ fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
-/// The app's own window handle, for the DWM attributes and for the tray.
-///
-/// Taken from the window itself rather than GetForegroundWindow: the app is not
-/// necessarily foreground when it first paints, and asking the OS for whatever
-/// happens to be in front once applied dark chrome to a terminal instead.
-fn window_handle(cc: &eframe::CreationContext<'_>) -> Option<isize> {
-    #[cfg(windows)]
-    {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let handle = cc.window_handle().ok()?;
-        match handle.as_raw() {
-            RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
-            _ => None,
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = cc;
-        None
-    }
-}

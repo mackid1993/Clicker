@@ -1,6 +1,6 @@
 [package]
 name = "clicker"
-version = "1.1.6"
+version = "1.1.7"
 edition = "2021"
 description = "A native Windows Unofficial Client for Channels DVR Server"
 license = "MIT"
@@ -56,6 +56,17 @@ tray-icon = { version = "0.24.2", default-features = false }
 # downloaded. On Windows this is the shell's own dialog over IFileDialog, and
 # it pulls in windows-sys and nothing else. MIT.
 rfd = { version = "0.15", default-features = false }
+
+# On the free desktops rfd needs told which backend to be. The portal, not
+# GTK: pure Rust, no C linkage, and the dialog that appears is the desktop's
+# own — the same door a Flatpak is required to use anyway.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# tray-icon has the same shape: default-features = false leaves its menu
+# crate with no backend at all on Linux, which does not even compile. GTK is
+# the only tray story it offers there. The tray is never *shown* on Linux —
+# platform::HAS_TRAY is false — but the crate still has to build.
+tray-icon = { version = "0.24.2", default-features = false, features = ["gtk"] }
 
 [build-dependencies]
 # Embeds the icon and version information into the executable as Win32

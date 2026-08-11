@@ -95,7 +95,7 @@ impl Timeshift {
             // Sparse, so the released part of it stops occupying disk. Without
             // this the file keeps every byte it was ever given and the window
             // bounds nothing.
-            make_sparse(&file);
+            crate::platform::make_sparse(&file);
 
             let mut response = match http.get(&url).send().await.and_then(|r| r.error_for_status())
             {
@@ -131,7 +131,7 @@ impl Timeshift {
                         if keep_bytes > 0 && total.saturating_sub(gone) > keep_bytes + RELEASE_STEP
                         {
                             let upto = total - keep_bytes;
-                            if release(&file, gone, upto - gone) {
+                            if crate::platform::punch_hole(&file, gone, upto - gone) {
                                 task_discarded.store(upto, Ordering::SeqCst);
                             }
                         }
@@ -194,79 +194,11 @@ impl Timeshift {
     }
 }
 
-/// Mark the buffer sparse, so regions can later be given back to the disk.
-///
-/// Best effort. A file system that will not do this — FAT32 on a removable
-/// disk, say — still works; the buffer simply keeps everything it is given and
-/// the window bounds addressability rather than bytes on disk.
-#[cfg(windows)]
-fn make_sparse(file: &tokio::fs::File) {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
-    use windows::Win32::System::IO::DeviceIoControl;
-
-    let handle = HANDLE(file.as_raw_handle());
-    let mut returned = 0u32;
-    unsafe {
-        let _ = DeviceIoControl(
-            handle,
-            FSCTL_SET_SPARSE,
-            None,
-            0,
-            None,
-            0,
-            Some(&mut returned),
-            None,
-        );
-    }
-}
-
-/// Give a range at the front of the buffer back to the disk.
-///
-/// The file does not shrink and nothing after the hole moves — that is the
-/// entire point, because the demuxer is holding byte offsets into it and a
-/// shift would land it in the middle of a packet. Reading a released range
-/// returns zeros, which is why the player is told to stop offering seeks into
-/// it.
-#[cfg(windows)]
-fn release(file: &tokio::fs::File, from: u64, len: u64) -> bool {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Ioctl::{FILE_ZERO_DATA_INFORMATION, FSCTL_SET_ZERO_DATA};
-    use windows::Win32::System::IO::DeviceIoControl;
-
-    if len == 0 {
-        return false;
-    }
-    let zero = FILE_ZERO_DATA_INFORMATION {
-        FileOffset: from as i64,
-        BeyondFinalZero: (from + len) as i64,
-    };
-    let handle = HANDLE(file.as_raw_handle());
-    let mut returned = 0u32;
-    unsafe {
-        DeviceIoControl(
-            handle,
-            FSCTL_SET_ZERO_DATA,
-            Some(&zero as *const _ as *const std::ffi::c_void),
-            std::mem::size_of::<FILE_ZERO_DATA_INFORMATION>() as u32,
-            None,
-            0,
-            Some(&mut returned),
-            None,
-        )
-        .is_ok()
-    }
-}
-
-#[cfg(not(windows))]
-fn make_sparse(_file: &tokio::fs::File) {}
-
-#[cfg(not(windows))]
-fn release(_file: &tokio::fs::File, _from: u64, _len: u64) -> bool {
-    false
-}
+// Marking the buffer sparse and punching ranges out of it live in `platform`:
+// an ioctl on Windows, an `fcntl` on macOS, `fallocate` on Linux, and the
+// same best-effort contract on all three — a filesystem that refuses still
+// works, the buffer simply keeps everything it is given and the window
+// bounds addressability rather than bytes on disk.
 
 /// Delete buffers left behind by a process that did not get to clean up.
 ///

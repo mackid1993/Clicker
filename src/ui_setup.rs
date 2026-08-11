@@ -296,7 +296,7 @@ pub fn settings_screen(
                     ui.painter().text(
                         remove.center(),
                         egui::Align2::CENTER_CENTER,
-                        "\u{E74D}", // Delete
+                        theme::icon::DELETE,
                         egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
                         Fluent::TEXT_SECONDARY,
                     );
@@ -536,26 +536,31 @@ pub fn settings_screen(
             );
 
             // ── Closing ────────────────────────────────────────────────
-            ui.add_space(SPACE_L * 1.5);
-            section(
-                ui,
-                "When the window is closed",
-                &format!("Downloads only continue while {} is running.", crate::APP_NAME),
-            );
-            control_row(ui, |ui| {
-                let mut to_tray = settings.minimize_to_tray;
-                if ui
-                    .checkbox(&mut to_tray, "Keep running in the notification area")
-                    .on_hover_text(
-                        "On: closing the window hides it instead, and downloads carry on. \
-                         Quit from the tray icon.",
-                    )
-                    .changed()
-                {
-                    settings.minimize_to_tray = to_tray;
-                    action = SetupAction::Save;
-                }
-            });
+            // Only where a tray exists to come back from. On the platforms
+            // without one the section disappears whole: a heading over
+            // nothing is a question the screen cannot answer.
+            if crate::platform::HAS_TRAY {
+                ui.add_space(SPACE_L * 1.5);
+                section(
+                    ui,
+                    "When the window is closed",
+                    &format!("Downloads only continue while {} is running.", crate::APP_NAME),
+                );
+                control_row(ui, |ui| {
+                    let mut to_tray = settings.minimize_to_tray;
+                    if ui
+                        .checkbox(&mut to_tray, "Keep running in the notification area")
+                        .on_hover_text(
+                            "On: closing the window hides it instead, and downloads carry on. \
+                             Quit from the tray icon.",
+                        )
+                        .changed()
+                    {
+                        settings.minimize_to_tray = to_tray;
+                        action = SetupAction::Save;
+                    }
+                });
+            }
 
             // ── Video ──────────────────────────────────────────────────
             ui.add_space(SPACE_L * 1.5);

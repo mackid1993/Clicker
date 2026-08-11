@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.1.7
+
+**Clicker runs on macOS and Linux.** One codebase, one interface — the same
+Fluent surface everywhere — over a new `platform` module that holds the
+handful of things three operating systems genuinely do differently: where
+files live, which fonts to read, how libmpv and OpenGL are found, how the
+live buffer gives disk back, and what the clock thinks local time is.
+
+On a Mac the window is a Mac window: native traffic lights float over the
+same dark surface, the system draws the corners and the shadow and handles
+edge resizing, and everything inside is unchanged. Apple silicon only.
+`scripts/build-macos.sh` produces the .app; libmpv comes from
+`brew install mpv`. On Linux there is a Flatpak, built by CI from the same
+pinned mpv tag and the same LGPL-only flags as the Windows installer.
+
+The icon glyphs on the new platforms come from Microsoft's MIT-licensed
+Fluent UI System Icons, subset to the twenty-eight glyphs the interface
+draws and bundled into the binary; Windows keeps reading Segoe Fluent Icons
+from the system it ships with. The client-name default now asks POSIX for
+the hostname instead of a Windows environment variable, and the settings
+screen only offers the notification-area option where a notification area
+exists.
+
+Windows is unchanged, deliberately and verifiably: the same code moved
+behind the platform seam, the same codepoints, the same fonts, and a CI
+check that compiles all three platforms before anything merges.
+
 ## 1.1.6
 
 **The library can be sorted, not just searched.** A sort menu stands beside
