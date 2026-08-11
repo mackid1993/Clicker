@@ -1647,6 +1647,7 @@ impl Player {
             let mut st = link.state.lock().unwrap();
             if st.want != (w, h) {
                 st.want = (w, h);
+                link.pending.store(true, Ordering::Release);
                 link.wake.notify_one();
             }
             let fence = st.fence;
@@ -2069,6 +2070,13 @@ mod worker {
         pub stop: AtomicBool,
         /// The worker failed and cleaned up entirely; use the in-paint path.
         pub dead: AtomicBool,
+        /// A frame or a resize is waiting. Latched, because a condvar notify
+        /// with nobody waiting evaporates: mpv announces frames while the
+        /// worker is mid-render, and without this the announcement was lost
+        /// and the worker slept its whole backstop — sixty frames a second
+        /// collapsing to the timeout rate, which looked like the fix making
+        /// everything worse.
+        pub pending: AtomicBool,
         /// mpv's renderer, owned by the worker. Here rather than on Player so
         /// the thread can hold it without holding the player.
         pub render_ctx: Mutex<Ptr>,
@@ -2113,6 +2121,7 @@ mod worker {
             wake: std::sync::Condvar::new(),
             stop: AtomicBool::new(false),
             dead: AtomicBool::new(false),
+            pending: AtomicBool::new(true),
             render_ctx: Mutex::new(Ptr(std::ptr::null_mut())),
         });
 
@@ -2136,6 +2145,7 @@ mod worker {
     /// mpv's "a frame is ready", aimed at the worker's condvar.
     unsafe extern "C" fn frame_ready(data: *mut c_void) {
         let link = &*(data as *const Link);
+        link.pending.store(true, Ordering::Release);
         link.wake.notify_all();
     }
 
@@ -2209,17 +2219,19 @@ mod worker {
             let mut texs = [0u32; 2];
 
             loop {
-                // Wait for a frame, a resize, or the end. The timeout is a
-                // backstop so a missed wake is a hiccup rather than a hang.
-                {
+                if link.stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                // Work first, sleep only when the latch is clear. The latch is
+                // what makes announcements made mid-render count; the timeout
+                // is only a backstop against a wake lost to a race with it.
+                if !link.pending.swap(false, Ordering::AcqRel) {
                     let st = link.state.lock().unwrap();
                     let _unused = link
                         .wake
                         .wait_timeout(st, std::time::Duration::from_millis(50))
                         .unwrap();
-                }
-                if link.stop.load(Ordering::SeqCst) {
-                    break;
+                    continue;
                 }
 
                 // The stream's own size, for the clamp; not configured yet
@@ -2310,7 +2322,11 @@ mod worker {
                     internal_format: 0,
                 };
                 let mut flip: c_int = 1;
-                let mut block: c_int = 0;
+                // Block until the frame is due. On the paint thread this was
+                // rightly 0 — waiting there starved the interface — but this
+                // thread exists to wait: mpv holds the render until the
+                // frame's presentation time and cadence comes out right.
+                let mut block: c_int = 1;
                 let mut render_params = [
                     RenderParam { kind: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo as *mut OpenGlFbo as *mut c_void },
                     RenderParam { kind: MPV_RENDER_PARAM_FLIP_Y, data: &mut flip as *mut c_int as *mut c_void },
