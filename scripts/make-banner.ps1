@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 #
-# Clicker - an unofficial, native Windows client for Channels DVR
+# Clicker - an unofficial client for Channels DVR Server
 # Copyright (c) 2026 David Brustein
 
 <#
@@ -122,7 +122,7 @@ $y += 150
 $g.FillRectangle($amberBrush, ($textX + 4), $y, 96, 5)
 $y += 34
 
-$g.DrawString('A native Windows client for', $tagline, $mutedBrush, $textX, $y)
+$g.DrawString('An unofficial client for', $tagline, $mutedBrush, $textX, $y)
 $y += 40
 $g.DrawString('Channels DVR Server', $tagline, $creamBrush, $textX, $y)
 $y += 62

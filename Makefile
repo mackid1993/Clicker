@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 #
-# Clicker - an unofficial, native client for Channels DVR
+# Clicker - an unofficial client for Channels DVR Server
 # Copyright (c) 2026 David Brustein
 #
 # Building Clicker on Linux, for distributions the .deb does not cover.
@@ -40,7 +40,8 @@ VERSION  = $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 LIBDIR   = $(DESTDIR)$(PREFIX)/lib/clicker
 BINDIR   = $(DESTDIR)$(PREFIX)/bin
 APPSDIR  = $(DESTDIR)$(PREFIX)/share/applications
-ICONDIR  = $(DESTDIR)$(PREFIX)/share/icons/hicolor/512x512/apps
+ICONDIR  = $(DESTDIR)$(PREFIX)/share/icons/hicolor
+METADIR  = $(DESTDIR)$(PREFIX)/share/metainfo
 DOCDIR   = $(DESTDIR)$(PREFIX)/share/doc/clicker
 
 MPV_STAGE = third_party/mpv/libmpv.so.2
@@ -190,7 +191,14 @@ check-built:
 #
 # So: build as yourself, install as root. `make && sudo make install`.
 install: check-built
-	install -d $(LIBDIR) $(BINDIR) $(APPSDIR) $(ICONDIR) $(DOCDIR)/licenses
+	install -d $(LIBDIR) $(BINDIR) $(APPSDIR) $(METADIR) $(DOCDIR)/licenses
+	@# Every size a desktop asks for. A lookup that finds only 512 draws the
+	@# generic icon rather than hunting for a large file to shrink.
+	for size in 48 64 128 256 512; do \
+	  install -d $(ICONDIR)/$${size}x$${size}/apps; \
+	  install -m644 assets/icons/clicker-$$size.png \
+	    $(ICONDIR)/$${size}x$${size}/apps/$(APP_ID).png; \
+	done
 	install -m755 target/release/clicker $(LIBDIR)/clicker
 	cp -a third_party/mpv/*.so* $(LIBDIR)/
 	@# Anything libass needs that a machine cannot be assumed to have.
@@ -214,7 +222,13 @@ install: check-built
 	  [ -f "$$lib" ] && [ ! -L "$$lib" ] && patchelf --set-rpath '$$ORIGIN' "$$lib" 2>/dev/null || true; \
 	done || true
 	ln -sf ../lib/clicker/clicker $(BINDIR)/clicker
-	install -m644 assets/clicker.png $(ICONDIR)/$(APP_ID).png
+	@# AppStream, which is what a software centre reads: without it the
+	@# centre says "Unknown License" of a program whose licence has always
+	@# been in /usr/share/doc, because a software centre does not read
+	@# /usr/share/doc. scripts/metainfo.sh writes the same file the .deb
+	@# carries.
+	./scripts/metainfo.sh $(VERSION) > $(METADIR)/$(APP_ID).metainfo.xml
+	chmod 644 $(METADIR)/$(APP_ID).metainfo.xml
 	@# Icon= and the window's app_id are the same string on purpose: Wayland
 	@# has no protocol for a window to carry its own icon, so the compositor
 	@# matches app_id against installed desktop entries and uses what it
@@ -274,7 +288,12 @@ uninstall:
 	rm -f $(BINDIR)/clicker
 	rm -f $(APPSDIR)/$(APP_ID).desktop
 	rm -f $(APPSDIR)/$(APP_ID).uninstall.desktop
-	rm -f $(ICONDIR)/$(APP_ID).png
+	rm -f $(ICONDIR)/48x48/apps/$(APP_ID).png \
+	      $(ICONDIR)/64x64/apps/$(APP_ID).png \
+	      $(ICONDIR)/128x128/apps/$(APP_ID).png \
+	      $(ICONDIR)/256x256/apps/$(APP_ID).png \
+	      $(ICONDIR)/512x512/apps/$(APP_ID).png \
+	      $(METADIR)/$(APP_ID).metainfo.xml
 	rm -rf $(DOCDIR)
 	-command -v update-desktop-database >/dev/null && update-desktop-database -q $(APPSDIR) 2>/dev/null
 	@echo "Clicker removed."

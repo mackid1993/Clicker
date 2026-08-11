@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 #
-# Clicker - an unofficial, native client for Channels DVR
+# Clicker - an unofficial client for Channels DVR Server
 # Copyright (c) 2026 David Brustein
 #
 # Build a .deb: double-clicked, installed, in the menu with its icon.
@@ -70,6 +70,11 @@ mkdir -p "$PKGDIR/DEBIAN" \
          "$PKGDIR/usr/bin" \
          "$PKGDIR/usr/lib/clicker" \
          "$PKGDIR/usr/share/applications" \
+         "$PKGDIR/usr/share/metainfo" \
+         "$PKGDIR/usr/share/icons/hicolor/48x48/apps" \
+         "$PKGDIR/usr/share/icons/hicolor/64x64/apps" \
+         "$PKGDIR/usr/share/icons/hicolor/128x128/apps" \
+         "$PKGDIR/usr/share/icons/hicolor/256x256/apps" \
          "$PKGDIR/usr/share/icons/hicolor/512x512/apps" \
          "$PKGDIR/usr/share/doc/clicker"
 
@@ -144,8 +149,18 @@ else
   exit 1
 fi
 
-install -m644 "$ROOT/assets/clicker.png" \
-  "$PKGDIR/usr/share/icons/hicolor/512x512/apps/$APP_ID.png"
+# Every size a desktop actually asks for, not just the largest one.
+#
+# Only 512x512 was installed, on the reasoning that a large icon scales down.
+# It does, but not before something has to find it: a shell looks in the size
+# directory closest to what it wants, a software centre looks for 64 or 128,
+# and a theme lookup that finds nothing draws the generic gear rather than
+# hunting for a bigger file to shrink. Which is what the software centre was
+# showing beside the package name.
+for size in 48 64 128 256 512; do
+  install -m644 "$ROOT/assets/icons/clicker-$size.png" \
+    "$PKGDIR/usr/share/icons/hicolor/${size}x${size}/apps/$APP_ID.png"
+done
 
 # Icon= and the application's app_id are the same string on purpose. Wayland
 # has no protocol for a window to carry its own icon: the compositor matches
@@ -162,6 +177,12 @@ Type=Application
 Categories=AudioVideo;Video;TV;
 StartupWMClass=$APP_ID
 DESKTOP
+
+# AppStream, which is what a software centre reads — scripts/metainfo.sh says
+# why, and `make install` calls the same script so a package and a source
+# install describe themselves identically.
+"$ROOT/scripts/metainfo.sh" "$VERSION" \
+  > "$PKGDIR/usr/share/metainfo/$APP_ID.metainfo.xml"
 
 # The licence, at the path Debian fixes, covering everything in the package
 # rather than only the part that was written here. scripts/copyright.sh says

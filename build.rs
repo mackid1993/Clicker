@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Clicker - an unofficial, native Windows client for Channels DVR
+// Clicker - an unofficial client for Channels DVR Server
 // Copyright (c) 2026 David Brustein
 
 //! Put the icon and version details into the executable.
@@ -48,7 +48,7 @@ fn embed_icon(root: &std::path::Path) {
             .set("ProductName", "Clicker")
             .set(
                 "FileDescription",
-                "A native Windows Unofficial Client for Channels DVR Server",
+                "An Unofficial Client for Channels DVR Server",
             )
             .set("CompanyName", "Clicker")
             .set("LegalCopyright", "© 2026 David Brustein. MIT License.");

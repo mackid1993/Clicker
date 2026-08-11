@@ -1,7 +1,7 @@
 #!/bin/zsh
 # SPDX-License-Identifier: MIT
 #
-# Clicker - an unofficial, native client for Channels DVR
+# Clicker - an unofficial client for Channels DVR Server
 # Copyright (c) 2026 David Brustein
 #
 # Build it, install it, run it. For iterating.

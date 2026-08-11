@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# Clicker - an unofficial, native client for Channels DVR
+# Clicker - an unofficial client for Channels DVR Server
 # Copyright (c) 2026 David Brustein
 #
 # Play something for a minute and say, as a number, whether playback worked.

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 #
-# Clicker - an unofficial, native client for Channels DVR
+# Clicker - an unofficial client for Channels DVR Server
 # Copyright (c) 2026 David Brustein
 #
 # Cuts a version: builds every platform from one commit and puts all of it
