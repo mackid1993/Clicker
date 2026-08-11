@@ -1204,6 +1204,26 @@ impl App {
             return;
         }
 
+        // Black behind the picture in full screen, so what surrounds a 4:3 or
+        // a 2.35:1 frame is bars rather than the interface.
+        //
+        // The material this application paints is right everywhere else — the
+        // picture sits on it in a window, as one surface among several. In
+        // full screen there are no other surfaces: the material stops reading
+        // as a backdrop and starts reading as a mistake, a lit border around a
+        // film, showing where the window would have been. Every television and
+        // every player answers this with black, and so does this now.
+        //
+        // Only the area outside the picture is painted, and the picture is
+        // drawn over it in the same frame, so this costs one rectangle and
+        // cannot flash: the blit lands on top before anything reaches the
+        // screen.
+        if self.fullscreen {
+            ui.painter()
+                .with_clip_rect(rect)
+                .rect_filled(rect, 0.0, egui::Color32::BLACK);
+        }
+
         // Weak, emphatically not a clone of the `Arc`.
         //
         // This callback runs after `update` has returned, during egui's paint.
