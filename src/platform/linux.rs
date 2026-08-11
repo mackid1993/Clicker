@@ -377,17 +377,20 @@ pub fn virtualization() -> Option<&'static str> {
     })
 }
 
-/// Say when this is a virtual machine, and make the one allowance that has
-/// survived scrutiny (auto-copy decode happens in mpv.rs). Everything bundled
-/// speaks to the sound server the machine's own way.
-pub fn audio_environment() {
+/// Say when this is a virtual machine, and say what a virtual machine's sound
+/// server usually still needs from its owner.
+///
+/// It used to set environment as well — a PipeWire latency request, and the
+/// plugin paths a bundled libpipewire needed — and neither survived: the
+/// bundle was removed, and asking for a 2048-sample quantum made playback
+/// worse rather than better, because the audio clock advances once per
+/// quantum and a large one turns the clock that paces video into 43ms
+/// lurches. What is left is what could not be done from inside a process:
+/// naming the machine in the log, and pointing at the one file that fixes
+/// underruns system-wide. The allowance that did survive is auto-copy
+/// decoding, which lives in mpv.rs.
+pub fn note_virtualization() {
     if let Some(vm) = virtualization() {
-        // No PIPEWIRE_LATENCY request here any more. Asking for a 2048-sample
-        // quantum made playback worse, not better: the audio clock advances
-        // once per quantum, so a large one turns the clock video is paced by
-        // into 43ms lurches. mpv's autosync smooths the jitter instead — see
-        // the option in mpv.rs — and buffer sizing belongs to the sound
-        // server's own VM profile, not to one application.
         crate::log::line(&format!("[clicker] running under {vm}"));
         if !std::path::Path::new("/usr/share/wireplumber/wireplumber.conf.d/alsa-vm.conf").exists()
             && !std::path::Path::new("/etc/wireplumber/wireplumber.conf.d/alsa-vm.conf").exists()
