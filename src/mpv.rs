@@ -990,22 +990,41 @@ impl Player {
         // nothing for anything else: the picture is smooth and the program is
         // deaf.
         //
-        // So the renderer gets a budget. Past it, every second frame is
-        // skipped; well past it, two in three. What that costs is frames of
-        // video, which is the right thing to spend: a video player that drops
-        // to thirty is worse than one at sixty, and a window that ignores the
-        // mouse is broken.
+        // So the renderer gets a budget — but of processor time, not of clock.
+        //
+        // This was decided on the wall clock and it was wrong in the way that
+        // matters. The render call issues OpenGL commands that the driver
+        // throttles to the display's refresh, so on a compositor that makes
+        // the caller wait — a virtual machine, a remote display, or an
+        // ordinary vsync — the call takes most of a frame interval while
+        // costing almost no work. The clock said "struggling" where the truth
+        // was "waiting", and frames were dropped to buy responsiveness that
+        // was never short.
+        //
+        // It could not recover, either. The estimate is only updated by frames
+        // that are actually rendered, and those still wait exactly as long, so
+        // a reading that crossed the threshold stayed across it. Skipping made
+        // it worse: fewer renders meant more accumulated work in each one, the
+        // measurement climbed, and the rule escalated from every second frame
+        // to two in three and stayed there. mpv, meanwhile, had already been
+        // told the frame was collected, and with video-sync expecting a render
+        // at display cadence its timing estimate went with it.
+        //
+        // Processor time cannot be confused that way. If the paint thread is
+        // genuinely spending a core on this, skipping a frame gives the mouse
+        // somewhere to go; if it is parked in the driver waiting for the
+        // display, skipping buys nothing and costs a frame. And the ceiling is
+        // every second frame — never two in three — because there is no
+        // reading of a spiral that justifies deepening it.
         let offered = self.shared.offered.fetch_add(1, Ordering::Relaxed);
-        let smoothed_ms = *self.shared.render_ms.lock().unwrap();
-        let every = if smoothed_ms > 20.0 {
-            3
-        } else if smoothed_ms > 10.0 {
-            2
-        } else {
-            1
-        };
-        if every > 1 && offered % every != 0 {
+        let load = *self.shared.render_load.lock().unwrap();
+        if load > 0.9 && offered % 2 != 0 {
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+            // Decay while skipping, so the estimate can come back down. The
+            // old one was only ever fed by rendered frames, which is how it
+            // latched.
+            let mut smoothed = self.shared.render_load.lock().unwrap();
+            *smoothed *= 0.95;
             return painted.then_some((texture, width, height));
         }
 
@@ -1143,8 +1162,9 @@ impl Player {
                     && SAID.fetch_add(1, Ordering::Relaxed) < 20
                 {
                     crate::log::line(&format!(
-                        "[mpv] render is costing {:.1}ms of wall clock; frames are \
-                         being skipped to keep the window responsive",
+                        "[mpv] render is taking {:.1}ms of wall clock. That is only \
+                         a problem if the processor time below is high too — a long \
+                         wall time on its own is the driver waiting for the display",
                         *smoothed
                     ));
                 }
