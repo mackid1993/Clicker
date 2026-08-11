@@ -100,7 +100,7 @@ exists because the alternative was rebuilding to answer a question.
 | `CLICKER_PLAY=<file or URL>` | Open that source at startup. No server, no sign-in, no hand on the mouse — this is what makes playback drivable from a script. |
 | `CLICKER_MPV_OPTS="profile=fast;hwdec=no"` | mpv's own options, applied last so they win. **Semicolons**, because commas are already inside half of mpv's values. |
 | `CLICKER_AO=null` | Silence the audio output. Ten seconds to learn whether a sound device is what is ruining the picture, which on Linux it can be — video is paced by the audio clock there. |
-| `CLICKER_RENDER_THREAD=0` | Linux: put mpv's rendering back on the interface thread. The off switch for the arrangement described below. |
+| `CLICKER_RENDER_THREAD=1` / `=0` | Force mpv's rendering onto a thread of its own, or back into the interface's paint. A two-way switch on every platform, overriding the default described below — and the way that default was arrived at. |
 | `CLICKER_VIDEO=window` | Hand mpv the window itself, with no offscreen target and no blit. It overdraws the interface; it is a measuring instrument, not a mode. |
 
 ---
