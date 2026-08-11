@@ -497,7 +497,7 @@ pub fn note_graphics(renderer: &str) {
 /// actually are — a Mac, a PC and a Linux desktop with real drivers all get
 /// the same treatment, and a virtual machine gets the same treatment
 /// whichever of the three it happens to be running.
-fn graphics_are_translated() -> bool {
+pub fn graphics_are_translated() -> bool {
     let Some(name) = GRAPHICS.get() else {
         return false;
     };
