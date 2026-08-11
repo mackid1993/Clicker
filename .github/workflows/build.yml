@@ -11,14 +11,15 @@
 # The version typed in is handed to build.ps1 exactly as it is locally, which
 # stamps it into Cargo.toml, the binary's version resource, and the installer,
 # and then it is thrown away with the runner. Nothing is committed and nothing
-# is tagged until the draft release this produces is published by hand.
+# is published here: the installer leaves as an artifact, and the Release
+# workflow is what turns artifacts into a draft release.
 #
 # The expensive part is libmpv. FFmpeg and mpv are compiled from their pinned
 # tags the first time — half an hour of runner time that produces the same
 # bytes until somebody moves a tag or a flag — and the staged result is cached
 # after that, keyed on the script where the tags and flags live.
 
-name: Build installer
+name: Build Windows
 
 on:
   # Two doors, one job. Dispatch builds an installer to download and try;

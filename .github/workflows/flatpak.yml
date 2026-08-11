@@ -3,11 +3,10 @@
 # Clicker - an unofficial, native client for Channels DVR
 # Copyright (c) 2026 David Brustein
 #
-# Builds the Flatpak bundle. Manual only, like everything else here: a
-# Flatpak is a thing somebody decides to cut. The result is uploaded as a
-# workflow artifact — install it with
+# Builds the Flatpak bundle. Manual only, like everything else here. The
+# result is uploaded as an artifact — install it with
 #
-#   flatpak install --user Clicker.flatpak
+#   flatpak install --user Clicker-<version>-x86_64.flatpak
 #
 # after installing the ffmpeg-full runtime extension it declares.
 #
@@ -15,7 +14,7 @@
 # both the build and the only compile-and-link proof the Flatpak has. Runtime
 # testing happens wherever the .flatpak lands.
 
-name: Flatpak
+name: Build Linux
 
 on:
   # Dispatch to get a bundle to try; workflow_call is how the Release

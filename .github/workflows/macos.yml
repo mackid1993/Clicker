@@ -4,9 +4,8 @@
 # Copyright (c) 2026 David Brustein
 #
 # Builds, signs, notarizes and staples Clicker.app on Apple silicon, and
-# attaches the zip to a draft release under the same tag the Windows
-# installer uses — cut a version by running both workflows with the same
-# number and publishing the one draft they share.
+# uploads the zip as an artifact. It publishes nothing: the Release workflow
+# is what gathers this and the other platforms into one draft release.
 #
 # Manual only, like every workflow here.
 #
@@ -22,7 +21,7 @@
 # The certificate goes into a throwaway keychain that dies with the runner;
 # nothing about the identity survives the job.
 
-name: Build macOS app
+name: Build macOS
 
 on:
   # Dispatch to get a signed .app to try; workflow_call is how the Release

@@ -354,7 +354,10 @@ fn versions(api: &Api) -> &'static str {
         // back empty on a handle that has only been created, and a core with
         // no video output, no audio output and nothing loaded costs a few
         // milliseconds once.
-        for (name, value) in [("vo", "null"), ("ao", "null"), ("terminal", "no")] {
+        for (name, value) in [("vo", "null"), ("ao", "null"), ("terminal", "no")]
+            .into_iter()
+            .chain(NO_SCRIPTS)
+        {
             let (n, v) = (CString::new(name).unwrap(), CString::new(value).unwrap());
             (api.set_option)(handle, n.as_ptr(), v.as_ptr());
         }
@@ -410,6 +413,45 @@ struct Shared {
     /// playback now that drawing happens inside a paint callback.
     repaint: Box<dyn Fn() + Send + Sync>,
 }
+
+/// The built-in Lua scripts, every one of them turned off.
+///
+/// mpv ships nine, and every one is dead weight here: they draw an on-screen
+/// interface this application already draws, and answer keys it already
+/// handles. Nine fewer threads, and a core that starts sooner.
+///
+/// It is also the difference between running and not running on a signed
+/// Mac. The scripts are executed by LuaJIT, which compiles Lua to machine
+/// code at runtime, and macOS's hardened runtime kills any process that
+/// executes a page it did not sign: `EXC_BAD_ACCESS (SIGKILL (Code Signature
+/// Invalid))`, "Namespace CODESIGNING, Code 2, Invalid Page", on a thread
+/// named after whichever script got there first. The alternative is the
+/// `allow-jit` and `allow-unsigned-executable-memory` entitlements — asking
+/// macOS to relax the one protection that matters so nine unwanted scripts
+/// can run.
+///
+/// Two things this list learned the hard way:
+///
+///   * **Every script has to be named.** `load-scripts=no` is not the switch
+///     it sounds like — it governs the *user's* scripts directory and leaves
+///     the built-ins exactly where they were. It is kept anyway, so a stray
+///     script in somebody's config cannot reintroduce the problem.
+///   * **Every handle has to get the list**, not just the one that plays
+///     video. `versions` creates a throwaway core to read the version out of
+///     mpv, and a throwaway core loads the same scripts and dies in the same
+///     way — three seconds into startup, before anything has been played.
+const NO_SCRIPTS: [(&str, &str); 10] = [
+    ("load-scripts", "no"),
+    ("osc", "no"),
+    ("ytdl", "no"),
+    ("load-stats-overlay", "no"),
+    ("load-console", "no"),
+    ("load-auto-profiles", "no"),
+    ("load-select", "no"),
+    ("load-positioning", "no"),
+    ("load-commands", "no"),
+    ("load-context-menu", "no"),
+];
 
 /// mpv has a frame ready. Called from mpv's own thread, so it does the one
 /// cheap thing it is allowed to do and returns.
@@ -500,24 +542,6 @@ impl Player {
         for (name, value) in [
             ("vo", "libmpv"),
             ("terminal", "no"),
-            // No Lua. mpv ships eight built-in scripts — stats, console,
-            // ytdl_hook, auto_profiles, select, positioning, commands,
-            // context_menu — and every one of them is dead weight here: they
-            // draw an on-screen interface this application already draws, and
-            // they answer keys this application already handles.
-            //
-            // Turning them off is also the difference between running and not
-            // running on a signed Mac. Those scripts are executed by LuaJIT,
-            // which compiles Lua to machine code at runtime, and macOS's
-            // hardened runtime kills any process that executes a page it did
-            // not sign: `EXC_BAD_ACCESS (SIGKILL (Code Signature Invalid))`,
-            // "Namespace CODESIGNING, Code 2, Invalid Page", on a thread
-            // named after whichever script got there first. The alternative
-            // is the `allow-jit` and `allow-unsigned-executable-memory`
-            // entitlements — asking macOS to relax the one protection that
-            // matters, so that eight unwanted scripts can run. Not loading
-            // them is the better answer, and it costs eight threads less.
-            ("load-scripts", "no"),
             // Hardware decoding where the driver offers it, and "auto-safe"
             // rather than "auto" so it only takes paths known to be sound.
             // This trims the decode and not the composite, which is why it
@@ -609,6 +633,7 @@ impl Player {
             // never heard of.
             (transport == Transport::Timeshift).then_some(("stream-lavf-o", "follow=1")),
         )
+        .chain(NO_SCRIPTS)
         {
             let (n, v) = (CString::new(name).unwrap(), CString::new(value).unwrap());
             // Unknown options are reported and skipped: a libmpv-only build has
