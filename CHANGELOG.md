@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0
+## 1.1.6
 
 **The library can be sorted, not just searched.** A sort menu stands beside
 the search box, and each tab offers the orders that mean something for what
