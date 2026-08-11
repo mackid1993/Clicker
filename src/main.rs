@@ -246,6 +246,18 @@ fn main() -> eframe::Result<()> {
         }
     }
 
+    // The folders this program keeps things in, made now rather than at the
+    // moment something is first written into them.
+    //
+    // They are only ever created lazily otherwise, which means that until the
+    // first download finishes there is nothing on disk at the path the
+    // settings page names — so the folder picker, handed a path that is not
+    // there, opens wherever that system's dialog goes by default, and Finder
+    // has nothing to show somebody who goes looking. Three empty directories
+    // cost nothing and make the setting true the moment it is read.
+    let _ = std::fs::create_dir_all(saved.download_path());
+    let _ = std::fs::create_dir_all(saved.buffer_path());
+
     // Swept from wherever the buffer is configured to live, which is not
     // necessarily where it lived last time somebody changed the setting.
     timeshift::sweep(&saved.buffer_path());
@@ -2173,13 +2185,40 @@ impl App {
                     }
                     candidate.to_path_buf()
                 };
+                let title = match which {
+                    ui_setup::Folder::Downloads => "Where downloads are kept",
+                    ui_setup::Folder::Buffer => "Where the live buffer is written",
+                    ui_setup::Folder::Cache => "Where caches and logs are kept",
+                };
+
+                // On the free desktops the dialog is not a dialog at all: it is
+                // the desktop's own file chooser, reached over D-Bus through
+                // the portal, and every step of that is asynchronous. rfd's
+                // blocking call has no runtime to drive it from a bare thread,
+                // so it returns nothing at all — a Browse button that opens
+                // no window and reports no error. The asynchronous form, run
+                // on the runtime this program already has, is the same dialog
+                // actually awaited.
+                #[cfg(all(unix, not(target_os = "macos")))]
+                self.runtime.spawn(async move {
+                    let picked = rfd::AsyncFileDialog::new()
+                        .set_title(title)
+                        .set_directory(&start)
+                        .pick_folder()
+                        .await;
+                    if let Some(handle) = picked {
+                        let _ = tx.send(Msg::FolderPicked(which, handle.path().to_path_buf()));
+                        ctx.request_repaint();
+                    }
+                });
+
+                // Windows and macOS put a real window on the screen and block
+                // in it, which is why this one stays on a thread of its own:
+                // blocking inside a frame freezes the window drawing it.
+                #[cfg(not(all(unix, not(target_os = "macos"))))]
                 std::thread::spawn(move || {
                     let picked = rfd::FileDialog::new()
-                        .set_title(match which {
-                            ui_setup::Folder::Downloads => "Where downloads are kept",
-                            ui_setup::Folder::Buffer => "Where the live buffer is written",
-                            ui_setup::Folder::Cache => "Where caches and logs are kept",
-                        })
+                        .set_title(title)
                         // Opening where the current setting points, so changing
                         // it starts from where it is rather than from wherever
                         // the shell last happened to be.

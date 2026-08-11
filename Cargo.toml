@@ -83,6 +83,24 @@ eframe = { version = "0.29", default-features = false, features = [
   "wayland",
   "x11",
 ] }
+# The window frame, named directly because eframe cannot ask for it.
+#
+# eframe's `wayland` feature forwards only the display-server support to
+# winit; the decorations are a separate winit feature it never mentions. Left
+# alone, winit falls back to drawing a frame of its own last resort — a grey
+# bar with three grey squares — which is what "the buttons suck" looks like.
+# GNOME does no server-side decoration at all, so on Wayland *somebody* is
+# always drawing that frame client-side, and this is how it comes out looking
+# like Adwaita rather than a wireframe.
+#
+# dlopen because the Flatpak's libwayland is the runtime's, not the host's,
+# and loading it by name is what keeps the same binary working on both.
+winit = { version = "0.30.13", default-features = false, features = [
+  "wayland",
+  "wayland-csd-adwaita",
+  "wayland-dlopen",
+  "x11",
+] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 # tray-icon has the same shape: default-features = false leaves its menu
 # crate with no backend at all on Linux, which does not even compile. GTK is
