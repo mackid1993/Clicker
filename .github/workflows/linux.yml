@@ -123,8 +123,14 @@ jobs:
       - name: Work out the libmpv cache key
         id: mpvkey
         run: |
-          FINGERPRINT=$(grep -E '^(FFMPEG_TAG|MPV_TAG|LIBASS_TAG|LIBPLACEBO_TAG)=|disable-gpl|Dgpl=|enable-vaapi|enable-videotoolbox' \
-            scripts/build-mpv.sh | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+          # Comments stripped first. Keyed on the raw file, a sentence that
+          # happened to mention -Dgpl=false changed the key and rebuilt
+          # FFmpeg and mpv on every runner to prove that a comment had
+          # changed. Only the tags and the flags decide whether a staged
+          # build can be reused, so only code is hashed.
+          FINGERPRINT=$(sed 's/#.*//' scripts/build-mpv.sh \
+            | grep -E '^(FFMPEG_TAG|MPV_TAG|LIBASS_TAG|LIBPLACEBO_TAG)=|disable-gpl|Dgpl=|enable-vaapi|enable-videotoolbox' \
+            | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
           echo "key=$FINGERPRINT" >> "$GITHUB_OUTPUT"
           echo "libmpv cache fingerprint: $FINGERPRINT"
 

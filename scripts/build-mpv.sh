@@ -226,22 +226,35 @@ FOUND=""
 for lib in "$STAGE"/libavutil*; do
   [[ -f "$lib" && ! -L "$lib" ]] || continue
   FOUND="$(licence_of "$lib")"
-  [[ -n "$FOUND" ]] && break
+  if [[ -n "$FOUND" ]]; then break; fi
 done
 
-if [[ -z "$FOUND" ]]; then
-  echo "no licence string in the staged libavutil; refusing to stage an unverified build" >&2
+if [[ -n "$FOUND" ]]; then
+  case "$FOUND" in
+    LGPL*) echo "    FFmpeg: $FOUND" ;;
+    *)     echo "FFmpeg is $FOUND, not LGPL; refusing to stage it" >&2; exit 1 ;;
+  esac
+elif [[ -f "$FFMPEG_SRC/config.h" ]]; then
+  # configure writes its header to the build root, which for the in-tree
+  # build above is the source root. Second rather than first because a header
+  # left over from an earlier configure would describe a build that is no
+  # longer there, while the string is inside the library being staged.
+  if grep -qE "^#define CONFIG_(GPL|NONFREE) 1" "$FFMPEG_SRC/config.h"; then
+    echo "FFmpeg was configured with GPL or nonfree components; refusing to stage it" >&2
+    exit 1
+  fi
+  echo "    FFmpeg: CONFIG_GPL 0, CONFIG_NONFREE 0 (from config.h)"
+else
+  echo "no licence string in the staged libavutil and no config.h beside it;" >&2
+  echo "refusing to stage an unverified build" >&2
   exit 1
 fi
-case "$FOUND" in
-  LGPL*) echo "    FFmpeg: $FOUND" ;;
-  *)     echo "FFmpeg is $FOUND, not LGPL; refusing to stage it" >&2; exit 1 ;;
-esac
 
 # mpv's own licence is a compile-time constant rather than a string, so this
-# one does come from the build's config header — meson's, whose location is
+# one does come from the build config header — meson's, whose location is
 # fixed by the build directory rather than chosen by a configure script.
-# `-Dgpl=false` leaves HAVE_GPL either undefined or 0, and both pass.
+# Building with the gpl option off leaves HAVE_GPL either undefined or 0, and
+# both pass.
 MPV_CONFIG="$MPV_SRC/build/config.h"
 if [[ ! -f "$MPV_CONFIG" ]]; then
   echo "cannot find mpv's config.h at $MPV_CONFIG; refusing to stage an unverified build" >&2

@@ -25,6 +25,7 @@ INTEL_APP="${2:?second argument: the x86_64 Clicker.app}"
 OUT_APP="${3:?third argument: where to write the universal Clicker.app}"
 
 rm -rf "$OUT_APP"
+mkdir -p "$(dirname "$OUT_APP")"
 # The arm64 bundle is the template: same Info.plist, same icon, same
 # licences, same layout. Only the Mach-O files differ between the two.
 cp -R "$ARM_APP" "$OUT_APP"
@@ -77,12 +78,24 @@ done
 
 # A bundle whose libraries are not all universal is not universal, whatever
 # the executable says.
+#
+# Every offender, not the first one — otherwise a bundle missing three
+# libraries takes three CI runs to find that out. A plain string rather than
+# an array because macOS still ships bash 3.2, where an empty array read
+# under `set -u` is itself an error.
+SINGLE=""
 for lib in "$OUT_APP/Contents/Frameworks/"*.dylib; do
-  if ! lipo -archs "$lib" | grep -q x86_64 || ! lipo -archs "$lib" | grep -q arm64; then
-    echo "$(basename "$lib") is not universal; refusing to call this bundle universal" >&2
-    exit 1
-  fi
+  archs="$(lipo -archs "$lib")"
+  case "$archs" in
+    *x86_64*) case "$archs" in *arm64*) continue ;; esac ;;
+  esac
+  SINGLE="$SINGLE    $(basename "$lib") [$archs]"$'\n'
 done
+if [[ -n "$SINGLE" ]]; then
+  echo "these are not universal; refusing to call this bundle universal:" >&2
+  printf '%s' "$SINGLE" >&2
+  exit 1
+fi
 
 echo
 echo "Universal bundle at $OUT_APP"
