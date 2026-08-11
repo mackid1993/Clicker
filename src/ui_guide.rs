@@ -250,7 +250,7 @@ pub fn chip(ui: &mut egui::Ui, id: egui::Id, label: &str, active: bool, width: f
     painter.text(
         egui::pos2(rect.max.x - SPACE_M, rect.center().y),
         egui::Align2::RIGHT_CENTER,
-        "\u{E70D}", // ChevronDown
+        theme::icon::CHEVRON_DOWN,
         egui::FontId::new(9.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
         Fluent::TEXT_TERTIARY,
     );
@@ -760,57 +760,15 @@ fn clock_label(unix: i64) -> String {
     format!("{hour12}:{minute:02} {suffix}")
 }
 
-/// Offset from UTC, in seconds.
+/// Offset from UTC, in seconds. The platform's answer, measured once.
 ///
-/// Measured once, by asking the C runtime to format the same instant both ways
-/// and taking the difference. That avoids a dependency on a date library for a
-/// single number, and avoids the Win32 time zone API, whose bias fields are
-/// signed the opposite way round to how everyone expects and are a reliable
-/// source of off-by-an-hour bugs.
+/// The value does not change while the app is running, daylight saving
+/// included: a transition mid-session is a cosmetic hour on a guide, not
+/// worth re-asking for on every cell of every row.
 fn local_offset_seconds() -> i64 {
     use std::sync::OnceLock;
     static OFFSET: OnceLock<i64> = OnceLock::new();
-
-    *OFFSET.get_or_init(|| {
-        // SystemTime has no notion of local time, so the offset is derived
-        // from what the platform reports for "now" in both zones. The value
-        // does not change while the app is running, daylight saving included:
-        // a transition mid-session is a cosmetic hour on a guide, not worth a
-        // dependency to handle.
-        let now = std::time::SystemTime::now();
-        let utc = now
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        #[cfg(windows)]
-        {
-            // GetLocalTime and GetSystemTime differ by exactly the offset.
-            use windows::Win32::Foundation::SYSTEMTIME;
-            use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
-
-            let (local, system): (SYSTEMTIME, SYSTEMTIME) =
-                unsafe { (GetLocalTime(), GetSystemTime()) };
-
-            let minutes = |t: &SYSTEMTIME| {
-                t.wHour as i64 * 60 + t.wMinute as i64 + t.wDay as i64 * 24 * 60
-            };
-            let mut delta = (minutes(&local) - minutes(&system)) * 60;
-            // Guard against a month boundary making the day component wrap.
-            if delta > 15 * 3600 {
-                delta -= 24 * 3600;
-            } else if delta < -15 * 3600 {
-                delta += 24 * 3600;
-            }
-            let _ = utc;
-            delta
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = utc;
-            0
-        }
-    })
+    *OFFSET.get_or_init(crate::platform::local_utc_offset_seconds)
 }
 
 fn elide(text: &str, width: f32) -> String {

@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: MIT
+//
+// Clicker - an unofficial, native client for Channels DVR
+// Copyright (c) 2026 David Brustein
+
+//! macOS, Apple silicon only. The Intel Macs are on their way out and a
+//! universal binary would double the untested surface; one architecture,
+//! actually run, beats two shipped on faith.
+
+use std::ffi::{c_char, c_int, c_void};
+use std::path::PathBuf;
+
+// --- where files go ----------------------------------------------------------
+
+fn home() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("HOME")?))
+}
+
+/// Settings live in Application Support, which is where a Mac keeps a
+/// program's own files.
+pub fn config_home() -> Option<PathBuf> {
+    Some(home()?.join("Library").join("Application Support"))
+}
+
+/// The same root as the settings, deliberately not `~/Library/Caches`. The
+/// "data" here includes offline downloads — whole recordings someone means to
+/// watch on a plane — and Caches is the one folder every cleanup utility
+/// feels entitled to empty.
+pub fn data_home() -> Option<PathBuf> {
+    config_home()
+}
+
+// --- fonts -------------------------------------------------------------------
+
+/// The system face, read from the system. San Francisco is what every other
+/// window on this desktop is set in; falling back to egui's bundled face is
+/// legible, just visibly a guest.
+pub fn text_font() -> Option<Vec<u8>> {
+    for candidate in [
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/HelveticaNeue.ttc",
+    ] {
+        if let Ok(bytes) = std::fs::read(candidate) {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
+/// The bundled Fluent UI System Icons subset — Microsoft's own icon set,
+/// MIT-licensed, cut down to the twenty-eight glyphs the interface draws.
+/// See `theme::icon` for the codepoint table it must stay in step with, and
+/// `licenses/FluentSystemIcons-MIT.txt` for its terms.
+pub fn icon_font() -> Option<Vec<u8>> {
+    Some(include_bytes!("../../assets/FluentIcons-Clicker.ttf").to_vec())
+}
+
+// --- the live buffer's disk tricks -------------------------------------------
+
+/// Nothing to do: APFS files are sparse by construction. Writing at an offset
+/// past the end allocates nothing for the gap, which is the property the
+/// Windows ioctl has to ask for.
+pub fn make_sparse(_file: &tokio::fs::File) {}
+
+extern "C" {
+    fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+}
+
+/// `F_PUNCHHOLE`, and the struct it reads its range from.
+const F_PUNCHHOLE: c_int = 99;
+
+#[repr(C)]
+struct PunchHole {
+    fp_flags: u32,
+    reserved: u32,
+    fp_offset: i64,
+    fp_length: i64,
+}
+
+/// Give a range at the front of the buffer back to the disk.
+///
+/// APFS insists both edges land on filesystem blocks, where the Windows call
+/// takes any byte range, so the range is shrunk inward to block boundaries.
+/// Punching slightly less than asked is fine — release is already best
+/// effort — and four kilobytes of un-released tail is not worth an EINVAL
+/// that releases nothing.
+pub fn punch_hole(file: &tokio::fs::File, from: u64, len: u64) -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    const BLOCK: u64 = 4096;
+    let start = from.next_multiple_of(BLOCK);
+    let end = (from + len) / BLOCK * BLOCK;
+    if end <= start {
+        return false;
+    }
+
+    let hole = PunchHole {
+        fp_flags: 0,
+        reserved: 0,
+        fp_offset: start as i64,
+        fp_length: (end - start) as i64,
+    };
+    unsafe { fcntl(file.as_raw_fd(), F_PUNCHHOLE, &hole as *const PunchHole) == 0 }
+}
+
+// --- libmpv and OpenGL -------------------------------------------------------
+
+/// What the mpv library is called here, for messages about not finding it.
+pub const MPV_LIBRARY: &str = "libmpv.2.dylib";
+
+/// Where libmpv might be, most specific first: inside the app bundle, beside
+/// a bare binary, then Homebrew — which on Apple silicon lives under
+/// /opt/homebrew and nowhere else — and finally wherever the loader's own
+/// search paths reach.
+pub fn mpv_candidates() -> Vec<String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from));
+    let mut candidates = Vec::new();
+    if let Some(dir) = &exe_dir {
+        // Contents/MacOS/../Frameworks is where a .app carries its libraries.
+        candidates.push(dir.join("../Frameworks").join(MPV_LIBRARY).display().to_string());
+        candidates.push(dir.join(MPV_LIBRARY).display().to_string());
+    }
+    candidates.push(format!("/opt/homebrew/lib/{MPV_LIBRARY}"));
+    candidates.push(MPV_LIBRARY.to_string());
+    candidates.push("libmpv.dylib".to_string());
+    candidates
+}
+
+/// How mpv finds the OpenGL functions of the context eframe created.
+///
+/// One door: every GL symbol on macOS, 1.1 and modern alike, lives in the
+/// OpenGL framework, and `dlsym` against it answers for all of them. No
+/// wgl/glX split to reconcile. Deprecated, yes — Apple froze GL at 4.1 — but
+/// frozen is exactly what a lookup table wants to be.
+pub unsafe extern "C" fn gl_proc_address(_ctx: *mut c_void, name: *const c_char) -> *mut c_void {
+    static OPENGL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let module = *OPENGL.get_or_init(|| {
+        super::open_library("/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL")
+            as usize
+    }) as *mut c_void;
+    if module.is_null() {
+        return std::ptr::null_mut();
+    }
+    super::library_symbol(module, name as *const u8)
+}

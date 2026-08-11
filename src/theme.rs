@@ -171,7 +171,7 @@ pub fn search_field(
     ui.painter().text(
         egui::pos2(field.min.x + SPACE_M + 2.0, field.center().y),
         egui::Align2::LEFT_CENTER,
-        "\u{E721}", // Search
+        icon::SEARCH,
         FontId::new(12.0, egui::FontFamily::Name(ICON_FONT.into())),
         Fluent::TEXT_TERTIARY,
     );
@@ -328,12 +328,10 @@ pub fn apply(ctx: &egui::Context) {
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    for candidate in [
-        r"C:\Windows\Fonts\SegoeUIVariableStatic-Display.ttf",
-        r"C:\Windows\Fonts\SegoeUIVariableStatic-Regular.ttf",
-        r"C:\Windows\Fonts\segoeui.ttf",
-    ] {
-        let Ok(bytes) = std::fs::read(candidate) else { continue };
+    // The platform's own interface face, ahead of egui's bundled one. Missing
+    // is survivable — egui's face is legible — but the system's is what makes
+    // the window read as belonging on the desktop it is on.
+    if let Some(bytes) = crate::platform::text_font() {
         fonts
             .font_data
             .insert("system".into(), egui::FontData::from_owned(bytes));
@@ -342,60 +340,89 @@ fn install_fonts(ctx: &egui::Context) {
             .entry(egui::FontFamily::Proportional)
             .or_default()
             .insert(0, "system".into());
-        break;
     }
 
-    // Caption and control glyphs come from the Windows icon font. Substituting
-    // lookalike Unicode characters is what makes custom chrome read as wrong:
-    // the shapes, weights and optical sizes do not match the real thing.
-    for candidate in [
-        r"C:\Windows\Fonts\SegoeIcons.ttf",   // Segoe Fluent Icons (Windows 11)
-        r"C:\Windows\Fonts\segmdl2.ttf",      // Segoe MDL2 Assets (Windows 10)
-    ] {
-        let Ok(bytes) = std::fs::read(candidate) else { continue };
+    // Caption and control glyphs. Substituting lookalike Unicode characters is
+    // what makes custom chrome read as wrong: the shapes, weights and optical
+    // sizes do not match the real thing.
+    if let Some(bytes) = crate::platform::icon_font() {
         fonts
             .font_data
             .insert("icons".into(), egui::FontData::from_owned(bytes));
         fonts
             .families
             .insert(egui::FontFamily::Name(ICON_FONT.into()), vec!["icons".into()]);
-        break;
     }
 
     ctx.set_fonts(fonts);
 }
 
-/// Family name for the Windows icon font.
+/// Family name for the icon font.
 pub const ICON_FONT: &str = "icons";
 
-/// Segoe Fluent Icons codepoints for the pieces of chrome we draw ourselves.
+/// The chrome and control glyphs, by name.
+///
+/// Two codepoint tables for one set of names: Segoe Fluent Icons on Windows,
+/// read from the system, and Microsoft's Fluent UI System Icons — the same
+/// design language, MIT-licensed — bundled everywhere else. Every glyph the
+/// interface draws must come from this table; an inline `\u{E7xx}` literal is
+/// a hole in the port, because it names a Segoe codepoint the bundled font
+/// does not have.
+macro_rules! icons {
+    ($($(#[$doc:meta])* $name:ident: $segoe:literal, $fluent:literal;)*) => {
+        $(
+            $(#[$doc])*
+            #[cfg(windows)]
+            pub const $name: &str = $segoe;
+            $(#[$doc])*
+            #[cfg(not(windows))]
+            pub const $name: &str = $fluent;
+        )*
+    };
+}
+
 pub mod icon {
-    pub const MINIMIZE: &str = "\u{E921}";
-    pub const MAXIMIZE: &str = "\u{E922}";
-    pub const RESTORE: &str = "\u{E923}";
-    pub const CLOSE: &str = "\u{E8BB}";
-    /// Back, for leaving the player.
-    ///
-    /// Deliberately not CLOSE. The window's own close button is an X in the
-    /// top-right of the same window, and an X on the player was being read as
-    /// "quit the program" rather than "leave this show".
-    pub const BACK: &str = "\u{E72B}";
-    pub const PLAY: &str = "\u{E768}";
-    pub const PAUSE: &str = "\u{E769}";
-    // The curved undo/redo arrows, which is what every media player uses for a
-    // fixed-interval skip. E7A6 alone was being used for "back", but it is
-    // Redo: a clockwise arrow, pointing the wrong way.
-    pub const SKIP_BACK: &str = "\u{E7A7}";
-    pub const SKIP_FORWARD: &str = "\u{E7A6}";
-    pub const VOLUME: &str = "\u{E767}";
-    pub const MUTE: &str = "\u{E74F}";
-    pub const MORE: &str = "\u{E712}";
-    pub const RECORD: &str = "\u{E7C8}";
-    pub const HAMBURGER: &str = "\u{E700}";
-    /// FastForward, for skipping a commercial break.
-    pub const SKIP_BREAK: &str = "\u{EB9D}";
-    pub const FULLSCREEN: &str = "\u{E740}";
-    pub const EXIT_FULLSCREEN: &str = "\u{E73F}";
+    icons! {
+        MINIMIZE: "\u{E921}", "\u{EBD1}";
+        MAXIMIZE: "\u{E922}", "\u{E7EC}";
+        RESTORE: "\u{E923}", "\u{F78C}";
+        CLOSE: "\u{E8BB}", "\u{F36A}";
+        /// Back, for leaving the player.
+        ///
+        /// Deliberately not CLOSE. The window's own close button is an X in the
+        /// top-right of the same window, and an X on the player was being read as
+        /// "quit the program" rather than "leave this show".
+        BACK: "\u{E72B}", "\u{F15C}";
+        PLAY: "\u{E768}", "\u{F606}";
+        PAUSE: "\u{E769}", "\u{F5A2}";
+        /// The curved undo/redo arrows, which is what every media player uses
+        /// for a fixed-interval skip. E7A6 alone was being used for "back",
+        /// but it is Redo: a clockwise arrow, pointing the wrong way.
+        SKIP_BACK: "\u{E7A7}", "\u{F19A}";
+        SKIP_FORWARD: "\u{E7A6}", "\u{F16F}";
+        VOLUME: "\u{E767}", "\u{EB43}";
+        MUTE: "\u{E74F}", "\u{EB4B}";
+        MORE: "\u{E712}", "\u{E825}";
+        RECORD: "\u{E7C8}", "\u{F662}";
+        HAMBURGER: "\u{E700}", "\u{F561}";
+        /// FastForward, for skipping a commercial break.
+        SKIP_BREAK: "\u{EB9D}", "\u{F3FF}";
+        FULLSCREEN: "\u{E740}", "\u{E685}";
+        EXIT_FULLSCREEN: "\u{E73F}", "\u{E688}";
+        // The rest of the interface: navigation, rows, and states.
+        HOME: "\u{E80F}", "\u{F481}";
+        LIBRARY: "\u{E8F1}", "\u{F4D3}";
+        GRID: "\u{E8BC}", "\u{F463}";
+        VIDEO: "\u{E7F4}", "\u{F850}";
+        DOWNLOAD: "\u{E896}", "\u{F151}";
+        DELETE: "\u{E74D}", "\u{F34D}";
+        CHECK: "\u{E73E}", "\u{F295}";
+        FORWARD: "\u{E72A}", "\u{F182}";
+        SEARCH: "\u{E721}", "\u{F690}";
+        SETTINGS: "\u{E713}", "\u{F6AA}";
+        CANCEL: "\u{E711}", "\u{F36A}";
+        CHEVRON_DOWN: "\u{E70D}", "\u{F2A4}";
+    }
 }
 
 /// A label in the icon font at a given size.

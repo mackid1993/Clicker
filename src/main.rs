@@ -15,7 +15,6 @@
 mod api;
 mod backdrop;
 mod downloads;
-mod fluent;
 mod guide;
 mod images;
 mod keys;
@@ -23,6 +22,7 @@ mod library;
 mod log;
 mod mpv;
 mod paths;
+mod platform;
 mod settings;
 mod stream;
 mod theme;
@@ -603,8 +603,8 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        if let Some(handle) = window_handle(cc) {
-            fluent::apply_chrome(handle, true);
+        if let Some(handle) = platform::window_handle(cc) {
+            platform::apply_chrome(handle, true);
         }
 
         // Maximize by command rather than by `ViewportBuilder::with_maximized`.
@@ -717,7 +717,7 @@ impl App {
             open_generation: 0,
             timeshift: None,
             tray: None,
-            hwnd: window_handle(cc),
+            hwnd: platform::window_handle(cc),
             online: true,
             probing_server: false,
             next_health_check: Instant::now() + Duration::from_secs(30),
@@ -2987,7 +2987,7 @@ impl App {
             ui.painter().text(
                 egui::pos2(card.max.x - SPACE_M, card.center().y),
                 egui::Align2::RIGHT_CENTER,
-                "\u{E72A}", // Forward
+                theme::icon::FORWARD,
                 egui::FontId::new(12.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
                 Fluent::TEXT_SECONDARY,
             );
@@ -4132,24 +4132,3 @@ fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
-/// The app's own window handle, for the DWM attributes and for the tray.
-///
-/// Taken from the window itself rather than GetForegroundWindow: the app is not
-/// necessarily foreground when it first paints, and asking the OS for whatever
-/// happens to be in front once applied dark chrome to a terminal instead.
-fn window_handle(cc: &eframe::CreationContext<'_>) -> Option<isize> {
-    #[cfg(windows)]
-    {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let handle = cc.window_handle().ok()?;
-        match handle.as_raw() {
-            RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
-            _ => None,
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = cc;
-        None
-    }
-}

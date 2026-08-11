@@ -5,9 +5,12 @@
 
 //! Where Clicker keeps things.
 //!
-//! Two homes: settings under `APPDATA`, because they are the user's and roam
-//! with them, and everything large or rebuildable under `LOCALAPPDATA` —
-//! downloads, the library cache, the timeshift buffer, the crash log.
+//! Two homes: settings under the profile root that roams with the user, and
+//! everything large or rebuildable — downloads, the library cache, the
+//! timeshift buffer, the crash log — under the machine-local one. Which
+//! directories those actually are is the platform's answer: `APPDATA` and
+//! `LOCALAPPDATA` on Windows, `~/Library/Application Support` on macOS, the
+//! XDG pair on Linux.
 //!
 //! The earliest builds wrote to a directory under a different name, so it is
 //! taken over on the way past. Moved rather than copied — a rename is atomic
@@ -26,13 +29,13 @@ const CURRENT: &str = "Clicker";
 /// Settings. Roams with the user profile.
 pub fn config_dir() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| home("APPDATA")).clone()
+    DIR.get_or_init(|| home(crate::platform::config_home())).clone()
 }
 
 /// Downloads, the library cache, timeshift buffers, the crash log. Local to
 /// the machine, because none of it is worth roaming and some of it is enormous.
 pub fn data_dir() -> Option<PathBuf> {
-    DIR.get_or_init(|| home("LOCALAPPDATA")).clone()
+    DIR.get_or_init(|| home(crate::platform::data_home())).clone()
 }
 
 static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -54,8 +57,8 @@ pub fn set_data_dir(dir: PathBuf) -> bool {
 
 /// The directory under one of the profile roots, after taking over whatever
 /// the old name left there.
-fn home(variable: &str) -> Option<PathBuf> {
-    let base = PathBuf::from(std::env::var_os(variable)?);
+fn home(base: Option<PathBuf>) -> Option<PathBuf> {
+    let base = base?;
     let current = base.join(CURRENT);
     let former = base.join(FORMER);
 

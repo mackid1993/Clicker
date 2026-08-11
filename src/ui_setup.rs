@@ -296,7 +296,7 @@ pub fn settings_screen(
                     ui.painter().text(
                         remove.center(),
                         egui::Align2::CENTER_CENTER,
-                        "\u{E74D}", // Delete
+                        theme::icon::DELETE,
                         egui::FontId::new(13.0, egui::FontFamily::Name(theme::ICON_FONT.into())),
                         Fluent::TEXT_SECONDARY,
                     );
