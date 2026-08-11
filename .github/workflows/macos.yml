@@ -1,0 +1,123 @@
+# SPDX-License-Identifier: MIT
+#
+# Clicker - an unofficial, native client for Channels DVR
+# Copyright (c) 2026 David Brustein
+#
+# Builds, signs, notarizes and staples Clicker.app on Apple silicon, and
+# attaches the zip to a draft release under the same tag the Windows
+# installer uses — cut a version by running both workflows with the same
+# number and publishing the one draft they share.
+#
+# Manual only, like every workflow here.
+#
+# Five repository secrets make the signing work
+# (Settings → Secrets and variables → Actions):
+#
+#   MACOS_CERTIFICATE           base64 of the Developer ID Application .p12
+#   MACOS_CERTIFICATE_PASSWORD  the password that .p12 was exported with
+#   APPLE_ID                    the Apple ID email of the developer account
+#   APPLE_TEAM_ID               the 10-character team id on the certificate
+#   APPLE_APP_PASSWORD          an app-specific password from appleid.apple.com
+#
+# The certificate goes into a throwaway keychain that dies with the runner;
+# nothing about the identity survives the job.
+
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp the build with, e.g. 1.1.7"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Check the version is a version
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+        run: |
+          V="$(echo "$RAW_VERSION" | xargs)"
+          if ! echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "version '$V' is not major.minor.patch" >&2
+            exit 1
+          fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      # Stamped the way build.ps1 stamps it, and thrown away with the runner.
+      - name: Stamp the version
+        run: |
+          sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          cargo update --package clicker --precise "${VERSION}" 2>/dev/null || true
+
+      - name: Import the signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "The MACOS_CERTIFICATE secret is not set; see the header of this workflow." >&2
+            exit 1
+          fi
+          KC="$RUNNER_TEMP/build.keychain-db"
+          KC_PASS="$(uuidgen)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" login.keychain-db
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Store notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials clicker-notary \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+
+      # The script finds the imported identity and the stored profile on its
+      # own; CI builds and desk builds go through the identical path.
+      - name: Build, sign, notarize
+        run: ./scripts/build-macos.sh
+
+      - name: Attach to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="target/macos/Clicker-macOS-${VERSION}-arm64.zip"
+          if ! gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release create "v${VERSION}" --draft --title "Clicker ${VERSION}" \
+              --notes "Draft assembled by CI; notes to come."
+          fi
+          gh release upload "v${VERSION}" "$ZIP" --clobber

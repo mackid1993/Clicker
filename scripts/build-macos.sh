@@ -16,13 +16,18 @@
 #     FFmpeg and forty friends — with install_name_tool surgery on each; a
 #     job worth doing when this ships to strangers, and pure liability while
 #     the only user has Homebrew anyway.
-#   * Ad-hoc signature, no notarization. Apple silicon requires *a*
-#     signature, not an identity: a locally built app runs fine signed
-#     ad-hoc. Distribution to other machines is where a Developer ID and
-#     notarization come in, and this script stops honestly short of it.
-#     One consequence worth knowing: macOS ties permission grants — the
-#     local network prompt included — to the signature, and an ad-hoc
+#   * Signing rises to whatever is available. With a "Developer ID
+#     Application" certificate in the keychain (or one named in
+#     CLICKER_SIGN_IDENTITY) the app is signed properly — hardened
+#     runtime, timestamp, the entitlements in packaging/macos — and if a
+#     notarytool keychain profile called "clicker-notary" exists it is
+#     notarized and stapled too, which is what lets it run on machines
+#     that are not this one. With none of that present it falls back to
+#     the ad-hoc signature a local build needs and nothing more. One
+#     ad-hoc consequence worth knowing: macOS ties permission grants —
+#     the local network prompt included — to the signature, and an ad-hoc
 #     signature changes with every build, so a rebuild may ask again.
+#     A stable identity ends that.
 #
 # Produces target/macos/Clicker.app and a zip beside it.
 
@@ -86,14 +91,44 @@ done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Clicker.icns"
 rm -rf "$ICONSET"
 
-# Apple silicon insists on a signature; it does not insist on an identity.
-echo "==> ad-hoc signature"
-codesign --force --deep -s - "$APP"
+# Sign with the best identity on hand. The grep is deliberately for
+# "Developer ID Application": that is the kind Apple issues for apps
+# distributed outside the App Store, and the only kind notarization accepts.
+IDENTITY="${CLICKER_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
+  | grep -m1 "Developer ID Application" | sed 's/.*"\(.*\)"/\1/' || true)}"
 
+if [[ -n "$IDENTITY" ]]; then
+  echo "==> signing as: $IDENTITY"
+  codesign --force --options runtime --timestamp \
+    --entitlements "$ROOT/packaging/macos/entitlements.plist" \
+    -s "$IDENTITY" "$APP"
+else
+  # Apple silicon insists on a signature; it does not insist on an identity.
+  echo "==> ad-hoc signature (no Developer ID certificate found)"
+  codesign --force --deep -s - "$APP"
+fi
+
+ZIP="$OUT/Clicker-macOS-${VERSION}-arm64.zip"
 echo "==> zip"
-ditto -c -k --keepParent "$APP" "$OUT/Clicker-macOS-${VERSION}-arm64.zip"
+ditto -c -k --keepParent "$APP" "$ZIP"
+
+# Notarization, when credentials have been stored once with:
+#   xcrun notarytool store-credentials clicker-notary \
+#     --apple-id <apple id email> --team-id <TEAMID> --password <app-specific>
+# Apple's service scans the zip, and stapling pins the verdict to the app so
+# it opens cleanly even offline.
+if [[ -n "$IDENTITY" ]] \
+  && xcrun notarytool history --keychain-profile clicker-notary >/dev/null 2>&1; then
+  echo "==> notarizing (this waits on Apple, usually a minute or two)"
+  xcrun notarytool submit "$ZIP" --keychain-profile clicker-notary --wait
+  xcrun stapler staple "$APP"
+  # Re-zip so the archive carries the stapled ticket too.
+  ditto -c -k --keepParent "$APP" "$ZIP"
+else
+  echo "==> not notarized (no clicker-notary keychain profile)"
+fi
 
 echo
 echo "Built $APP"
-echo "       $OUT/Clicker-macOS-${VERSION}-arm64.zip"
+echo "       $ZIP"
 echo "Needs: brew install mpv"
