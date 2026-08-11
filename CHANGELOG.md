@@ -12,8 +12,26 @@ On a Mac the window is a Mac window: native traffic lights float over the
 same dark surface, the system draws the corners and the shadow and handles
 edge resizing, and everything inside is unchanged. Apple silicon only.
 `scripts/build-macos.sh` produces the .app; libmpv comes from
-`brew install mpv`. On Linux there is a Flatpak, built by CI from the same
-pinned mpv tag and the same LGPL-only flags as the Windows installer.
+`brew install mpv`. On Linux it is a .deb and a source build — `make deps &&
+make && sudo make install` on anything the .deb does not cover — both built
+against a player compiled from the same pinned mpv tag and the same LGPL-only
+flags as the Windows installer.
+
+**Video on Linux renders on a thread of its own.** A driver that makes the
+caller wait — a virtual machine's translated OpenGL, a remote display — was
+holding the interface's own thread inside a render call for most of a frame
+interval, which is a window that stops answering the mouse and a picture that
+sheds half its frames while every counter reads healthy. mpv now draws on a
+worker with its own context and hands over only frames the GPU has finished,
+which is how mpv's own player survives the same drivers. On a Parallels guest
+against a 1080p60 channel that is 60fps with one dropped frame in a minute,
+where the interface-thread path managed 50 and dropped frames throughout.
+`CLICKER_RENDER_THREAD=0` puts it back on the interface thread.
+
+Text on Linux falls back to a face the machine actually has, asked of
+fontconfig rather than guessed at by path, so glyphs egui's bundled font does
+not carry — the arrow in the stats card's seek range, among others — draw as
+themselves instead of as an empty box.
 
 The icon glyphs on the new platforms come from Microsoft's MIT-licensed
 Fluent UI System Icons, subset to the twenty-eight glyphs the interface

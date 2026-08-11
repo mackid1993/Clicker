@@ -292,6 +292,26 @@ overrides the choice; `null` silences playback and tells you in ten seconds
 whether a misbehaving sound device is what is ruining the video, which is
 worth knowing because on Linux mpv paces video against the audio clock.
 
+**Video is rendered on a thread of its own** on Linux, into a texture the
+interface then draws. That is not how it works on Windows or macOS, and the
+reason is drivers that make a caller wait: a translated OpenGL — a virtual
+machine, a remote display — can hold a render call for most of a frame while
+doing no work at all, and on the interface's own thread that is a window that
+stops answering the mouse and a picture that sheds half its frames. On the
+worker it is a thread whose whole job is to wait. Measured on a Parallels
+guest against a 1080p60 channel: 60fps with one frame dropped in a minute,
+where the same build with `CLICKER_RENDER_THREAD=0` — which is the off switch
+— managed 50fps and dropped frames the whole way through.
+
+**Three environment variables exist for testing**, and are the reason a
+playback question no longer costs an evening. `CLICKER_PLAY=<file or URL>`
+opens that source at startup, so a machine can be tested from a script with no
+server and no hand on the mouse. `CLICKER_MPV_OPTS="profile=fast,hwdec=no"`
+passes mpv's own options straight through, so a knob can be tried without a
+rebuild. `CLICKER_VIDEO=window` hands mpv the whole window instead of an
+offscreen target — it overdraws the interface, and it is how the cost of the
+offscreen target itself gets measured.
+
 **What is deliberately not bundled** is graphics: Mesa, libGL, libwayland,
 libva, libvdpau, the cursor theme. Hardware decoding talks to the machine's
 own driver and the compositor is the machine's own, so those must be the ones

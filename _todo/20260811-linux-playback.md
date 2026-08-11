@@ -1,143 +1,128 @@
 # TPP: Linux playback — stutter, freezes, and the audio clock
 
-Status: **Phase 7 — final verification pending.** ROOT CAUSE FOUND IN
-render.h, superseding every earlier theory: this embedding set
-BLOCK_FOR_TARGET_TIME=0 (correct) but never did the documented "in addition" —
-video-timing-offset=0. With the offset at its 50ms default, whenever video is
-timed to audio (Linux), mpv delivers every frame up to 50ms EARLY expecting
-the embedder to hold it; we showed each immediately. Explains: smooth with no
-audio, uneven with sound, standalone mpv fine (it blocks), any-Linux not just
-VMs. Fix shipped in 214e740; PipeWire bundling layer stripped as unneeded in
-9c04c87 (the underruns were a coincident VM symptom, not the cause).
+Status: **Resolved on the test bench; release verification is what is left.**
+The fix was already committed and had never been run: 6228580 turned the
+render thread on by default, and the build being tested was the one before it,
+with the thread parked. Measured on David's Parallels guest against live
+channel 356 (h264 1080p60), same binary, same channel, back to back:
 
-Test bench: David's Parallels VM "Ubuntu 24.04.3 ARM64" (**4 cores**, 3.8G,
-virtio-gpu/virgl, PipeWire). `prlctl exec "Ubuntu 24.04.3 ARM64" '<cmd>'`.
-App log: `/home/parallels/.local/share/Clicker/player.log`, one block per
-`=== Clicker 1.1.7 started ===`. David sometimes installs/uninstalls while
-you test — check `dpkg -s clicker` + `md5sum /usr/lib/clicker/clicker` vs the
-CI deb before trusting any run's result. HTTP bridge to VM:
-`python3 -m http.server 8731 --bind 10.211.55.2` in ~/Downloads/clicker-appimage.
+| | frames drawn | mpv dropped | render call |
+|---|---|---|---|
+| render thread on (default) | 59.8–60.4 fps | 1 in 60s | 3–6ms |
+| `CLICKER_RENDER_THREAD=0` | 44–53 fps | 221 in 45s | 0.3–1.1ms |
 
-## Phases
+A nine-minute soak held 60fps with nine dropped frames total and flat memory.
+David's own verdict on a channel he tuned himself: stable.
 
-- [x] 1. Packaging: .deb (AppImage+Flatpak deleted). setup.sh menu:
-      deb/source/uninstall. Makefile. Uninstall in app menu + self-elevating
-      uninstall.sh.
-- [x] 2. Audio existed at all: alsa+pulse enabled, ldd-based gate, cache key.
-- [x] 3. Shared-code render bugs, all platforms: CPU-based skip; window-size
-      FBO; aspect-true height; double-buffered surface. Windows+macOS compile
-      green; behavior-neutral there.
-- [x] 4. Render thread (own EGL context). WORKS but flashed white under virgl
-      → **parked behind CLICKER_RENDER_THREAD=1** (default off) until real
-      hardware tests it. Architecture is right; keep it.
-- [x] 5. Audio clock convicted. Timeline fact: video was smooth in the mute
-      builds; every stutter dates from the first build with sound. mpv logged
-      "Audio/Video desynchronisation" + "Audio device underrun detected".
-- [x] 6. Native PipeWire: libpipewire 1.0.7 built in build-mpv.sh
-      (auto_features=disabled; spa-plugins MUST stay enabled — see lore),
-      -Dpipewire=enabled, bundled (MIT), `ao=pipewire,` asked BY NAME (mpv
-      probes pulse first!), SPA_PLUGIN_DIR/PIPEWIRE_MODULE_DIR fixup at
-      startup. Gate prints `audio: libasound libpipewire libpulse`.
-- [x] 6b. **The researched root cause** (Arch bbs 280654 + PipeWire docs
-      "Stuttering audio in VMs"): guests need api.alsa.period-size=1024 +
-      api.alsa.headroom=8192 (upstream alsa-vm.conf). Ubuntu 24.04 DOES NOT
-      SHIP IT; `systemd-detect-virt`=parallels but no profile. **Written to
-      David's VM** at /etc/wireplumber/wireplumber.conf.d/alsa-vm.conf +
-      services restarted.
-- [x] 6c. VM support in Clicker (Linux-only): `platform::virtualization()`
-      reads 4 DMI fields + CPU hypervisor flag (Parallels/VMware/Proxmox/
-      QEMU/KVM/Bochs/VirtualBox/innotek/Xen/Hyper-V/EC2/GCE); when virtual:
-      PIPEWIRE_LATENCY=2048/48000 (if unset), mpv audio-buffer=1.0,
-      hwdec=auto-copy (same as flatpak), log lines incl. hint when the system
-      lacks alsa-vm.conf. `in_vm()` in mpv.rs, false off-Linux.
-- [ ] 7. **VERIFY, then release 1.1.7.** Test deb: run 31481063348 (timing
-      fix, still has pipewire inside). KEEPER deb: run 31481216365 (lean,
-      sha 9c04c87+) — full mpv rebuild, ~15min. Windows 31475999301 + macOS
-      31476001506 built, unplaytested; rebuild all three for release anyway.
-      release.yml passes notarize:true; published debs light up setup.sh.
+Why it works is not that the render call got faster — it did not — but that
+the waiting moved. The interface no longer sits inside a driver call it cannot
+hurry, and mpv is no longer starved of the render cadence its audio-paced
+timing expects.
 
-## Next session: do this first
+## What the earlier theories were worth
 
-1. Latest lean deb (31481216365 or newer): install, play WITH sound. The one
-   question: is video even, no stall, no freeze? video-timing-offset=0 is the
-   render.h-prescribed fix for exactly the recorded symptoms. If smooth →
-   Phase 7: rebuild all three platforms, cut 1.1.7.
-2. If STILL bad: the contract is now honored and the suspects are exhausted
-   in-app — David's hold stands; seek a real-hardware tester. Optional
-   cleanups then: remove /etc/wireplumber/wireplumber.conf.d/alsa-vm.conf
-   from the VM (mine, upstream-default values, harmless), and decide the
-   guest keeps 4 cores.
-3. Final knobs as committed: video-timing-offset=0 (everywhere; inert under
-   display-resample), autosync=30 (all Linux), ao from CLICKER_AO only,
-   hwdec auto-copy in flatpak/VM, render thread behind CLICKER_RENDER_THREAD.
+- **video-timing-offset=0** (214e740): correct, and confirmed against mpv's own
+  documentation — "this applies only to audio timing modes; in
+  `--video-sync=display-...` this option is not used". So it is live on Linux
+  and genuinely inert on Windows and macOS, which is what the earlier note
+  claimed and what makes it safe. It was not, on its own, the fix: the build
+  that carried it still stuttered.
+- **The audio clock** was a real symptom and a false lead. Underruns still
+  appear in the log and playback is now smooth anyway.
+- **PipeWire bundling** (removed in 9c04c87): correctly removed. `AO: [pulse]`
+  plays fine at 60fps.
+- **The white flashes that parked the thread** were the cross-context fence
+  handoff, not the architecture. The worker now calls `glFinish` and publishes
+  only finished frames; no fence crosses threads, and the fence machinery is
+  gone from the code entirely.
 
-## Lore (hard-won; keep)
+## The file descriptor leak is the driver's, and it is proven
 
-- **On Linux mpv paces VIDEO by the AUDIO clock** (`video-sync=audio`). A bad
-  sound device presents as a video problem. "Fine with no audio" was the tell
-  that unlocked everything; underruns in the log went uninvestigated for
-  hours while the renderer was rebuilt twice. Read the whole log first.
-- **mpv AO probe order tries pulse BEFORE pipewire** — a build can carry a
-  native pipewire AO that is never used. `AO: [pulse]` + libpipewire on disk
-  was the proof. Fixed with `ao=pipewire,` (trailing comma = fallback).
-- **PipeWire 1.0.7 meson**: `-Dspa-plugins=disabled` is fatal (module refs
-  `audioconvert_dep` unconditionally; fails at src/modules/meson.build:125).
-  Keep plugins ON + `-Dauto_features=disabled`; stage only libpipewire-0.3.*.
-- **Bundled libpipewire needs host paths**: SPA_PLUGIN_DIR/PIPEWIRE_MODULE_DIR
-  set at startup (platform/linux.rs audio_environment) else the baked build
-  prefix (nonexistent) is searched.
-- **VM detection**: /sys/devices/virtual/dmi/id/{sys_vendor,product_name,
-  board_vendor,bios_vendor} lowercased + needle list; /proc/cpuinfo
-  "hypervisor" flag as catch-all. Proxmox stamps QEMU (old: Bochs);
-  VirtualBox stamps innotek.
-- **Render thread lore** (all still true, code parked behind env):
-  eglGetCurrentContext during a paint → shared sibling ctx, surfaceless;
-  FBOs per-context, textures+GLsync shared; mpv = ONE render ctx per handle
-  (warm-up at main.rs ~1126 must yield via threaded_active());
-  BLOCK_FOR_TARGET_TIME=1 holds mpv's internal lock → UI futex-froze on
-  report_swap (threaded path: block=0, NO report_swap); bare condvar loses
-  mid-render notifies → latched `pending` AtomicBool. White flashes on virgl
-  = cross-context handoff; untested on real GPUs.
-- **virgl**: paint thread caught in DRM_IOCTL_VIRTGPU_WAIT (0xc0086448, nr
-  0x48 aarch64) at 0.02 core — waiting, not working; fences/swap throttle all
-  GL on the thread. Skipping/downscaling cannot fix waiting.
-- **Diagnosis kit**: /proc/PID/task/*/{comm,status,wchan,syscall} via prlctl;
-  freeze-catcher Monitor = poll utime, 15s flat → dump; hash the installed
-  binary vs CI deb before believing a test; /proc environ shows only the
-  INITIAL env (set_var invisible).
-- **set -e killed scripts 3×** via `[[ t ]] && cmd` / `|| v=$(pipe)`; grep -x
-  on binaries never matches (no lines) — use ldd. **install.sh at repo root
-  breaks autoconf** two dirs down (aux-dir probe) → installer is setup.sh.
-- **CI**: cache fingerprint = sed comments away, grep tags+flags (now incl.
-  PIPEWIRE_TAG + audio + Dpipewire). gh workflow run can RACE the push — a
-  dispatch grabbed the pre-push sha once; verify run headSha, cancel+redo.
-  Python heredoc replaces MUST assert; one silent miss shipped an unfixed
-  build and a lying commit was barely avoided (second time it DID lie in the
-  message body — commit cc106b9 note).
-- **macOS floor unresolved**: Homebrew dylibs minos 15.0 vs plist 12.0.
-  dev-macos.sh builds mpv itself; no Homebrew fallback exists on macOS.
-- **apt reinstalls same-version fine**; consider 1.1.7+g<sha> stamps someday.
+~60 `anon_inode:sync_file` descriptors per second, one per swap. **An idle
+window with no video at all leaks at exactly the same rate** — that is the
+measurement that settles it. Nothing in this application creates them; it is
+Mesa/virgl on this guest. 6a1e5e7's raise to the hard limit stands as the
+right mitigation: it turns a 23-second cliff at the old 1024 soft limit into
+roughly five hours. Not a fix, and not ours to fix. **Open question for a long
+session**: five hours of continuous playback still ends at the ceiling. Worth
+checking whether a newer Mesa closes them, and whether the X11 path leaks the
+same way — that test was set up and never run.
 
-## Failed approaches (do not retry)
+## Test bench and how to drive it
 
-- Wall-clock skip; escalating tiers (03ff434). Downscaling under load
-  (65cf548→947a509) — also squeezed until aspect fix b5cff1e. vsync off
-  (7dba906→reverted a6881c4): guide tearing. Double-buffer as THE fence fix
-  (cdf6798): right class, wrong resource. report_swap / block=1 on worker.
-  Blaming stale binaries/caches (hash-disproven). Per-option spa-plugin
-  disables in pipewire meson (2 identical failures before auto_features).
-- Fixing VM audio from app code alone — device-level buffers are wireplumber
-  config; app can only request its own quantum + buffer deep (done).
+Parallels VM "Ubuntu 24.04.3 ARM64" — now **6 cores, 7.9G**, virtio-gpu/virgl
+(`virgl (Apple M4 Pro (Compat))`, GL 4.0), GNOME on Wayland, PipeWire.
+`prlctl exec "Ubuntu 24.04.3 ARM64" '<cmd>'`; `prlctl capture` takes a screen
+grab from the host, though its output bands badly and a moving black band in
+one is the capture, not the app.
 
-## Open loose ends
+**The dev loop is the thing to keep.** A full checkout with mpv already built
+lives at `~/.cache/clicker-build` in the guest; `git fetch && cargo build
+--release` there is **16 seconds**, against twenty minutes for a CI deb. Run
+it with `LD_LIBRARY_PATH=~/.cache/clicker-build/third_party/mpv`. To ship the
+working tree without pushing: `tar czf` src and serve it over
+`python3 -m http.server 8731 --bind 10.211.55.2`, curl it in the guest.
 
-- #12 macOS local-network permission (os error 65) — untouched all session.
-- Wider-hypervisor-net commit is on main but NOT in deb 31480349575 — next
-  build carries it (behavior identical for Parallels).
-- in_flatpak() path kept deliberately for a future Flathub attempt.
-- David asked (interrupted, never done): dev-macos.sh fully brew-free — it
-  still needs brew for meson/ninja/nasm/libass/libplacebo build deps.
-- Maintainability trio: keys.rs 17 cfgs → platform::DEFAULT_BINDINGS;
-  check.yml pins deprecated macos-14; mpv tags duplicated ps1/sh.
-- README/NOTICE/THIRD_PARTY updated for PipeWire + VM support NOT yet
-  documented in README (CLICKER_RENDER_THREAD + VM behavior undocumented).
+Three environment variables now make a playback question answerable in a
+minute instead of an evening, and they are why this was resolved in one
+session rather than another all-nighter:
+
+- `CLICKER_PLAY=<file or URL>` — open that source at startup, no server, no
+  hand on the mouse. A live channel is
+  `http://<dvr>:8089/devices/ANY/channels/<n>/stream.mpg`.
+- `CLICKER_MPV_OPTS="profile=fast,hwdec=no"` — mpv's own options, no rebuild.
+- `CLICKER_VIDEO=window` — mpv draws into the window itself, no offscreen
+  target and no blit. It overdraws the interface and is a measuring
+  instrument, not a mode.
+
+The log line to read is one per five seconds: frames drawn, frames painted,
+where, what the decoder managed, what mpv threw away, and what the render call
+cost. Frames drawn is the number that decides it.
+
+## Left to do
+
+- [ ] Rebuild all three platforms and cut 1.1.7. Windows and macOS are
+      untouched by this session's changes except the font fallback, which is
+      `None` on both, and the compile is proven by `check.yml`.
+- [ ] Playtest Windows and macOS once before release. Neither has been run
+      since the port's later commits.
+
+## Known and deliberately not fixed here
+
+- **Recording the programme you are watching has never worked.** `Msg::Program`
+  has had no sender since the first commit — `git log -S` proves it — so
+  `self.airing` is always `None` and the record button in the transport always
+  answers "Still loading the guide for this channel". `api::current_airing`
+  and `api::padding` are the unused wiring it wants. Predates the port; left
+  alone rather than deleted, because deleting it would remove the parts the
+  fix needs.
+- Guide fields parsed and never read (`hd`, `favorite`, `program_id`,
+  `is_movie`), and `ui::Action::WatchLive`, which nothing constructs.
+- macOS: Homebrew dylibs minos 15.0 against a plist floor of 12.0;
+  `dev-macos.sh` still needs brew for meson/ninja/nasm.
+- #12 macOS local-network permission (os error 65).
+- Maintainability: keys.rs's 17 cfgs want a `platform::DEFAULT_BINDINGS`;
+  check.yml pins a deprecated macos-14; mpv tags are duplicated between the
+  .ps1 and .sh builders.
+
+## Lore worth keeping
+
+- **On Linux mpv paces video by the audio clock** (`video-sync=audio`), so a
+  bad sound device presents as a video problem. Read the whole log first.
+- **A slow render call and a blocked one look identical on the clock.** Wall
+  time with the processor share beside it is what tells them apart: 28ms at
+  0.02 of a core is a thread waiting, and no amount of skipping frames or
+  rendering fewer pixels helps a thread that is waiting.
+- **PipeWire 1.0.7 meson**: `-Dspa-plugins=disabled` is fatal. Keep plugins on
+  with `-Dauto_features=disabled` if it is ever built again.
+- **VM detection** reads four DMI fields plus the cpuinfo hypervisor flag;
+  Proxmox stamps QEMU, VirtualBox stamps innotek.
+- **egui's bundled face stops not far past Latin.** On Linux nothing sits in
+  front of it, so `→` drew as an empty box. Ask fontconfig for a face
+  containing the glyph rather than guessing at distribution font paths.
+- `set -e` has killed these scripts three times via `[[ t ]] && cmd`. CI cache
+  fingerprints are grep'd out of the build scripts; a Python heredoc that
+  edits a file **must assert** it matched.
+- **Do not retry**: wall-clock frame skipping and escalating skip tiers;
+  downscaling under load; vsync off (guide tearing); double buffering as the
+  fence fix; `report_swap` on the worker; blaming stale binaries.
