@@ -236,6 +236,41 @@ pub unsafe extern "C" fn gl_proc_address(_ctx: *mut c_void, name: *const c_char)
     super::library_symbol(libgl, name as *const u8)
 }
 
+/// Which hypervisor this is running under, if any.
+///
+/// Read from DMI, which every hypervisor stamps with its name, with the CPU's
+/// hypervisor flag as a fallback for the ones that do not. Asked once.
+pub fn virtualization() -> Option<&'static str> {
+    static WHO: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *WHO.get_or_init(|| {
+        let dmi = |f: &str| std::fs::read_to_string(format!("/sys/devices/virtual/dmi/id/{f}"))
+            .unwrap_or_default()
+            .to_lowercase();
+        let id = format!("{} {}", dmi("sys_vendor"), dmi("product_name"));
+        for (needle, name) in [
+            ("parallels", "Parallels"),
+            ("vmware", "VMware"),
+            ("qemu", "QEMU/KVM"),
+            ("kvm", "QEMU/KVM"),
+            ("virtualbox", "VirtualBox"),
+            ("xen", "Xen"),
+            ("microsoft", "Hyper-V"),
+        ] {
+            if id.contains(needle) {
+                return Some(name);
+            }
+        }
+        // The flag every hypervisor sets even when DMI says nothing useful.
+        if std::fs::read_to_string("/proc/cpuinfo")
+            .unwrap_or_default()
+            .contains("hypervisor")
+        {
+            return Some("an unidentified hypervisor");
+        }
+        None
+    })
+}
+
 /// Point the bundled PipeWire client at the machine's own plugins.
 ///
 /// The client library we may carry was built with our staging prefix baked in
@@ -273,4 +308,32 @@ pub fn audio_environment() {
             "/usr/lib/pipewire-0.3",
         ],
     );
+
+    // Inside a virtual machine, ask the sound server for large buffers.
+    //
+    // Emulated sound hardware underruns against the small buffers a desktop
+    // tunes for, the audio clock jitters with every underrun, and on Linux
+    // mpv paces video by that clock — so a VM's audio buffers are a video
+    // problem. PipeWire upstream ships VM defaults (alsa-vm.conf) for
+    // exactly this and not every distribution carries them; what an
+    // application may do for itself is request a large quantum for its own
+    // stream, which is this environment variable. A user's own setting is
+    // left alone.
+    if let Some(vm) = virtualization() {
+        if std::env::var_os("PIPEWIRE_LATENCY").is_none() {
+            std::env::set_var("PIPEWIRE_LATENCY", "2048/48000");
+        }
+        crate::log::line(&format!(
+            "[clicker] running under {vm}; asking for large audio buffers"
+        ));
+        if !std::path::Path::new("/usr/share/wireplumber/wireplumber.conf.d/alsa-vm.conf").exists()
+            && !std::path::Path::new("/etc/wireplumber/wireplumber.conf.d/alsa-vm.conf").exists()
+        {
+            crate::log::line(
+                "[clicker] this system lacks PipeWire's VM audio profile (alsa-vm.conf: \
+                 api.alsa.period-size=1024, api.alsa.headroom=8192); if audio still \
+                 underruns, that file is the system-wide fix",
+            );
+        }
+    }
 }

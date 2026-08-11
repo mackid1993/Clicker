@@ -477,6 +477,20 @@ fn in_flatpak() -> bool {
     *INSIDE.get_or_init(|| std::path::Path::new("/.flatpak-info").exists())
 }
 
+/// Whether this is running inside a virtual machine, where emulated sound
+/// and translated graphics both earn allowances. False everywhere but Linux:
+/// on Windows and macOS nothing here changes by VM, so nothing asks.
+fn in_vm() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::platform::virtualization().is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// The built-in Lua scripts, every one of them turned off.
 ///
 /// mpv ships nine, and every one is dead weight here: they draw an on-screen
@@ -658,7 +672,13 @@ impl Player {
                 "hwdec",
                 if software_decoding {
                     "no"
-                } else if in_flatpak() {
+                } else if in_flatpak() || in_vm() {
+                    // A sandbox and a virtual machine share the failure: the
+                    // decode stack and the display stack are not the matched
+                    // pair a desktop has, and full hardware decode trusts
+                    // that match. auto-copy decodes on whatever the chip
+                    // offers and copies the frame back to memory it owns,
+                    // which survives both.
                     "auto-copy"
                 } else {
                     "auto-safe"
@@ -776,6 +796,13 @@ impl Player {
                 },
             ),
             ("user-agent", &crate::settings::user_agent()),
+            // A second of audio buffered ahead inside mpv, in a VM only.
+            // Emulated sound devices underrun against desktop-sized buffers,
+            // the clock jitters with every underrun, and video is paced by
+            // that clock here. A large application-side buffer rides out the
+            // jitter the device cannot avoid. Blank means default, and blank
+            // options are skipped.
+            ("audio-buffer", if in_vm() { "1.0" } else { "" }),
             // Which audio output, overridable from the environment.
             //
             // For separating causes, and it earned its place the hard way: on
