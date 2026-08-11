@@ -307,7 +307,13 @@ jobs:
         run: |
           IDENTITY=$(security find-identity -v -p codesigning \
             | grep -m1 "Developer ID Application" | sed 's/.*"\(.*\)"/\1/')
-          echo "signing as: $IDENTITY"
+          # The certificate's kind, not its holder. A Developer ID common name
+          # carries the account holder's own name, and this log is public on
+          # every run; the team id beside it is masked as a secret already,
+          # which makes printing the name it belongs to the odd one out. What
+          # a reader of this log needs is that an identity was found and which
+          # kind it is, and that is what is left.
+          echo "signing as: ${IDENTITY%% (*}"
           # Inside out: a hardened bundle is only as signed as the code
           # nested in it, and these libraries were rewritten by lipo after
           # their own builds signed them.

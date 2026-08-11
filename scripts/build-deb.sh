@@ -54,6 +54,13 @@ for tool in dpkg-deb dpkg-shlibdeps cargo; do
   }
 done
 
+# Keep the machine's directory layout out of the binary, as build.ps1 does on
+# Windows. rustc records the path of every source file it compiles, including
+# the crate registry under $HOME, and those strings survive into the shipped
+# executable. `strip = true` removes symbols; this removes the paths baked
+# into panic messages, which stripping does not touch.
+export RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$ROOT=/clicker --remap-path-prefix=$HOME=/home ${RUSTFLAGS:-}"
+
 echo "==> cargo build --release ($ARCH)"
 cargo build --release --manifest-path "$ROOT/Cargo.toml"
 

@@ -67,8 +67,18 @@ help:
 # no audio output compiled in was already on disk, so the gate that would
 # have rejected it never ran, and `make` cheerfully reinstalled the silent
 # player it was supposed to catch.
+# Keep the machine's directory layout out of the binary, the way build.ps1
+# has always done on Windows. rustc records the path of every source file it
+# compiles, the crate registry under the home directory included, and those
+# strings survive into the executable where anyone with a copy can read them.
+# `strip = true` in Cargo.toml takes the symbol table; this takes the paths
+# baked into panic messages, which it does not.
+REMAP := --remap-path-prefix=$(HOME)/.cargo=/cargo \
+         --remap-path-prefix=$(CURDIR)=/clicker \
+         --remap-path-prefix=$(HOME)=/home
+
 build: mpv
-	cargo build --release
+	RUSTFLAGS="$(REMAP) $$RUSTFLAGS" cargo build --release
 
 mpv:
 	./scripts/build-mpv.sh

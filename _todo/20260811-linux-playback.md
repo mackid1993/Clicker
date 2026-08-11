@@ -3,8 +3,8 @@
 Status: **Resolved on the test bench; release verification is what is left.**
 The fix was already committed and had never been run: 6228580 turned the
 render thread on by default, and the build being tested was the one before it,
-with the thread parked. Measured on David's Parallels guest against live
-channel 356 (h264 1080p60), same binary, same channel, back to back:
+with the thread parked. Measured on the Parallels test guest against a live
+1080p60 channel, same binary, same channel, back to back:
 
 | | frames drawn | mpv dropped | render call |
 |---|---|---|---|
@@ -12,7 +12,7 @@ channel 356 (h264 1080p60), same binary, same channel, back to back:
 | `CLICKER_RENDER_THREAD=0` | 44–53 fps | 221 in 45s | 0.3–1.1ms |
 
 A nine-minute soak held 60fps with nine dropped frames total and flat memory.
-David's own verdict on a channel he tuned himself: stable.
+Confirmed by hand on a channel tuned from the interface: stable.
 
 Why it works is not that the render call got faster — it did not — but that
 the waiting moved. The interface no longer sits inside a driver call it cannot
@@ -50,7 +50,7 @@ same way — that test was set up and never run.
 
 ## Test bench and how to drive it
 
-Parallels VM "Ubuntu 24.04.3 ARM64" — now **6 cores, 7.9G**, virtio-gpu/virgl
+The Parallels guest — **6 cores, 7.9G**, virtio-gpu/virgl
 (`virgl (Apple M4 Pro (Compat))`, GL 4.0), GNOME on Wayland, PipeWire.
 `prlctl exec "Ubuntu 24.04.3 ARM64" '<cmd>'`; `prlctl capture` takes a screen
 grab from the host, though its output bands badly and a moving black band in
@@ -61,7 +61,8 @@ lives at `~/.cache/clicker-build` in the guest; `git fetch && cargo build
 --release` there is **16 seconds**, against twenty minutes for a CI deb. Run
 it with `LD_LIBRARY_PATH=~/.cache/clicker-build/third_party/mpv`. To ship the
 working tree without pushing: `tar czf` src and serve it over
-`python3 -m http.server 8731 --bind 10.211.55.2`, curl it in the guest.
+`python3 -m http.server` bound to the host-only address, and curl it in the
+guest.
 
 Three environment variables now make a playback question answerable in a
 minute instead of an evening, and they are why this was resolved in one

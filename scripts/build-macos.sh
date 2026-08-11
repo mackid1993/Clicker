@@ -74,6 +74,13 @@ APP="$OUT/Clicker.app"
 # useless: it produced a universal binary sitting next to arm64-only
 # libraries, which is an Intel Mac launching and then failing to load its
 # player.
+# Keep the machine's directory layout out of the binary, as build.ps1 does on
+# Windows. rustc records the path of every source file it compiles, including
+# the crate registry under $HOME, and those strings survive into the shipped
+# executable. `strip = true` removes symbols; this removes the paths baked
+# into panic messages, which stripping does not touch.
+export RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$ROOT=/clicker --remap-path-prefix=$HOME=/home ${RUSTFLAGS:-}"
+
 echo "==> cargo build --release ($(uname -m))"
 cargo build --release --manifest-path "$ROOT/Cargo.toml"
 
