@@ -615,6 +615,11 @@ impl App {
         // the first attempt to reach the DVR has already failed on it.
         platform::request_local_network();
 
+        // The menu bar, where the platform keeps one above the window rather
+        // than inside it. Here rather than before the window exists: it is
+        // handed to the running application object, which by now there is.
+        platform::install_menu_bar();
+
         // Maximize by command rather than by `ViewportBuilder::with_maximized`.
         //
         // The builder is told to maximize *and* given the restored position and
@@ -759,6 +764,20 @@ impl App {
         self.guide_loaded_at = Instant::now();
         spawn_home(&self.runtime, &self.tx, self.repaint.clone(), &server);
         spawn_guide(&self.runtime, &self.tx, self.repaint.clone(), &server);
+    }
+
+    /// Whatever the menu bar was asked for, on the platforms that have one.
+    ///
+    /// The system's own items — Quit, Hide, Full Screen, the clipboard verbs
+    /// — never arrive here; macOS acts on those itself. Only the two that
+    /// belong to this program do.
+    fn pump_menu(&mut self) {
+        while let Some(command) = platform::menu_command() {
+            match command {
+                platform::MenuCommand::OpenSettings => self.screen = Screen::Settings,
+                platform::MenuCommand::Refresh => self.refresh_data(),
+            }
+        }
     }
 
     fn reconnect(&mut self) {
@@ -1181,6 +1200,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_tray(ctx);
+        self.pump_menu();
         self.drain_messages();
 
         // Bring the renderer up, and only then let mpv open the file.

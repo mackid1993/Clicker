@@ -25,10 +25,19 @@
 name: Build macOS app
 
 on:
+  # Dispatch to get a signed .app to try; workflow_call is how the Release
+  # workflow asks for one. Never on a push — signing and notarizing on every
+  # commit would spend Apple's queue and a runner to prove what a compile
+  # already proves, and the Check workflow is what watches for breakage.
   workflow_dispatch:
     inputs:
       version:
         description: "Version to stamp the build with, e.g. 1.1.7"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
         required: true
         type: string
 
@@ -39,7 +48,7 @@ jobs:
   build:
     runs-on: macos-14
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -145,13 +154,10 @@ jobs:
       - name: Build, sign, notarize
         run: ./scripts/build-macos.sh
 
-      - name: Attach to the draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ZIP="target/macos/Clicker-macOS-${VERSION}-arm64.zip"
-          if ! gh release view "v${VERSION}" >/dev/null 2>&1; then
-            gh release create "v${VERSION}" --draft --title "Clicker ${VERSION}" \
-              --notes "Draft assembled by CI; notes to come."
-          fi
-          gh release upload "v${VERSION}" "$ZIP" --clobber
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: target/macos/Clicker-macOS-${{ env.VERSION }}-arm64.zip
+          if-no-files-found: error
+          retention-days: 30

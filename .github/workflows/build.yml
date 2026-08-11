@@ -21,16 +21,20 @@
 name: Build installer
 
 on:
+  # Two doors, one job. Dispatch builds an installer to download and try;
+  # workflow_call is how the Release workflow asks for the same thing as part
+  # of assembling a version. Neither fires on a push, deliberately: a release
+  # is a thing somebody decides to cut.
   workflow_dispatch:
     inputs:
       version:
         description: "Version to stamp the build with, e.g. 1.1.5"
         required: true
         type: string
-      notes:
-        description: "Release notes for the draft release"
-        required: false
-        default: ""
+  workflow_call:
+    inputs:
+      version:
+        required: true
         type: string
 
 permissions:
@@ -39,11 +43,10 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    # Write, only because the draft-release step at the end needs it. The
-    # narrower read above stays the default for anything else added to this
-    # file later.
+    # Read is all a build needs now that it publishes nothing. Only the
+    # Release workflow writes to the repository.
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -152,38 +155,15 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Version $env:VERSION
 
+      # The installer, and nothing else. Drafting the release used to happen
+      # here, which made this workflow the only one that could cut a version
+      # and left the Mac and Linux builds to bolt themselves onto whatever it
+      # had made. Assembling a release is now one workflow's whole job, and
+      # this one's job is to produce an installer.
       - name: Upload the installer
         uses: actions/upload-artifact@v4
         with:
-          name: Clicker-Setup-${{ env.VERSION }}
+          name: windows-installer
           path: dist/Clicker-Setup-${{ env.VERSION }}.exe
           if-no-files-found: error
           retention-days: 30
-
-      # A draft, always: nothing is public and no tag exists until somebody
-      # reads the notes with the installer in hand and clicks publish. The tag
-      # is created at that moment, pointing at the commit this run built.
-      - name: Draft a release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # Through the environment, not spliced into the script below. Notes
-          # are prose typed by a person: a quote or a backtick in them would
-          # end the string and run the rest as PowerShell.
-          NOTES: ${{ inputs.notes }}
-        shell: pwsh
-        run: |
-          $notes = $env:NOTES
-
-          if ([string]::IsNullOrWhiteSpace($notes)) {
-            $notes = "Built from $env:GITHUB_SHA."
-          }
-
-          # A file rather than an argument, so newlines survive.
-          $notes | Out-File -FilePath notes.md -Encoding utf8
-
-          gh release create "v$env:VERSION" `
-            "dist\Clicker-Setup-$env:VERSION.exe" `
-            --draft `
-            --target $env:GITHUB_SHA `
-            --title "Clicker $env:VERSION" `
-            --notes-file notes.md

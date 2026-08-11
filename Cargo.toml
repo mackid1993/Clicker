@@ -60,6 +60,12 @@ rfd = { version = "0.15", default-features = false }
 # On the free desktops rfd needs told which backend to be. The portal, not
 # GTK: pure Rust, no C linkage, and the dialog that appears is the desktop's
 # own — the same door a Flatpak is required to use anyway.
+# The menu bar, on the one platform that has one above the window rather than
+# inside it. Already in the tree underneath tray-icon, so naming it here adds
+# a line to this file and nothing to the build.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.19", default-features = false }
+
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 # tray-icon has the same shape: default-features = false leaves its menu

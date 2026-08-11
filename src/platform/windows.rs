@@ -134,6 +134,23 @@ pub const LOCAL_NETWORK_HINT: &str = "";
 /// Nothing to request: there is no local network permission here.
 pub fn request_local_network() {}
 
+/// What a menu item asked for. Nothing here has a menu bar to ask from —
+/// the navigation rail is the menu — but the type is shared so the caller
+/// has one shape to handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuCommand {
+    OpenSettings,
+    Refresh,
+}
+
+/// No menu bar: this platform puts an application's commands inside its
+/// window, which is where this one draws them.
+pub fn install_menu_bar() {}
+
+pub fn menu_command() -> Option<MenuCommand> {
+    None
+}
+
 // --- where files go ----------------------------------------------------------
 
 /// The profile root settings live under. Roams with the user.

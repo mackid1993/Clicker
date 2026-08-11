@@ -397,6 +397,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "image",
+ "muda",
  "raw-window-handle",
  "reqwest",
  "rfd",

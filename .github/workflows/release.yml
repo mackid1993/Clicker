@@ -1,0 +1,170 @@
+# SPDX-License-Identifier: MIT
+#
+# Clicker - an unofficial, native client for Channels DVR
+# Copyright (c) 2026 David Brustein
+#
+# Cuts a version: builds every platform from one commit and puts all of it
+# into one draft release.
+#
+# This is the only workflow that writes to the repository. The three build
+# workflows it calls produce artifacts and nothing else — that separation is
+# the point. Before it, the Windows installer drafted the release and the
+# other two bolted their files onto whatever it had made, which meant a
+# release could exist with one platform in it and no way to tell whether the
+# rest were coming, late, or never.
+#
+# Manual only, and no push or tag trigger anywhere in this repository. A
+# release is a decision, not a consequence of committing. The tag does not
+# exist until somebody reads the notes with the installers in hand and
+# clicks publish, at which point GitHub creates it pointing at the commit
+# these builds came from.
+#
+# Any platform can be skipped — a Windows-only fix does not need an Apple
+# notarization queue — and whatever is skipped simply is not in the release.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to cut, e.g. 1.1.7"
+        required: true
+        type: string
+      notes:
+        description: "Release notes (Markdown). Blank uses the changelog's top section."
+        required: false
+        default: ""
+        type: string
+      windows:
+        description: "Build the Windows installer"
+        required: false
+        default: true
+        type: boolean
+      macos:
+        description: "Build and notarize the macOS app"
+        required: false
+        default: true
+        type: boolean
+      linux:
+        description: "Build the Linux Flatpak"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: inputs.windows
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ inputs.version }}
+
+  # secrets: inherit, because signing and notarizing need the five Apple
+  # secrets and a called workflow is given none by default.
+  macos:
+    if: inputs.macos
+    uses: ./.github/workflows/macos.yml
+    with:
+      version: ${{ inputs.version }}
+    secrets: inherit
+
+  linux:
+    if: inputs.linux
+    uses: ./.github/workflows/flatpak.yml
+    with:
+      version: ${{ inputs.version }}
+
+  assemble:
+    needs: [windows, macos, linux]
+    # Runs whatever happened above, including a platform that was skipped —
+    # but not if one that *ran* failed. A release missing a platform because
+    # nobody asked for it is fine; one missing a platform because its build
+    # broke is a lie.
+    if: |
+      always() &&
+      needs.windows.result != 'failure' &&
+      needs.macos.result != 'failure' &&
+      needs.linux.result != 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the version is a version
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+        run: |
+          V="$(echo "$RAW_VERSION" | xargs)"
+          if ! echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "version '$V' is not major.minor.patch" >&2
+            exit 1
+          fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      # Everything the called workflows uploaded, flattened into one folder.
+      - uses: actions/download-artifact@v4
+        with:
+          path: staging
+          merge-multiple: true
+
+      - name: Say what arrived
+        run: |
+          ls -la staging/
+          if [ -z "$(ls -A staging/ 2>/dev/null)" ]; then
+            echo "::error::No artifacts. Every platform was skipped, so there is nothing to release." >&2
+            exit 1
+          fi
+
+      # The changelog's top section, when no notes were typed. It is written
+      # per release anyway, so making somebody paste it into a form as well
+      # is asking for the two to disagree.
+      - name: Assemble the notes
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          if [ -n "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+            printf '%s\n' "$NOTES" > notes.md
+          elif [ -f CHANGELOG.md ]; then
+            # From the first "## " heading to the one after it, heading dropped.
+            awk '/^## /{n++; next} n==1' CHANGELOG.md > notes.md
+          fi
+          if [ ! -s notes.md ]; then
+            echo "Built from ${GITHUB_SHA}." > notes.md
+          fi
+          echo "--- notes ---"; cat notes.md
+
+      # A draft, always: nothing is public and no tag exists until somebody
+      # reads the notes with the installers in hand and clicks publish.
+      #
+      # --clobber on the upload so a re-run replaces assets rather than
+      # failing on the ones already there — cutting the same version twice
+      # because the Mac build was retried is a normal afternoon.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release create "v${VERSION}" \
+              --draft \
+              --target "${GITHUB_SHA}" \
+              --title "Clicker ${VERSION}" \
+              --notes-file notes.md
+          else
+            gh release edit "v${VERSION}" --notes-file notes.md
+          fi
+          gh release upload "v${VERSION}" staging/* --clobber
+
+      - name: Where it went
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Draft release v${VERSION}:" >> "$GITHUB_STEP_SUMMARY"
+          gh release view "v${VERSION}" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Assets:" >> "$GITHUB_STEP_SUMMARY"
+          gh release view "v${VERSION}" --json assets \
+            --jq '.assets[] | "- \(.name)  (\(.size) bytes)"' >> "$GITHUB_STEP_SUMMARY"

@@ -37,6 +37,124 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
         .with_title_shown(false)
 }
 
+// --- the menu bar ------------------------------------------------------------
+
+/// What a menu item asked for, when it is not something the system handles
+/// on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuCommand {
+    OpenSettings,
+    Refresh,
+}
+
+/// Build the application menu and hand it to the running NSApplication.
+///
+/// macOS puts the menu above the screen rather than inside the window, and a
+/// window whose application has no menus is not a minimal Mac app — it is a
+/// broken one. There is no Quit, no ⌘W, no ⌘Q, no Services, and the menu bar
+/// shows the name with nothing under it, which is the single loudest way to
+/// say "ported without looking".
+///
+/// Almost every item here is one of the system's own: Apple implements Hide,
+/// Minimize, Full Screen, the clipboard verbs and Quit, and they behave
+/// exactly as they do in every other application because they *are* the same
+/// items. Only Settings and Refresh belong to this program, and those come
+/// back through [`menu_command`].
+///
+/// Must be called on the main thread, after the window exists.
+pub fn install_menu_bar() {
+    use muda::accelerator::{Accelerator, Code, Modifiers};
+    use muda::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let about = AboutMetadata {
+        name: Some(crate::APP_NAME.into()),
+        version: Some(env!("CARGO_PKG_VERSION").into()),
+        copyright: Some("Copyright (c) 2026 David Brustein. MIT.".into()),
+        ..Default::default()
+    };
+
+    let settings = MenuItem::with_id(
+        SETTINGS_ID,
+        "Settings…",
+        true,
+        Some(Accelerator::new(Some(Modifiers::META), Code::Comma)),
+    );
+    let refresh = MenuItem::with_id(
+        REFRESH_ID,
+        "Refresh from the DVR",
+        true,
+        Some(Accelerator::new(Some(Modifiers::META), Code::KeyR)),
+    );
+
+    let app = Submenu::new(crate::APP_NAME, true);
+    let _ = app.append_items(&[
+        &PredefinedMenuItem::about(Some(&format!("About {}", crate::APP_NAME)), Some(about)),
+        &PredefinedMenuItem::separator(),
+        &settings,
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::services(None),
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::hide(None),
+        &PredefinedMenuItem::hide_others(None),
+        &PredefinedMenuItem::show_all(None),
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::quit(None),
+    ]);
+
+    // The clipboard verbs. egui handles the keystrokes itself, but a Mac
+    // application without an Edit menu cannot be driven by anything that
+    // reads the menus — Services, scripting, or a person who learned the
+    // interface through them.
+    let edit = Submenu::new("Edit", true);
+    let _ = edit.append_items(&[
+        &PredefinedMenuItem::undo(None),
+        &PredefinedMenuItem::redo(None),
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::cut(None),
+        &PredefinedMenuItem::copy(None),
+        &PredefinedMenuItem::paste(None),
+        &PredefinedMenuItem::select_all(None),
+    ]);
+
+    let view = Submenu::new("View", true);
+    let _ = view.append_items(&[&refresh, &PredefinedMenuItem::separator(), &PredefinedMenuItem::fullscreen(None)]);
+
+    let window = Submenu::new("Window", true);
+    let _ = window.append_items(&[
+        &PredefinedMenuItem::minimize(None),
+        &PredefinedMenuItem::maximize(None),
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::close_window(None),
+    ]);
+
+    let menu = Menu::new();
+    let _ = menu.append_items(&[&app, &edit, &view, &window]);
+    let _ = menu.init_for_nsapp();
+    // The Window menu has to be *named* to the system, or the window list and
+    // its Bring All to Front stay empty.
+    window.set_as_windows_menu_for_nsapp();
+
+    // Leaked deliberately. These own the native menu objects, and dropping
+    // them at the end of this function would tear the menu bar down again.
+    std::mem::forget((menu, app, edit, view, window, settings, refresh));
+}
+
+const SETTINGS_ID: &str = "clicker.settings";
+const REFRESH_ID: &str = "clicker.refresh";
+
+/// Whatever the menu was asked for since the last frame, if anything.
+///
+/// Polled rather than delivered, because the menu's channel and egui's frame
+/// loop are separate worlds and this is the seam between them.
+pub fn menu_command() -> Option<MenuCommand> {
+    let event = muda::MenuEvent::receiver().try_recv().ok()?;
+    match event.id.0.as_str() {
+        SETTINGS_ID => Some(MenuCommand::OpenSettings),
+        REFRESH_ID => Some(MenuCommand::Refresh),
+        _ => None,
+    }
+}
+
 /// Appended to a failed connection attempt.
 ///
 /// macOS gates the local network behind a permission prompt, and a probe

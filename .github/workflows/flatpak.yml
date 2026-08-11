@@ -18,7 +18,19 @@
 name: Flatpak
 
 on:
+  # Dispatch to get a bundle to try; workflow_call is how the Release
+  # workflow asks for one. Never on a push: this compiles mpv from source.
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp the build with, e.g. 1.1.7"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -28,6 +40,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check the version is a version
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+        run: |
+          V="$(echo "$RAW_VERSION" | xargs)"
+          if ! echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "version '$V' is not major.minor.patch" >&2
+            exit 1
+          fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      # Stamped the same way every other platform stamps it, and thrown away
+      # with the runner. Cargo.lock is refreshed to match, because the build
+      # inside the sandbox runs --locked and would otherwise refuse.
+      - name: Stamp the version
+        run: |
+          sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" Cargo.toml
+          cargo update --package clicker --precise "${VERSION}" 2>/dev/null || true
 
       - name: Install flatpak-builder
         run: |
@@ -70,9 +101,13 @@ jobs:
 
       - name: Bundle
         run: |
-          flatpak build-bundle repo Clicker.flatpak io.github.mackid1993.Clicker
+          flatpak build-bundle repo "Clicker-${VERSION}-x86_64.flatpak" \
+            io.github.mackid1993.Clicker
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
         with:
-          name: Clicker-flatpak
-          path: Clicker.flatpak
+          name: linux-flatpak
+          path: Clicker-${{ env.VERSION }}-x86_64.flatpak
+          if-no-files-found: error
+          retention-days: 30
