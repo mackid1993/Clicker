@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MIT
+#
+# Clicker - an unofficial, native client for Channels DVR
+# Copyright (c) 2026 David Brustein
+#
+# Compiles the crate on every platform it claims to support. Manual only,
+# like the installer build and for the same reason: this exists to be run on
+# a branch before the branch is believed, not to spend runner minutes
+# re-proving every push.
+#
+# Three targets, three different reasons:
+#   * windows-latest — the platform that already works, which the port must
+#     not cost anything; the machine the port is written on cannot compile
+#     the cfg(windows) half, so this job is the only thing that can say it
+#     still does
+#   * macos-14 — Apple silicon, the only Mac architecture supported
+#   * ubuntu-latest — the Linux build has no machine of its own anywhere in
+#     this project, so this job is its entire compile story
+#
+# `cargo check` and not `cargo build`: none of these produce an artifact
+# anyone runs, and check is the same front half of the compiler at a third
+# of the minutes.
+
+name: Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+
+      # What tray-icon and its menu crate compile against on Linux. The other
+      # platforms get these from the OS.
+      - name: Install GTK headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libappindicator3-dev libxdo-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-check-
+
+      # --locked, so a check can never quietly resolve different dependency
+      # versions than the installer build will.
+      - name: cargo check
+        run: cargo check --locked
