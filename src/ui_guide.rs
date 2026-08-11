@@ -168,8 +168,12 @@ pub fn guide(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
 
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
+    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+    // TEMPORARY TEST HOOK — remove before committing.
+    if let Some(offset) = crate::test_scroll_offset() {
+        area = area.vertical_scroll_offset(offset % ((rows.len() as f32 * ROW_H) - body.height()).max(1.0));
+    }
+    area
         .show_rows(&mut scroll_area, ROW_H, rows.len(), |ui, range| {
             // egui inserts item spacing between anything allocated in a
             // top-down layout, and `show_rows` has already reserved exactly
@@ -452,7 +456,13 @@ fn draw_row(
         let response = ui.interact(cell, id, egui::Sense::click());
 
         let scheduled = data.schedule.job_for(airing);
+        // Two different questions, and answering the first with the second is
+        // what put a recording mark on every episode of every passed series.
+        // `passed` is whether the series has a pass at all, which is what the
+        // menu offers to cancel; `recording` is whether this showing is one
+        // the pass will actually take.
         let passed = data.schedule.has_pass(airing);
+        let recording = data.schedule.pass_records(airing);
         let live = airing.airing_now(now);
 
         // Hover eases in and out rather than snapping. The animation timer
@@ -489,10 +499,10 @@ fn draw_row(
 
         // A recording is marked on the cell, not hidden in a menu, so a glance
         // at the guide answers "what am I already getting".
-        if scheduled.is_some() || passed {
+        if scheduled.is_some() || recording {
             let dot = egui::pos2(cell.min.x + SPACE_M + 2.0, cell.min.y + 18.0);
             painter.circle_filled(dot, 3.5, Fluent::LIVE);
-            if passed {
+            if recording {
                 // A second, hollow ring means the whole series, not just this.
                 painter.circle_stroke(dot, 6.5, egui::Stroke::new(1.2, Fluent::LIVE));
             }
@@ -501,7 +511,7 @@ fn draw_row(
         // Room inside the cell. Text pressed against a rounded corner is what
         // made the old grid read as cramped however large the cells were.
         let pad = SPACE_M;
-        let text_x = cell.min.x + if scheduled.is_some() || passed { pad + 14.0 } else { pad };
+        let text_x = cell.min.x + if scheduled.is_some() || recording { pad + 14.0 } else { pad };
         let text_w = cell.max.x - text_x - pad;
 
         if text_w > 30.0 {

@@ -106,10 +106,18 @@ pub struct Schedule {
     /// Keyed `channel|airing start`, because a job's own start has padding
     /// folded into it and will not match a guide entry.
     pub jobs: HashMap<String, String>,
-    /// Series that have a pass: SeriesID to rule id. The id is kept, not just
+    /// Series that have a pass, by SeriesID. The id is kept, not just
     /// membership, because canceling a pass needs it and hunting for it again
     /// would mean another round trip at exactly the wrong moment.
-    pub rules: HashMap<String, String>,
+    pub rules: HashMap<String, Pass>,
+}
+
+/// A season pass, and the one thing about it that decides what a guide cell
+/// should say: whether it takes every showing or only new episodes.
+#[derive(Debug, Clone)]
+pub struct Pass {
+    pub id: String,
+    pub new_only: bool,
 }
 
 impl Schedule {
@@ -117,11 +125,30 @@ impl Schedule {
         self.jobs.get(&key(&airing.channel, airing.start))
     }
 
+    /// Whether a pass exists for this programme's series at all.
+    ///
+    /// Membership, not coverage — which is what the context menu wants, so
+    /// that "Cancel the series pass" is offered from any showing and a
+    /// repeat cannot be used to create a second pass for a series that
+    /// already has one. For what to draw on the cell, see `pass_records`.
     pub fn has_pass(&self, airing: &Airing) -> bool {
         self.rule_for(airing).is_some()
     }
 
-    pub fn rule_for(&self, airing: &Airing) -> Option<&String> {
+    /// Whether the pass will actually record *this* showing.
+    ///
+    /// A pass set to new episodes only matches the same `New` tag the guide
+    /// reads for its own badge — Channels evaluates the rule's `EQ` against
+    /// the airing's tags — so a repeat is not going to be recorded and the
+    /// cell should not claim it will. Marking every showing of a long-running
+    /// series was making the guide answer "what am I already getting" with a
+    /// list of things it was not getting.
+    pub fn pass_records(&self, airing: &Airing) -> bool {
+        self.rule_for(airing)
+            .is_some_and(|pass| !pass.new_only || airing.is_new)
+    }
+
+    pub fn rule_for(&self, airing: &Airing) -> Option<&Pass> {
         if airing.series_id.is_empty() {
             return None;
         }
@@ -536,8 +563,23 @@ fn build_schedule(jobs: Option<Value>, rules: Option<Value>) -> Schedule {
                 .map(|eq| as_str(eq, "SeriesID"))
                 .unwrap_or_default();
             let id = as_str(&rule, "ID");
+            // `Tags: New` inside the rule's own EQ is how Channels says "new
+            // episodes only" — the same key this application writes when it
+            // creates a pass, and the same tag an airing carries. Read as
+            // either a string or a list, because a rule that came from
+            // somewhere other than here may hold either.
+            let new_only = rule
+                .get("EQ")
+                .map(|eq| {
+                    has_tag(eq, "Tags", "New")
+                        || eq
+                            .get("Tags")
+                            .and_then(Value::as_str)
+                            .is_some_and(|t| t.eq_ignore_ascii_case("New"))
+                })
+                .unwrap_or(false);
             if !series.is_empty() && !id.is_empty() {
-                schedule.rules.insert(series, id);
+                schedule.rules.insert(series, Pass { id, new_only });
             }
         }
     }
