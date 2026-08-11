@@ -17,7 +17,7 @@ Where it lives, per platform:
 |---|---|---|
 | Windows | `libmpv-2.dll` | beside the executable |
 | macOS | `libmpv.2.dylib` | `Clicker.app/Contents/Frameworks` |
-| Linux | `libmpv.so.2` | `usr/lib` inside the AppImage |
+| Linux | `libmpv.so.2` | `/usr/lib/clicker`, installed by the .deb |
 
 * Source: <https://github.com/mpv-player/mpv>, tag `v0.41.0`
 * Configuration: built from that tag by `scripts/build-mpv.ps1` (Windows) or
@@ -36,12 +36,13 @@ Where it lives, per platform:
 The other libraries shipped alongside are what mpv was linked against:
 libass, libplacebo, FreeType, HarfBuzz, FriBidi, Fontconfig, GLib, libpng,
 libjpeg, lcms2, Graphite, Brotli, expat, libiconv, gettext, libunibreak,
-libdovi, zlib, bzip2, shaderc, SPIRV-Cross, and each platform's own compiler
-runtime. They are permissively or weakly licensed (MIT, ISC, BSD, zlib,
+libdovi, zlib, bzip2, shaderc, SPIRV-Cross, the PipeWire client library
+(`libpipewire-0.3`, MIT, Linux only — the daemon and its plugins remain the
+machine's own), and each platform's own compiler runtime. They are permissively or weakly licensed (MIT, ISC, BSD, zlib,
 LGPL-2.1, MPL-2.0, and the FreeType license), each carries its own terms in its
 own source tree, and every one of them is a separate, replaceable file for the
 same reason FFmpeg is. On macOS they sit in `Contents/Frameworks`; on Linux in
-`usr/lib` inside the AppImage; on Windows beside the executable. Which of them
+`/usr/lib/clicker`; on Windows beside the executable. Which of them
 are present varies by platform, because each build links what that platform
 needs and nothing else.
 
