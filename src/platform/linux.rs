@@ -246,15 +246,31 @@ pub fn virtualization() -> Option<&'static str> {
         let dmi = |f: &str| std::fs::read_to_string(format!("/sys/devices/virtual/dmi/id/{f}"))
             .unwrap_or_default()
             .to_lowercase();
-        let id = format!("{} {}", dmi("sys_vendor"), dmi("product_name"));
+        // Vendor and product, plus the board and BIOS: Proxmox and plain QEMU
+        // stamp different fields depending on age and configuration, and a
+        // guest that says "Bochs" anywhere is as virtual as one that says
+        // "QEMU". The label only chooses a word for the log; every hit gets
+        // the same allowances.
+        let id = format!(
+            "{} {} {} {}",
+            dmi("sys_vendor"),
+            dmi("product_name"),
+            dmi("board_vendor"),
+            dmi("bios_vendor")
+        );
         for (needle, name) in [
             ("parallels", "Parallels"),
             ("vmware", "VMware"),
+            ("proxmox", "Proxmox"),
             ("qemu", "QEMU/KVM"),
             ("kvm", "QEMU/KVM"),
+            ("bochs", "QEMU/KVM"),
             ("virtualbox", "VirtualBox"),
+            ("innotek", "VirtualBox"),
             ("xen", "Xen"),
             ("microsoft", "Hyper-V"),
+            ("amazon", "Amazon EC2"),
+            ("google", "Google Compute Engine"),
         ] {
             if id.contains(needle) {
                 return Some(name);
