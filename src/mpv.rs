@@ -500,6 +500,24 @@ impl Player {
         for (name, value) in [
             ("vo", "libmpv"),
             ("terminal", "no"),
+            // No Lua. mpv ships eight built-in scripts — stats, console,
+            // ytdl_hook, auto_profiles, select, positioning, commands,
+            // context_menu — and every one of them is dead weight here: they
+            // draw an on-screen interface this application already draws, and
+            // they answer keys this application already handles.
+            //
+            // Turning them off is also the difference between running and not
+            // running on a signed Mac. Those scripts are executed by LuaJIT,
+            // which compiles Lua to machine code at runtime, and macOS's
+            // hardened runtime kills any process that executes a page it did
+            // not sign: `EXC_BAD_ACCESS (SIGKILL (Code Signature Invalid))`,
+            // "Namespace CODESIGNING, Code 2, Invalid Page", on a thread
+            // named after whichever script got there first. The alternative
+            // is the `allow-jit` and `allow-unsigned-executable-memory`
+            // entitlements — asking macOS to relax the one protection that
+            // matters, so that eight unwanted scripts can run. Not loading
+            // them is the better answer, and it costs eight threads less.
+            ("load-scripts", "no"),
             // Hardware decoding where the driver offers it, and "auto-safe"
             // rather than "auto" so it only takes paths known to be sound.
             // This trims the decode and not the composite, which is why it
