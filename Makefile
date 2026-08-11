@@ -18,6 +18,10 @@
 #   git clone https://github.com/mackid1993/Clicker && cd Clicker
 #   make deps && make && sudo make install
 #
+# Build as yourself and install as root, in that order. `sudo make` would put
+# root-owned files in your own target directory, and cargo installed by rustup
+# is not on root's PATH at all.
+#
 # The long pole is `make deps` pulling packages and then FFmpeg and mpv
 # compiling — twenty minutes to an hour depending on the machine. It happens
 # once; `make` afterwards is a Rust build of a minute or two.
@@ -41,7 +45,7 @@ DOCDIR   = $(DESTDIR)$(PREFIX)/share/doc/clicker
 
 MPV_STAGE = third_party/mpv/libmpv.so.2
 
-.PHONY: all build deps mpv install uninstall deb run clean help
+.PHONY: all build deps mpv install uninstall deb run clean help check-built
 
 all: build
 
@@ -133,13 +137,34 @@ deps:
 
 # ---------------------------------------------------------------- install ---
 
+# Say what is missing and how to get it, rather than building it here.
+check-built:
+	@[ -x target/release/clicker ] || { \
+	  echo "target/release/clicker is not there yet." >&2; \
+	  echo "Run \`make\` first — as yourself, not with sudo, so the build" >&2; \
+	  echo "tree stays yours and cargo is the one on your PATH." >&2; \
+	  exit 1; }
+	@[ -f $(MPV_STAGE) ] || { \
+	  echo "$(MPV_STAGE) is not there yet. Run \`make\` first." >&2; \
+	  exit 1; }
+
 # The binary goes beside its libraries and $(PREFIX)/bin holds a symlink to it.
 #
 # Not tidiness: the application finds libmpv by looking next to its own
 # executable, and Linux resolves /proc/self/exe through the symlink, so both
 # `clicker` typed at a shell and the desktop entry arrive at the real path with
 # the player sitting right there.
-install: build
+# Deliberately not `install: build`.
+#
+# Installing needs root and building must not have it. Depending on build
+# meant `sudo make install` ran cargo as root, which fails outright when cargo
+# came from rustup — it lives in the invoking user's ~/.cargo/bin and root's
+# PATH has never heard of it — and succeeds in a worse way when it does not,
+# by leaving a target/ directory full of root-owned files that the next
+# ordinary `cargo build` cannot write to.
+#
+# So: build as yourself, install as root. `make && sudo make install`.
+install: check-built
 	install -d $(LIBDIR) $(BINDIR) $(APPSDIR) $(ICONDIR) $(DOCDIR)/licenses
 	install -m755 target/release/clicker $(LIBDIR)/clicker
 	cp -a third_party/mpv/*.so* $(LIBDIR)/

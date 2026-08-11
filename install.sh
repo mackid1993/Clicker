@@ -225,7 +225,10 @@ install_from_source() {
   say "Building (this is the long part)"
   make
   say "Installing to $PREFIX"
-  sudo make install PREFIX="$PREFIX"
+  # PATH carried across sudo, because cargo from rustup lives in this user's
+  # home and root has never heard of it. `make install` no longer compiles
+  # anything, but the same is true of anything else the recipe shells out to.
+  sudo env PATH="$PATH" make install PREFIX="$PREFIX"
 }
 
 # ------------------------------------------------------------------ do it ---
