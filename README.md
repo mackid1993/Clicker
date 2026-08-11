@@ -50,8 +50,8 @@ Downloads are on the
 | **macOS** | `Clicker-macOS-<version>-universal.zip` — one app, Apple silicon and Intel, signed and notarized |
 | **Linux** | `clicker_<version>_amd64.deb` / `_arm64.deb`, or one line: <br>`curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh \| bash` |
 
-The Linux one-liner installs the package on Debian, Ubuntu, Mint and Pop, and
-builds from source anywhere else.
+The Linux one-liner asks what you want — install the package, build from
+source, or uninstall — and only offers what the machine can actually do.
 
 ## What it does
 
@@ -214,21 +214,39 @@ keychain holds, and CI reads five secrets that belong to whoever runs it.
 
 ### Linux
 
-**One line, any distribution:**
+**One line, any distribution — install, build or remove:**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
 ```
 
-On Debian, Ubuntu, Mint and Pop that downloads the `.deb` for the machine's
-architecture and installs it — seconds, nothing compiled. Anywhere else it
-installs the build dependencies, compiles FFmpeg, mpv and Clicker from source,
-and installs the result with its menu entry and icon. It says what it is about
+It works out what the machine can do and asks:
+
+```
+==> Clicker installer
+    machine:      Ubuntu 24.04.3 LTS (aarch64)
+    packages:     available for this machine
+    installed:    none
+
+What would you like to do?
+  1) Install the .deb package   — seconds, nothing compiled
+  2) Build from source          — twenty minutes to an hour
+  q) Quit
+```
+
+The package option only appears where a package can be installed — on Debian,
+Ubuntu, Mint and Pop. Everywhere else, Fedora and Arch and openSUSE included,
+source is the only way in and the list says so. A third option, **Uninstall
+Clicker**, appears once there is something to uninstall, and removes whichever
+kind of install it finds.
+
+Source means: install the build dependencies, compile FFmpeg, mpv and Clicker,
+and install the result with its menu entry and icon. It says what it is about
 to do and waits for you to agree, which a script read off the internet ought
 to do.
 
-`--from-source` builds even on Debian, `--prefix=/opt` installs elsewhere,
-`--yes` skips the question.
+Flags skip the menu: `--from-source`, `--uninstall`, `--yes` to take the
+default without asking, `--prefix=/opt` to install somewhere else.
 
 **Or the package, by hand:**
 
@@ -317,14 +335,17 @@ The package does not get a menu entry of its own: on Debian and Ubuntu the
 software centre already offers to remove it, and a second way to do the same
 thing is a way to get it wrong.
 
-**Linux, either kind, without having to remember which:**
+**Linux, either kind, without having to remember which** — run the one-liner
+and pick **Uninstall Clicker**, which only appears when there is something to
+remove:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
 ```
 
-That removes the package if there is one and the source install if there is
-one, and says so if it finds neither.
+or go straight there with `bash -s -- --uninstall`. It removes the package if
+there is one and the source install if there is one, and says so if it finds
+neither.
 
 ### What is left behind
 

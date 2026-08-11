@@ -8,16 +8,17 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
 #
-# On Debian, Ubuntu, Mint and Pop it offers two ways in and asks which you
-# want: the .deb for this machine's architecture, which takes seconds and
-# compiles nothing, or a build from source. Anywhere else — Fedora, Arch,
-# openSUSE, anything — source is the only way, so it goes straight there.
+# It asks what you want to do, and offers what this machine can actually do:
+# install the .deb, build from source, or uninstall what is already there.
+# The package option appears on Debian, Ubuntu, Mint and Pop; anywhere else —
+# Fedora, Arch, openSUSE, anything — source is the only way in. Uninstalling
+# appears when there is something to uninstall.
 #
 # The source path installs the build dependencies, compiles FFmpeg, mpv and
 # Clicker, and installs the result with its menu entry and icon. Twenty
 # minutes to an hour, mostly FFmpeg.
 #
-#   ... | bash -s -- --uninstall      remove it again, either kind of install
+#   ... | bash -s -- --uninstall      go straight to removing it
 #   ... | bash -s -- --from-source    skip the question, build from source
 #   ... | bash -s -- --yes            skip every question, take the package
 #   ... | bash -s -- --prefix=/opt    install somewhere other than /usr/local
@@ -67,23 +68,77 @@ confirm() {
   [[ "$answer" =~ ^[Yy] ]]
 }
 
-# Which of the two ways in, when both are open. Answers 1 or 2.
-ask_method() {
-  [[ "$ASSUME_YES" == "yes" ]] && { echo 1; return; }
-  if [[ ! -t 0 && ! -r /dev/tty ]]; then echo 1; return; fi
-  local answer
+# What this run is for. Answers deb, source or uninstall.
+#
+# Everything the script can do, in one list, rather than a package/source
+# question with removal hidden behind a flag somebody would have to already
+# know about. The package option only appears where a package can be
+# installed; uninstalling only appears when there is something to uninstall.
+choose_action() {
+  local can_deb="$1" installed="$2"
+  local answer n
+  local -a actions
+
+  # `if`, not `&&`. A test that comes out false is a failed command, and under
+  # `set -e` inside a case branch that ends the script rather than the branch —
+  # the same trap that was in the uninstall dispatch.
+  if [[ "$ASSUME_YES" == "yes" ]] || [[ ! -t 0 && ! -r /dev/tty ]]; then
+    if [[ -n "$can_deb" ]]; then echo deb; else echo source; fi
+    return
+  fi
+
   while true; do
-    printf '\nWhich would you like?\n' >&2
-    printf '  1) Install the .deb package   — seconds, nothing compiled\n' >&2
-    printf '  2) Build from source          — twenty minutes to an hour\n' >&2
-    printf '\n[1/2] ' >&2
+    # Numbered as they are printed, so the list always reads 1, 2, 3 — a menu
+    # that starts at 2 because the first entry did not apply looks broken.
+    # What each number means is therefore per-machine, which is why the answer
+    # is looked up rather than assumed.
+    actions=(unused)
+    n=0
+
+    printf '\nWhat would you like to do?\n' >&2
+    if [[ -n "$can_deb" ]]; then
+      n=$((n + 1)); actions+=(deb)
+      printf '  %d) Install the .deb package   — seconds, nothing compiled\n' "$n" >&2
+    fi
+    n=$((n + 1)); actions+=(source)
+    printf '  %d) Build from source          — twenty minutes to an hour\n' "$n" >&2
+    if [[ "$installed" != "none" ]]; then
+      n=$((n + 1)); actions+=(uninstall)
+      printf '  %d) Uninstall Clicker          — currently %s\n' "$n" "$installed" >&2
+    fi
+    printf '  q) Quit\n' >&2
+    printf '\n[1-%d, q] ' "$n" >&2
+
     read -r answer < /dev/tty
-    case "${answer:-1}" in
-      1|"") echo 1; return ;;
-      2)    echo 2; return ;;
-      *)    printf 'Type 1 or 2.\n' >&2 ;;
+    case "$answer" in
+      q|Q) echo quit; return ;;
+      "")  echo "${actions[1]}"; return ;;
+      *[!0-9]*|"") ;;
+      *)
+        if [[ "$answer" -ge 1 && "$answer" -le "$n" ]]; then
+          echo "${actions[$answer]}"
+          return
+        fi
+        ;;
     esac
+    printf 'Not one of the choices.\n' >&2
   done
+}
+
+# What is on this machine already, said in a few words for the menu.
+what_is_installed() {
+  if command -v dpkg >/dev/null 2>&1 && dpkg -s clicker >/dev/null 2>&1; then
+    echo "the $(dpkg-query -f '${Version}' -W clicker 2>/dev/null) package"
+    return
+  fi
+  local prefix
+  for prefix in "$PREFIX" /usr/local /opt/clicker /usr; do
+    if [[ -x "$prefix/lib/clicker/uninstall.sh" ]]; then
+      echo "built from source, under $prefix"
+      return
+    fi
+  done
+  echo none
 }
 
 [[ "$(uname -s)" == "Linux" ]] || oops "This installs Clicker on Linux. On macOS use the .app from the releases page; on Windows, the installer."
@@ -151,6 +206,8 @@ esac
 
 DEBIAN=no
 case "$FAMILY" in *debian*|*ubuntu*) DEBIAN=yes ;; esac
+
+INSTALLED="$(what_is_installed)"
 
 echo
 say "Clicker installer"
@@ -235,13 +292,33 @@ install_from_source() {
 
 # ------------------------------------------------------------------ do it ---
 
-if [[ "$FORCE_SOURCE" == "no" && "$DEBIAN" == "yes" && -n "$DEB_ARCH" ]]; then
+CAN_DEB=""
+if [[ "$DEBIAN" == "yes" && -n "$DEB_ARCH" ]]; then
+  CAN_DEB=yes
   echo "    packages:     available for this machine"
-  # Both ways work here, so the choice is not the script's to make. Building
-  # from source on a Debian machine is a perfectly reasonable thing to want —
-  # to read what you are installing, or to build against your own libraries —
-  # and quietly taking the package away from someone who wanted that is rude.
-  if [[ "$(ask_method)" == "1" ]]; then
+else
+  echo "    packages:     none for this distribution — source is the way in"
+fi
+echo "    installed:    $INSTALLED"
+
+# A flag settles it; otherwise ask.
+if [[ "$FORCE_SOURCE" == "yes" ]]; then
+  ACTION=source
+else
+  ACTION="$(choose_action "$CAN_DEB" "$INSTALLED")"
+fi
+
+case "$ACTION" in
+  quit)
+    say "Nothing was changed."
+    exit 0
+    ;;
+  uninstall)
+    uninstall_everything
+    ;;
+  deb)
+    # Falls through to source when no package has been published for this
+    # architecture yet, which is better than stopping at a dead end.
     if install_deb; then
       echo
       say "Done. Clicker is in your menu, or run: clicker"
@@ -249,10 +326,12 @@ if [[ "$FORCE_SOURCE" == "no" && "$DEBIAN" == "yes" && -n "$DEB_ARCH" ]]; then
     fi
     echo
     say "No .deb published for $DEB_ARCH yet — building from source instead."
-  fi
-fi
-
-install_from_source
+    install_from_source
+    ;;
+  *)
+    install_from_source
+    ;;
+esac
 echo
 say "Done. Clicker is in your menu, or run: clicker"
 echo "    Built in $BUILD_DIR — delete it if you want the space back."
