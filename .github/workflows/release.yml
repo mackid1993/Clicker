@@ -117,10 +117,22 @@ jobs:
       - name: Say what arrived
         run: |
           ls -la staging/
+
+          # Only the three things people download. The macOS build uploads a
+          # tarball per architecture as well, because that is how the two
+          # halves reach the job that lipos them into one bundle, and those
+          # are working parts rather than something anybody should find on a
+          # release page. Anything unrecognised is named as it goes, so a new
+          # asset type shows up in the log rather than disappearing.
+          find staging -type f \
+            ! -name '*.exe' ! -name '*.zip' ! -name '*.AppImage' \
+            -print -delete
+
           if [ -z "$(ls -A staging/ 2>/dev/null)" ]; then
             echo "::error::No artifacts. Every platform was skipped, so there is nothing to release." >&2
             exit 1
           fi
+          echo "--- shipping ---"; ls -la staging/
 
       # The changelog's top section, when no notes were typed. It is written
       # per release anyway, so making somebody paste it into a form as well

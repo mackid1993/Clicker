@@ -198,42 +198,60 @@ rm -f "$STAGE"/*.a "$STAGE"/*.la 2>/dev/null || true
 
 # ----------------------------------------------------------------- licence ---
 #
-# Read out of what was built, not assumed from the flags above.
+# Read out of the libraries that were staged, not out of the source tree and
+# not assumed from the flags above.
 #
-# This used to grep the libraries for a licence string and print "<nothing
-# found>" — which passed, having checked nothing at all. The build's own
-# config headers are the authority: FFmpeg writes CONFIG_GPL and mpv writes
-# HAVE_GPL, both as literal 0 or 1, and neither can disagree with the binary
-# beside it because both were generated while producing it.
+# Two earlier versions of this check were wrong in opposite directions. The
+# first grepped for a licence string it never matched and printed "<nothing
+# found>" — then passed, having verified nothing. The second read FFmpeg's
+# config.h from ffbuild/, which is where the log lives; configure writes the
+# header to the build root, so a perfectly good LGPL build was refused as
+# unverifiable.
+#
+# The staged binary settles both. configure bakes its answer into
+# avutil_license() as a string literal, so it is in the object file no matter
+# what the build directory looks like afterwards, and it cannot disagree with
+# the library it is compiled into.
 echo "==> licence"
 
-FFMPEG_CONFIG="$FFMPEG_SRC/ffbuild/config.h"
-if [[ -f "$FFMPEG_CONFIG" ]]; then
-  if grep -qE '^#define CONFIG_GPL 1' "$FFMPEG_CONFIG"; then
-    echo "FFmpeg was configured with GPL components; refusing to stage it" >&2
-    exit 1
-  fi
-  if grep -qE '^#define CONFIG_NONFREE 1' "$FFMPEG_CONFIG"; then
-    echo "FFmpeg was configured nonfree; refusing to stage it" >&2
-    exit 1
-  fi
-  echo "    FFmpeg: CONFIG_GPL 0, CONFIG_NONFREE 0"
-else
-  echo "cannot find FFmpeg's config.h; refusing to stage an unverified build" >&2
-  exit 1
-fi
+# The alternation is ordered and anchored on purpose: "LGPL version 2.1 or
+# later" contains "GPL version 2.1 or later", so a pattern that matched the
+# shorter one first would read every LGPL build as GPL.
+licence_of() {
+  grep -a -oE 'LGPL version [0-9.]+ or later|GPL version [0-9.]+ or later|nonfree and unredistributable' \
+    "$1" 2>/dev/null | sort -u | head -1
+}
 
-MPV_CONFIG="$MPV_SRC/build/config.h"
-if [[ -f "$MPV_CONFIG" ]]; then
-  if grep -qE '^#define HAVE_GPL 1' "$MPV_CONFIG"; then
-    echo "mpv was built GPL; refusing to stage it" >&2
-    exit 1
-  fi
-  echo "    mpv: HAVE_GPL 0"
-else
-  echo "cannot find mpv's config.h; refusing to stage an unverified build" >&2
+FOUND=""
+for lib in "$STAGE"/libavutil*; do
+  [[ -f "$lib" && ! -L "$lib" ]] || continue
+  FOUND="$(licence_of "$lib")"
+  [[ -n "$FOUND" ]] && break
+done
+
+if [[ -z "$FOUND" ]]; then
+  echo "no licence string in the staged libavutil; refusing to stage an unverified build" >&2
   exit 1
 fi
+case "$FOUND" in
+  LGPL*) echo "    FFmpeg: $FOUND" ;;
+  *)     echo "FFmpeg is $FOUND, not LGPL; refusing to stage it" >&2; exit 1 ;;
+esac
+
+# mpv's own licence is a compile-time constant rather than a string, so this
+# one does come from the build's config header — meson's, whose location is
+# fixed by the build directory rather than chosen by a configure script.
+# `-Dgpl=false` leaves HAVE_GPL either undefined or 0, and both pass.
+MPV_CONFIG="$MPV_SRC/build/config.h"
+if [[ ! -f "$MPV_CONFIG" ]]; then
+  echo "cannot find mpv's config.h at $MPV_CONFIG; refusing to stage an unverified build" >&2
+  exit 1
+fi
+if grep -qE '^#define HAVE_GPL 1' "$MPV_CONFIG"; then
+  echo "mpv was built GPL; refusing to stage it" >&2
+  exit 1
+fi
+echo "    mpv: HAVE_GPL 0"
 
 # And nothing GPL linked in behind them. librubberband is the one that turns
 # up by accident, because a package manager's mpv links it as a matter of

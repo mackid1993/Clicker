@@ -19,11 +19,16 @@
 # how Linux users find things, and the sandbox deserves another attempt on
 # hardware somebody can actually test on.
 #
-# libmpv is not bundled — it is loaded by name at runtime, so the system's own
-# copy is used, matching the system's FFmpeg and video drivers:
+# libmpv IS bundled, from scripts/build-mpv.sh — FFmpeg and mpv from their
+# pinned tags, LGPL only, exactly as the Windows installer carries them.
+# Nothing comes from the distribution: a distribution's FFmpeg is frequently
+# GPL, and an application that needs a package installed before it will start
+# is not one you can hand to anybody.
 #
-#   sudo apt install libmpv2      (Debian, Ubuntu)
-#   sudo dnf install mpv-libs     (Fedora)
+# What is deliberately NOT bundled is anything to do with graphics — Mesa,
+# libwayland, libGL, libva, the cursor theme. Those come from the machine,
+# which is the whole difference between this and the Flatpak that tore and
+# lost its pointer.
 #
 # Built on 22.04 deliberately: an AppImage cannot run on a glibc older than
 # the one it was compiled against, and 22.04 reaches back far enough to cover

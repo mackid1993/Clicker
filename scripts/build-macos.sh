@@ -4,15 +4,13 @@
 # Clicker - an unofficial, native client for Channels DVR
 # Copyright (c) 2026 David Brustein
 #
-# Build Clicker.app for macOS, Apple silicon only.
+# Build Clicker.app for macOS, for whichever architecture this machine is.
 #
 # The deliberate omissions, so nobody wonders:
 #
-#   * Universal when it can be, Apple silicon when it cannot. If the
-#     x86_64 target is installed the two slices are built and `lipo`d into
-#     one binary that runs on any Mac; if it is not, the build says so and
-#     produces an arm64-only bundle rather than failing. Add the target
-#     with: rustup target add x86_64-apple-darwin
+#   * One architecture per run — this machine's. A universal build is two
+#     of these joined by scripts/lipo-app.sh, which is why nothing here
+#     cross-compiles.
 #   * libmpv is bundled when third_party/mpv has been built, which is what
 #     scripts/build-mpv.sh does: FFmpeg and mpv from their pinned tags,
 #     LGPL only. Copying a package manager's copy instead is not an option —
@@ -63,41 +61,25 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/target/macos"
 APP="$OUT/Clicker.app"
 
-if [[ "$(uname -m)" != "arm64" ]]; then
-  echo "This build runs on Apple silicon, and this machine is $(uname -m)." >&2
-  exit 1
-fi
-
-# Both architectures when the toolchain has both.
+# One architecture: this machine's.
 #
-# Intel Macs are not the future and are still plenty of people's present, and
-# a universal binary costs one extra compile rather than a second pipeline.
-# The Intel slice is cross-compiled here on Apple silicon, which Rust and the
-# system linker both do without ceremony.
-ARM_BIN="$ROOT/target/aarch64-apple-darwin/release/clicker"
-INTEL_BIN="$ROOT/target/x86_64-apple-darwin/release/clicker"
-
-echo "==> cargo build --release (arm64)"
-cargo build --release --target aarch64-apple-darwin --manifest-path "$ROOT/Cargo.toml"
-
-UNIVERSAL=no
-if rustc --print target-list >/dev/null 2>&1 &&    rustup target list --installed 2>/dev/null | grep -q '^x86_64-apple-darwin$'; then
-  echo "==> cargo build --release (x86_64)"
-  cargo build --release --target x86_64-apple-darwin --manifest-path "$ROOT/Cargo.toml"
-  UNIVERSAL=yes
-else
-  echo "==> arm64 only (add the Intel slice with: rustup target add x86_64-apple-darwin)"
-fi
+# Universal is made by building on both kinds of Mac and joining the results
+# with `lipo` afterwards — see scripts/lipo-app.sh — rather than by
+# cross-compiling here. It is the lazier arrangement and the more honest one:
+# every slice, including the libmpv and FFmpeg bundled beside it, is compiled
+# natively by a machine of that architecture, so nothing has to be
+# cross-built, and Homebrew's libass and libplacebo are the right ones
+# without argument. Cross-compiling the application alone was worse than
+# useless: it produced a universal binary sitting next to arm64-only
+# libraries, which is an Intel Mac launching and then failing to load its
+# player.
+echo "==> cargo build --release ($(uname -m))"
+cargo build --release --manifest-path "$ROOT/Cargo.toml"
 
 echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
-if [[ "$UNIVERSAL" == "yes" ]]; then
-  lipo -create "$ARM_BIN" "$INTEL_BIN" -output "$APP/Contents/MacOS/Clicker"
-  echo "    universal: $(lipo -archs "$APP/Contents/MacOS/Clicker")"
-else
-  cp "$ARM_BIN" "$APP/Contents/MacOS/Clicker"
-fi
+cp "$ROOT/target/release/clicker" "$APP/Contents/MacOS/Clicker"
 
 # The version out of Cargo.toml, which build.ps1 keeps as the single source
 # of truth on every platform.
@@ -234,11 +216,7 @@ else
   codesign --force --deep -s - "$APP"
 fi
 
-if [[ "$UNIVERSAL" == "yes" ]]; then
-  ZIP="$OUT/Clicker-macOS-${VERSION}-universal.zip"
-else
-  ZIP="$OUT/Clicker-macOS-${VERSION}-arm64.zip"
-fi
+ZIP="$OUT/Clicker-macOS-${VERSION}-$(uname -m).zip"
 echo "==> zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
