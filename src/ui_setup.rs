@@ -590,10 +590,10 @@ pub fn settings_screen(
 
             // ── Where things are kept ──────────────────────────────────
             //
-            // Both default to the user profile, which is on C: on almost every
-            // machine, and neither is small: a download is an entire recording
-            // and the live buffer can be 32GB. A second drive is exactly what
-            // people have them for.
+            // Both default to under the user's profile, on whichever disk the
+            // system lives, and neither is small: a download is an entire
+            // recording and the live buffer can be 32GB. A second drive is
+            // exactly what people have them for.
             ui.add_space(SPACE_L * 1.5);
             section(
                 ui,
@@ -603,26 +603,31 @@ pub fn settings_screen(
                  downloaded stays where it is.",
             );
 
-            for (label, value, error, hint, which) in [
+            // One placeholder for all three, and no example path in it. An
+            // example has to be written in some operating system's spelling,
+            // and whichever is chosen is wrong everywhere else — a Windows
+            // drive letter on a Mac reads as an application that was ported
+            // without looking. Browse is the answer to "what should I type
+            // here" anyway.
+            const PATH_HINT: &str = "Browse, or type a full path";
+
+            for (label, value, error, which) in [
                 (
                     "Downloads",
                     &mut settings.download_dir,
                     &mut state.download_dir_error,
-                    "e.g. M:\\Clicker\\Downloads",
                     Folder::Downloads,
                 ),
                 (
                     "Live buffer",
                     &mut settings.buffer_dir,
                     &mut state.buffer_dir_error,
-                    "e.g. M:\\Clicker\\Buffer",
                     Folder::Buffer,
                 ),
                 (
                     "Caches and logs",
                     &mut settings.cache_dir,
                     &mut state.cache_dir_error,
-                    "e.g. M:\\Clicker\\Cache",
                     Folder::Cache,
                 ),
             ] {
@@ -642,7 +647,7 @@ pub fn settings_screen(
                     let used = ui.cursor().min.x - start;
                     ui.add_space((LABEL_COLUMN - used).max(0.0));
 
-                    let entry = field(ui, value, FIELD_W - 110.0).hint_text(hint);
+                    let entry = field(ui, value, FIELD_W - 110.0).hint_text(PATH_HINT);
                     let typed = ui.add(entry);
                     // The dialog first, typing as the fallback. A path someone
                     // browsed to exists and is spelled correctly, which a typed

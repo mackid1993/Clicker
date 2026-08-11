@@ -39,6 +39,17 @@ finish-args:
   - --socket=fallback-x11
   - --socket=pulseaudio
   - --device=dri
+  # Somewhere to put recordings. Without these the settings screen accepts a
+  # download folder and the sandbox silently refuses to write to it, which is
+  # the worst kind of failure: the setting looks like it took.
+  #
+  # Two well-known directories rather than --filesystem=host, because a
+  # television client has no business reading someone's entire disk. Anywhere
+  # else is reachable through the folder picker: it goes through the desktop's
+  # own portal, and a directory chosen there is granted to the sandbox as part
+  # of the choosing.
+  - --filesystem=xdg-download
+  - --filesystem=xdg-videos
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

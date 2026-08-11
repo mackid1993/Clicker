@@ -114,11 +114,11 @@ pub struct Settings {
     /// Where offline downloads are kept. Empty means beside the rest of the
     /// application's data.
     ///
-    /// Both of these exist because the default is under the user profile, which
-    /// is on C: on almost every machine, and neither of these is small: a
+    /// Both of these exist because the default is under the user profile, on
+    /// whichever disk the system lives on, and neither of these is small: a
     /// download is the whole recording and the live buffer can be 32GB. Anyone
-    /// with a second drive wants them on it, and no amount of disk on C: makes
-    /// that preference wrong.
+    /// with a second drive wants them on it, and no amount of room on the
+    /// system disk makes that preference wrong.
     #[serde(default)]
     pub download_dir: String,
     /// Where the live buffer is written. Empty means the same.
@@ -309,8 +309,8 @@ impl Settings {
 /// A configured directory, or the default one beside the application's data.
 ///
 /// The configured path is used as given rather than having a folder appended:
-/// someone who types M:\ClickerDownloads means that directory, not a
-/// Downloads folder inside it.
+/// someone who points this at a directory called ClickerDownloads means that
+/// directory, not a Downloads folder inside it.
 fn resolve(configured: &str, default_leaf: &str) -> PathBuf {
     let configured = configured.trim();
     if !configured.is_empty() {
@@ -323,9 +323,10 @@ fn resolve(configured: &str, default_leaf: &str) -> PathBuf {
 
 /// Whether a directory can be written to, checked by writing to it.
 ///
-/// Not by asking about permissions, which on Windows is a question with a long
-/// and unreliable answer: a path can be readable, exist, and still refuse a
-/// write for reasons no attribute reports. Creating a file and removing it
+/// Not by asking about permissions, which is a question with a long and
+/// unreliable answer on every system: a path can be readable, exist, and still
+/// refuse a write for reasons no attribute reports — an ACL on Windows, a
+/// sandbox or a read-only mount elsewhere. Creating a file and removing it
 /// again is the only test that means anything.
 pub fn writable(dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dir)
