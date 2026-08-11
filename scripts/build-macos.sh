@@ -20,7 +20,8 @@
 #     Application" certificate in the keychain (or one named in
 #     CLICKER_SIGN_IDENTITY) the app is signed properly — hardened
 #     runtime, timestamp, the entitlements in packaging/macos — and if a
-#     notarytool keychain profile called "clicker-notary" exists it is
+#     notarytool keychain profile called "notary" exists (or whatever
+#     NOTARY_PROFILE names) it is
 #     notarized and stapled too, which is what lets it run on machines
 #     that are not this one. With none of that present it falls back to
 #     the ad-hoc signature a local build needs and nothing more. One
@@ -113,19 +114,24 @@ echo "==> zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
 # Notarization, when credentials have been stored once with:
-#   xcrun notarytool store-credentials clicker-notary \
+#   xcrun notarytool store-credentials notary \
 #     --apple-id <apple id email> --team-id <TEAMID> --password <app-specific>
-# Apple's service scans the zip, and stapling pins the verdict to the app so
-# it opens cleanly even offline.
+#
+# The profile name is deliberately generic and overridable: notarization
+# credentials are per-developer, not per-app, so one profile serves every
+# app on this machine and there is no reason for this project to demand a
+# name of its own.
+NOTARY_PROFILE="${NOTARY_PROFILE:-notary}"
 if [[ -n "$IDENTITY" ]] \
-  && xcrun notarytool history --keychain-profile clicker-notary >/dev/null 2>&1; then
+  && xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
   echo "==> notarizing (this waits on Apple, usually a minute or two)"
-  xcrun notarytool submit "$ZIP" --keychain-profile clicker-notary --wait
+  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
   xcrun stapler staple "$APP"
-  # Re-zip so the archive carries the stapled ticket too.
+  # Re-zip so the archive carries the stapled ticket too. The first zip was
+  # only ever the shipping box for Apple; this is the one people get.
   ditto -c -k --keepParent "$APP" "$ZIP"
 else
-  echo "==> not notarized (no clicker-notary keychain profile)"
+  echo "==> not notarized (no '$NOTARY_PROFILE' keychain profile)"
 fi
 
 echo
