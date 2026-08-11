@@ -125,11 +125,27 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-notary}"
 if [[ -n "$IDENTITY" ]] \
   && xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
   echo "==> notarizing (this waits on Apple, usually a minute or two)"
-  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-  xcrun stapler staple "$APP"
-  # Re-zip so the archive carries the stapled ticket too. The first zip was
-  # only ever the shipping box for Apple; this is the one people get.
-  ditto -c -k --keepParent "$APP" "$ZIP"
+  # Bounded, because "usually" is not "always": Apple's queue has slow
+  # spells, and the first submission from a new team can sit for half an
+  # hour. Without a limit a build machine waits forever on someone else's
+  # service. The timeout only stops *waiting* — Apple carries on, and the
+  # verdict can be collected later, which is what the message below says.
+  if xcrun notarytool submit "$ZIP" \
+       --keychain-profile "$NOTARY_PROFILE" --wait --timeout 30m; then
+    xcrun stapler staple "$APP"
+    # Re-zip so the archive carries the stapled ticket too. The first zip was
+    # only ever the shipping box for Apple; this is the one people get.
+    ditto -c -k --keepParent "$APP" "$ZIP"
+  else
+    echo
+    echo "Notarization did not finish. The app is signed and usable here;" >&2
+    echo "it is not yet stapled, so other Macs will warn about it." >&2
+    echo "Check the verdict, then staple and re-zip by hand:" >&2
+    echo "  xcrun notarytool history --keychain-profile $NOTARY_PROFILE" >&2
+    echo "  xcrun stapler staple '$APP'" >&2
+    echo "  ditto -c -k --keepParent '$APP' '$ZIP'" >&2
+    exit 1
+  fi
 else
   echo "==> not notarized (no '$NOTARY_PROFILE' keychain profile)"
 fi
