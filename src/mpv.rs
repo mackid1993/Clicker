@@ -209,6 +209,7 @@ pub struct GlFns {
     wait_sync: unsafe extern "system" fn(*mut c_void, u32, u64),
     delete_sync: unsafe extern "system" fn(*mut c_void),
     flush: unsafe extern "system" fn(),
+    finish: unsafe extern "system" fn(),
 }
 
 impl GlFns {
@@ -248,6 +249,7 @@ impl GlFns {
             wait_sync: find("glWaitSync")?,
             delete_sync: find("glDeleteSync")?,
             flush: find("glFlush")?,
+            finish: find("glFinish")?,
         })
     }
 
@@ -1695,14 +1697,14 @@ impl Player {
     /// true at every call site, all of which sit inside a paint.
     #[cfg(target_os = "linux")]
     fn threaded_active(&self) -> bool {
-        // Opt-in, for now. The architecture is right — mpv rendering on its
-        // own thread and context is how mpv itself survives slow drivers —
-        // but on the one machine it has been tried, a virtualised GPU, the
-        // cross-context handoff produced white flashes the single-context
-        // path never showed. Until it has run on real hardware, the proven
-        // path is the default and this is how a tester turns the new one on.
-        if !std::env::var("CLICKER_RENDER_THREAD")
-            .map(|v| v == "1")
+        // On by default. It was parked once, over white flashes that turned
+        // out to be the cross-context fence handoff — on the driver this
+        // thread exists for, fences are the broken primitive — and the
+        // handoff no longer uses them: the worker publishes only frames the
+        // GPU has finished. CLICKER_RENDER_THREAD=0 is the off switch if a
+        // machine ever needs the in-paint path back.
+        if std::env::var("CLICKER_RENDER_THREAD")
+            .map(|v| v == "0")
             .unwrap_or(false)
         {
             return false;
@@ -1742,12 +1744,9 @@ impl Player {
             return Some(false);
         }
 
-        // Wait on the GPU, not here: the fence orders the worker's render
-        // before this blit inside the driver, and costs this thread nothing.
-        if fence != 0 {
-            (gl.wait_sync)(fence as *mut c_void, 0, GL_TIMEOUT_IGNORED);
-            (gl.delete_sync)(fence as *mut c_void);
-        }
+        // Nothing to wait on: the worker publishes only frames the GPU has
+        // finished, so by the time a texture is visible here it is whole.
+        let _ = fence;
 
         let mut cache = self.ui_fbos.lock().unwrap();
         if cache.0 != gen {
@@ -2428,14 +2427,18 @@ mod worker {
                     continue;
                 }
 
-                let fence = (gl.fence_sync)(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-                (gl.flush)();
+                // Wait here, on the thread built for waiting, until the GPU
+                // has fully finished the frame — then publish. The first
+                // version handed the interface a fence to wait on instead,
+                // and on the one driver this thread exists for, cross-context
+                // fences are precisely the broken primitive: the interface
+                // sampled textures the fence had not really protected, which
+                // was the white flashing that got this whole thread parked.
+                // A published frame is now complete by construction; the
+                // interface never synchronizes at all.
+                (gl.finish)();
                 {
                     let mut st = link.state.lock().unwrap();
-                    if st.fence != 0 {
-                        (gl.delete_sync)(st.fence as *mut c_void);
-                    }
-                    st.fence = fence as usize;
                     st.front = back;
                     st.painted = true;
                 }
