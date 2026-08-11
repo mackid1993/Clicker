@@ -4,7 +4,7 @@
 
 # Clicker
 
-**An unofficial native client for [Channels DVR](https://getchannels.com/) Server.**
+**An unofficial client for [Channels DVR](https://getchannels.com/) Server.**
 <br>
 **Windows, macOS and Linux.**
 <br>
