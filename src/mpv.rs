@@ -395,6 +395,11 @@ fn versions(api: &Api) -> &'static str {
             .into_iter()
             .chain(NO_SCRIPTS)
         {
+            // A blank value means "leave the option alone", which is what the
+            // environment overrides above resolve to when unset.
+            if value.is_empty() {
+                continue;
+            }
             let (n, v) = (CString::new(name).unwrap(), CString::new(value).unwrap());
             (api.set_option)(handle, n.as_ptr(), v.as_ptr());
         }
@@ -771,6 +776,18 @@ impl Player {
                 },
             ),
             ("user-agent", &crate::settings::user_agent()),
+            // Which audio output, overridable from the environment.
+            //
+            // For separating causes, and it earned its place the hard way: on
+            // Linux, video presentation is slaved to the audio clock, so a
+            // sound path that jitters or underruns — a virtual machine's, for
+            // one — makes *video* stumble while every video counter reads
+            // healthy. Muting the build made the picture smooth, which was
+            // the tell. `CLICKER_AO=alsa clicker` tries the device directly;
+            // `CLICKER_AO=null clicker` silences it entirely and is the
+            // ten-second test of whether audio timing is the culprit at all.
+            // Unset, mpv picks as it always did.
+            ("ao", &std::env::var("CLICKER_AO").unwrap_or_default()),
             // Where a live playlist is joined. The HLS demuxer defaults to
             // three segments from the end, which for Channels would throw away
             // the server-side buffer that makes a channel rewindable from the
@@ -789,6 +806,11 @@ impl Player {
         )
         .chain(NO_SCRIPTS)
         {
+            // A blank value means "leave the option alone", which is what the
+            // environment overrides above resolve to when unset.
+            if value.is_empty() {
+                continue;
+            }
             let (n, v) = (CString::new(name).unwrap(), CString::new(value).unwrap());
             // Unknown options are reported and skipped: a libmpv-only build has
             // no command line player, so options belonging to it do not exist,
