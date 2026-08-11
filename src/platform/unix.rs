@@ -37,6 +37,12 @@ pub fn desktop_bounds() -> Option<(f32, f32, f32, f32)> {
     None
 }
 
+/// No tray, because half the feature is impossible: hiding the window is
+/// easy, but bringing it back needs `restore_window`, which has no
+/// implementation here yet. Offering the setting without the way back would
+/// be a checkbox that makes windows disappear.
+pub const HAS_TRAY: bool = false;
+
 // --- loading libraries -------------------------------------------------------
 
 extern "C" {
@@ -62,6 +68,28 @@ pub fn open_library(name: &str) -> *mut c_void {
 /// `module` must be a handle `open_library` returned.
 pub unsafe fn library_symbol(module: *mut c_void, name: *const u8) -> *mut c_void {
     dlsym(module, name as *const c_char)
+}
+
+extern "C" {
+    fn gethostname(name: *mut c_char, len: usize) -> c_int;
+}
+
+/// This machine's name, for the DVR's client list.
+///
+/// The `.local` suffix is stripped: it is mDNS plumbing, and a client list
+/// reading "Davids-MacBook-Pro.local" is a client list written by a machine
+/// for machines.
+pub fn machine_name() -> Option<String> {
+    let mut buf = [0u8; 256];
+    let ok = unsafe { gethostname(buf.as_mut_ptr() as *mut c_char, buf.len()) };
+    if ok != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end])
+        .trim_end_matches(".local")
+        .to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 // --- local time --------------------------------------------------------------

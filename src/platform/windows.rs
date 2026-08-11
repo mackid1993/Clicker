@@ -12,6 +12,20 @@ use std::path::PathBuf;
 
 // --- window chrome -----------------------------------------------------------
 
+/// The frame is drawn by the application: no system caption, and the
+/// interface provides its own buttons and resize edges. That is what lets
+/// the material run edge to edge, and it is the Windows convention besides.
+pub const NATIVE_FRAME: bool = false;
+
+/// Nothing sits in the top-left corner but our own title, so it needs no
+/// clearance.
+pub const CAPTION_INSET: f32 = 0.0;
+
+/// An undecorated window, everything inside it ours to draw.
+pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
+    viewport.with_decorations(false)
+}
+
 /// Dark title-bar tinting, and rounded corners where the system has them.
 ///
 /// This used to ask DWM for Mica as well, which is what made the application
@@ -88,6 +102,11 @@ pub fn restore_window(handle: isize) {
     }
 }
 
+/// The notification-area icon works here: the watcher thread can restore a
+/// hidden window through Win32, which is the half of the feature that makes
+/// hiding one defensible.
+pub const HAS_TRAY: bool = true;
+
 /// The bounding box of every monitor together, in logical pixels.
 pub fn desktop_bounds() -> Option<(f32, f32, f32, f32)> {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -102,6 +121,11 @@ pub fn desktop_bounds() -> Option<(f32, f32, f32, f32)> {
         }
         Some((x as f32, y as f32, (x + w) as f32, (y + h) as f32))
     }
+}
+
+/// This machine's name, for the DVR's client list.
+pub fn machine_name() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty())
 }
 
 // --- where files go ----------------------------------------------------------

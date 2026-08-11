@@ -10,6 +10,21 @@
 use std::ffi::{c_char, c_int, c_void};
 use std::path::PathBuf;
 
+// --- window chrome -----------------------------------------------------------
+
+/// Drawn by the application, as on Windows. Client-side decorations are the
+/// norm on the free desktops anyway — GNOME apps draw their own headers —
+/// so a window providing its own frame is at home here.
+pub const NATIVE_FRAME: bool = false;
+
+/// Nothing sits in the top-left corner but our own title.
+pub const CAPTION_INSET: f32 = 0.0;
+
+/// An undecorated window, everything inside it ours to draw.
+pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
+    viewport.with_decorations(false)
+}
+
 // --- where files go ----------------------------------------------------------
 
 fn home() -> Option<PathBuf> {

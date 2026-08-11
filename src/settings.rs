@@ -434,10 +434,7 @@ fn config_path() -> Option<PathBuf> {
 /// A DVR shows connected clients by name, and "DESKTOP-4F2K1A" is at least
 /// recognizable, where a blank or a generic default is not.
 pub fn hostname() -> String {
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| crate::APP_NAME.to_string())
+    crate::platform::machine_name().unwrap_or_else(|| crate::APP_NAME.to_string())
 }
 
 /// What a server said when asked to identify itself.

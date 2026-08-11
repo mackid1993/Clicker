@@ -57,6 +57,12 @@ tray-icon = { version = "0.24.2", default-features = false }
 # it pulls in windows-sys and nothing else. MIT.
 rfd = { version = "0.15", default-features = false }
 
+# On the free desktops rfd needs told which backend to be. The portal, not
+# GTK: pure Rust, no C linkage, and the dialog that appears is the desktop's
+# own — the same door a Flatpak is required to use anyway.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+
 [build-dependencies]
 # Embeds the icon and version information into the executable as Win32
 # resources. Without it the .ico only reaches the installer, and the program

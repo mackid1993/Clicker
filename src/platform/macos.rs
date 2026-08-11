@@ -10,6 +10,33 @@
 use std::ffi::{c_char, c_int, c_void};
 use std::path::PathBuf;
 
+// --- window chrome -----------------------------------------------------------
+
+/// The system owns the frame here. Traffic lights, rounded corners, the
+/// shadow, edge resizing — a Mac window without them reads as a Windows app
+/// visiting, however good the interior is.
+pub const NATIVE_FRAME: bool = true;
+
+/// Room for the traffic lights, which sit over the top-left of our surface.
+/// The title text starts past them rather than under them.
+pub const CAPTION_INSET: f32 = 80.0;
+
+/// Native decorations with the titlebar dissolved into the content: the
+/// traffic lights float over our surface, the system draws the corners and
+/// shadow and handles edge resizing, and everything else on screen is still
+/// ours. This is the same hybrid every polished Mac port uses, and it is the
+/// difference between "a Windows app running on a Mac" and a Mac window with
+/// the same soul.
+pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
+    viewport
+        .with_decorations(true)
+        .with_fullsize_content_view(true)
+        // "Not shown" maps to a transparent titlebar, not a missing one:
+        // the buttons stay, the material behind them goes.
+        .with_titlebar_shown(false)
+        .with_title_shown(false)
+}
+
 // --- where files go ----------------------------------------------------------
 
 fn home() -> Option<PathBuf> {
