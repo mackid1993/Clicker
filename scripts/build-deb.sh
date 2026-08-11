@@ -186,11 +186,27 @@ Package: clicker
 Architecture: $ARCH
 CONTROL
 
+# Every ELF file in the package, not only the executable.
+#
+# Reading the binary alone produced a package that declared libc, libgcc,
+# gdk-pixbuf, glib and GTK — everything the application links directly — and
+# nothing at all for the player. libmpv is dlopened rather than linked, so it
+# contributes no dependency of its own, and *its* needs are the long list:
+# freetype, fontconfig, harfbuzz, expat, lcms2, libva, libvdpau, libdrm, X11.
+# Those happen to be on every desktop, which is exactly what makes the omission
+# dangerous — it installs cleanly and then fails to play anything on the one
+# machine that is missing one.
+ELVES=("$PKGDIR/usr/lib/clicker/clicker")
+for lib in "$PKGDIR/usr/lib/clicker/"*.so*; do
+  [[ -f "$lib" && ! -L "$lib" ]] && ELVES+=("$lib")
+done
+echo "    reading ${#ELVES[@]} binaries"
+
 (
   cd "$DEPWORK"
   dpkg-shlibdeps -O --ignore-missing-info \
     -l"$PKGDIR/usr/lib/clicker" \
-    "$PKGDIR/usr/lib/clicker/clicker" 2>/dev/null
+    "${ELVES[@]}" 2>/dev/null
 ) > "$OUT/deps.txt" || true
 
 DEPENDS=$(sed -n 's/^shlibs:Depends=//p' "$OUT/deps.txt" | head -1)
@@ -205,7 +221,7 @@ DEPENDS=$(sed -n 's/^shlibs:Depends=//p' "$OUT/deps.txt" | head -1)
 # installs and then does nothing.
 if [[ -z "$DEPENDS" ]]; then
   echo "    dpkg-shlibdeps declined; resolving with ldd and dpkg -S"
-  DEPENDS=$(ldd "$PKGDIR/usr/lib/clicker/clicker" 2>/dev/null \
+  DEPENDS=$(for elf in "${ELVES[@]}"; do ldd "$elf" 2>/dev/null; done \
     | awk '{print $3}' | grep '^/' | sort -u \
     | while read -r path; do dpkg -S "$path" 2>/dev/null | cut -d: -f1; done \
     | sort -u | paste -sd, - | sed 's/,/, /g')

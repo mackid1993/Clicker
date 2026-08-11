@@ -76,7 +76,8 @@ deps:
 	  echo "==> apt"; \
 	  sudo apt-get update; \
 	  sudo apt-get install -y build-essential git curl pkg-config \
-	    meson ninja-build nasm patchelf python3-pip \
+	    meson ninja-build nasm patchelf python3-pip python3-setuptools \
+	    autoconf automake libtool \
 	    libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
 	    libgl1-mesa-dev libfreetype6-dev libfribidi-dev libharfbuzz-dev \
 	    libfontconfig1-dev libunibreak-dev libva-dev libvdpau-dev; \
@@ -84,27 +85,29 @@ deps:
 	elif command -v dnf >/dev/null; then \
 	  echo "==> dnf"; \
 	  sudo dnf install -y gcc gcc-c++ make git curl pkgconf-pkg-config \
-	    meson ninja-build nasm patchelf \
+	    meson ninja-build nasm patchelf autoconf automake libtool \
 	    gtk3-devel libxdo-devel libappindicator-gtk3-devel \
 	    mesa-libGL-devel freetype-devel fribidi-devel harfbuzz-devel \
 	    fontconfig-devel libunibreak-devel libva-devel libvdpau-devel; \
 	elif command -v pacman >/dev/null; then \
 	  echo "==> pacman"; \
 	  sudo pacman -S --needed --noconfirm base-devel git curl pkgconf \
-	    meson ninja nasm patchelf \
+	    meson ninja nasm patchelf autoconf automake libtool \
 	    gtk3 xdotool libayatana-appindicator \
 	    mesa freetype2 fribidi harfbuzz fontconfig libunibreak libva libvdpau; \
 	elif command -v zypper >/dev/null; then \
 	  echo "==> zypper"; \
 	  sudo zypper install -y -t pattern devel_basis; \
 	  sudo zypper install -y git curl pkg-config meson ninja nasm patchelf \
+	    autoconf automake libtool \
 	    gtk3-devel xdotool-devel libayatana-appindicator3-devel \
 	    Mesa-libGL-devel freetype2-devel fribidi-devel harfbuzz-devel \
 	    fontconfig-devel libunibreak-devel libva-devel libvdpau-devel; \
 	else \
 	  echo "No package manager I recognise. Install the equivalents of:" >&2; \
 	  echo "  a C toolchain, git, curl, pkg-config, meson (>= 0.63), ninja," >&2; \
-	  echo "  nasm, patchelf, and the development headers for GTK 3, xdo," >&2; \
+	  echo "  nasm, patchelf, autoconf, automake, libtool, and the" >&2; \
+	  echo "  development headers for GTK 3, xdo," >&2; \
 	  echo "  ayatana-appindicator, OpenGL, freetype, fribidi, harfbuzz," >&2; \
 	  echo "  fontconfig, unibreak, libva and libvdpau." >&2; \
 	  exit 1; \

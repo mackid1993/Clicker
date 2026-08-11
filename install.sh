@@ -61,6 +61,25 @@ confirm() {
   [[ "$answer" =~ ^[Yy] ]]
 }
 
+# Which of the two ways in, when both are open. Answers 1 or 2.
+ask_method() {
+  [[ "$ASSUME_YES" == "yes" ]] && { echo 1; return; }
+  if [[ ! -t 0 && ! -r /dev/tty ]]; then echo 1; return; fi
+  local answer
+  while true; do
+    printf '\nWhich would you like?\n' >&2
+    printf '  1) Install the .deb package   — seconds, nothing compiled\n' >&2
+    printf '  2) Build from source          — twenty minutes to an hour\n' >&2
+    printf '\n[1/2] ' >&2
+    read -r answer < /dev/tty
+    case "${answer:-1}" in
+      1|"") echo 1; return ;;
+      2)    echo 2; return ;;
+      *)    printf 'Type 1 or 2.\n' >&2 ;;
+    esac
+  done
+}
+
 [[ "$(uname -s)" == "Linux" ]] || oops "This installs Clicker on Linux. On macOS use the .app from the releases page; on Windows, the installer."
 [[ $EUID -ne 0 ]] || oops "Do not run this as root. It asks for sudo where it needs it, and nowhere else."
 
@@ -165,14 +184,20 @@ install_from_source() {
 # ------------------------------------------------------------------ do it ---
 
 if [[ "$FORCE_SOURCE" == "no" && "$DEBIAN" == "yes" && -n "$DEB_ARCH" ]]; then
-  echo "    method:       .deb package"
-  if install_deb; then
+  echo "    packages:     available for this machine"
+  # Both ways work here, so the choice is not the script's to make. Building
+  # from source on a Debian machine is a perfectly reasonable thing to want —
+  # to read what you are installing, or to build against your own libraries —
+  # and quietly taking the package away from someone who wanted that is rude.
+  if [[ "$(ask_method)" == "1" ]]; then
+    if install_deb; then
+      echo
+      say "Done. Clicker is in your menu, or run: clicker"
+      exit 0
+    fi
     echo
-    say "Done. Clicker is in your menu, or run: clicker"
-    exit 0
+    say "No .deb published for $DEB_ARCH yet — building from source instead."
   fi
-  echo
-  say "No .deb published for $DEB_ARCH yet — building from source instead."
 fi
 
 install_from_source
