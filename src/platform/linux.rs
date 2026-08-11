@@ -336,12 +336,13 @@ pub fn audio_environment() {
     // stream, which is this environment variable. A user's own setting is
     // left alone.
     if let Some(vm) = virtualization() {
-        if std::env::var_os("PIPEWIRE_LATENCY").is_none() {
-            std::env::set_var("PIPEWIRE_LATENCY", "2048/48000");
-        }
-        crate::log::line(&format!(
-            "[clicker] running under {vm}; asking for large audio buffers"
-        ));
+        // No PIPEWIRE_LATENCY request here any more. Asking for a 2048-sample
+        // quantum made playback worse, not better: the audio clock advances
+        // once per quantum, so a large one turns the clock video is paced by
+        // into 43ms lurches. mpv's autosync smooths the jitter instead — see
+        // the option in mpv.rs — and buffer sizing belongs to the sound
+        // server's own VM profile, not to one application.
+        crate::log::line(&format!("[clicker] running under {vm}"));
         if !std::path::Path::new("/usr/share/wireplumber/wireplumber.conf.d/alsa-vm.conf").exists()
             && !std::path::Path::new("/etc/wireplumber/wireplumber.conf.d/alsa-vm.conf").exists()
         {

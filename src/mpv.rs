@@ -796,13 +796,14 @@ impl Player {
                 },
             ),
             ("user-agent", &crate::settings::user_agent()),
-            // A second of audio buffered ahead inside mpv, in a VM only.
-            // Emulated sound devices underrun against desktop-sized buffers,
-            // the clock jitters with every underrun, and video is paced by
-            // that clock here. A large application-side buffer rides out the
-            // jitter the device cannot avoid. Blank means default, and blank
-            // options are skipped.
-            ("audio-buffer", if in_vm() { "1.0" } else { "" }),
+            // mpv's own remedy for an untrustworthy audio clock, applied in a
+            // VM only. The manual names the exact symptom: "an uneven video
+            // framerate in a movie which plays fine with --no-audio" — which
+            // is word for word what this machine showed — and prescribes
+            // autosync to smooth video timing against jittery audio delay
+            // measurements instead of trusting each one. 30 is the manual's
+            // own suggested value. Blank elsewhere, and blank is skipped.
+            ("autosync", if in_vm() { "30" } else { "" }),
             // Which audio output, overridable from the environment.
             //
             // For separating causes, and it earned its place the hard way: on
