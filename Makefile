@@ -56,13 +56,22 @@ help:
 
 # mpv first, because the application dlopens it and the staged copy is what
 # gets installed beside the binary.
-build: $(MPV_STAGE)
+#
+# `mpv` is asked for every time rather than treated as a file that either
+# exists or does not. build-mpv.sh skips anything already compiled, so the
+# cost is a second of re-staging — and the checks at the end of it, which
+# read the licence and the audio outputs back out of the finished library,
+# run every time instead of only on the build that produced it.
+#
+# That distinction was not academic. Keyed on the staged file, a libmpv with
+# no audio output compiled in was already on disk, so the gate that would
+# have rejected it never ran, and `make` cheerfully reinstalled the silent
+# player it was supposed to catch.
+build: mpv
 	cargo build --release
 
-$(MPV_STAGE):
+mpv:
 	./scripts/build-mpv.sh
-
-mpv: $(MPV_STAGE)
 
 run: build
 	./target/release/clicker
@@ -257,7 +266,7 @@ uninstall:
 
 # ------------------------------------------------------------------- pack ---
 
-deb: $(MPV_STAGE)
+deb: mpv
 	./scripts/build-deb.sh
 
 clean:
