@@ -1927,13 +1927,19 @@ impl App {
                 // Local only. Nothing on this screen reaches the DVR: removing
                 // a download deletes a file from this machine and leaves the
                 // recording on the server untouched.
-                let action = ui_downloads::downloads_screen(
+                let (action, settings_changed) = ui_downloads::downloads_screen(
                     ui,
                     content,
                     &self.home,
                     &mut self.images,
                     &self.downloads,
+                    &mut self.settings,
                 );
+                if settings_changed {
+                    if let Err(e) = self.settings.save() {
+                        self.announce(format!("Could not save settings: {e:#}"));
+                    }
+                }
                 match action {
                     ui_downloads::DownloadAction::None => {}
                     ui_downloads::DownloadAction::Play(id) => {
@@ -2006,16 +2012,22 @@ impl App {
                 self.handle_item(action);
             }
             Screen::Recordings => {
-                let action = ui_library::recordings_screen(
+                let (action, settings_changed) = ui_library::recordings_screen(
                     ui,
                     content,
                     &self.home,
                     &mut self.recordings_tab,
                     &mut self.images,
                     &self.downloads,
+                    &mut self.settings,
                     now_unix(),
                     self.home_loading,
                 );
+                if settings_changed {
+                    if let Err(e) = self.settings.save() {
+                        self.announce(format!("Could not save settings: {e:#}"));
+                    }
+                }
                 match action {
                     ui_library::RecordingsAction::Cancel(id) => self.cancel_job(id),
                     ui_library::RecordingsAction::Item(item) => self.handle_item(item),

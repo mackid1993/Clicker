@@ -17,6 +17,13 @@ The year under a film's poster now prefers the release year over the air
 date, which is what the year orders use, so the label and the position
 always agree.
 
+The Recorded tab and the downloads screen sort too, through the same menu.
+Recordings open newest first — what a recording list has always meant — and
+can be turned by name or by length instead. Downloads open with whatever is
+moving on top and can be turned by name. The schedule stays chronological on
+purpose: a list of what happens next sorted by anything but when is not a
+schedule.
+
 Scrolling the TV grid does slightly less work than before: the recording
 count under each poster now comes from one pass over the library instead of
 one scan of every recording per visible row.

@@ -75,6 +75,13 @@ pub struct Settings {
     pub sort_shows: crate::library::Sort,
     #[serde(default)]
     pub sort_movies: crate::library::Sort,
+    /// The Recorded tab and the downloads screen keep their own, with their
+    /// own defaults: a recording list opens newest first, and a download list
+    /// opens with whatever is moving on top.
+    #[serde(default = "default_sort_recordings")]
+    pub sort_recordings: crate::library::Sort,
+    #[serde(default = "default_sort_downloads")]
+    pub sort_downloads: crate::library::Sort,
     /// Suppress the "server version not approved" warning.
     ///
     /// Defaults to suppressed and is not exposed in the interface. Everyone
@@ -261,6 +268,12 @@ fn default_back() -> u32 {
 fn default_forward() -> u32 {
     30
 }
+fn default_sort_recordings() -> crate::library::Sort {
+    crate::library::Sort::Added
+}
+fn default_sort_downloads() -> crate::library::Sort {
+    crate::library::Sort::Status
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -278,6 +291,8 @@ impl Default for Settings {
             last_source: None,
             sort_shows: Default::default(),
             sort_movies: Default::default(),
+            sort_recordings: default_sort_recordings(),
+            sort_downloads: default_sort_downloads(),
             dismissed_version_warning: true,
             minimize_to_tray: false,
             live_buffer_gb: default_live_buffer(),

@@ -12,7 +12,7 @@
 //! stop or delete any of it.
 
 use crate::downloads::{Downloads, Status};
-use crate::library::Home;
+use crate::library::{Home, Sort};
 use crate::theme::{self, Fluent, RADIUS_SURFACE, SPACE_L, SPACE_M, SPACE_S};
 
 /// Everything here is local-only. Nothing on this screen can change what the
@@ -32,16 +32,20 @@ pub enum DownloadAction {
     ClearFinished,
 }
 
+/// Returns what the user asked for, and whether the sort choice changed and
+/// settings need saving.
 pub fn downloads_screen(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     data: &Home,
     images: &mut crate::images::Images,
     downloads: &Downloads,
-) -> DownloadAction {
+    settings: &mut crate::settings::Settings,
+) -> (DownloadAction, bool) {
     let mut action = DownloadAction::None;
+    let mut settings_changed = false;
 
-    let entries = downloads.entries();
+    let mut entries = downloads.entries();
     if entries.is_empty() {
         crate::ui::centered_message(
             ui,
@@ -49,7 +53,7 @@ pub fn downloads_screen(
             "No downloads",
             "Download a recording from the library and it will appear here",
         );
-        return action;
+        return (action, settings_changed);
     }
 
     let mut content = ui.new_child(
@@ -79,8 +83,8 @@ pub fn downloads_screen(
                         .size(24.0)
                         .color(Fluent::TEXT_PRIMARY),
                 );
-                if finished > 0 {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if finished > 0 {
                         if ui
                             .button("Clear finished")
                             .on_hover_text(
@@ -90,8 +94,18 @@ pub fn downloads_screen(
                         {
                             action = DownloadAction::ClearFinished;
                         }
-                    });
-                }
+                        ui.add_space(SPACE_M);
+                    }
+                    if crate::ui::sort_menu(
+                        ui,
+                        "downloads-sort",
+                        &mut settings.sort_downloads,
+                        &Sort::DOWNLOADS,
+                        Sort::Status,
+                    ) {
+                        settings_changed = true;
+                    }
+                });
             });
 
             // Two at a time is the limit, so saying how many are waiting is the
@@ -109,6 +123,27 @@ pub fn downloads_screen(
             );
             ui.add_space(SPACE_L);
 
+            // "By status" is the order entries() already returns: running,
+            // then waiting, then paused, then finished. Sorting by name needs
+            // each entry's title, which lives on the library's copy of the
+            // recording — one pass builds the lookup rather than one scan of
+            // the library per comparison. A download whose recording is gone
+            // from the server sorts by its id, the only name it has left.
+            if matches!(settings.sort_downloads, Sort::NameAZ | Sort::NameZA) {
+                let titles: std::collections::HashMap<&str, &str> = data
+                    .all
+                    .iter()
+                    .map(|r| (r.id.as_str(), r.title.as_str()))
+                    .collect();
+                let reversed = settings.sort_downloads == Sort::NameZA;
+                entries.sort_by(|a, b| {
+                    let ta = titles.get(a.0.as_str()).copied().unwrap_or(a.0.as_str());
+                    let tb = titles.get(b.0.as_str()).copied().unwrap_or(b.0.as_str());
+                    let order = crate::library::name_order(ta, tb);
+                    if reversed { order.reverse() } else { order }
+                });
+            }
+
             for (id, status) in &entries {
                 if let Some(a) = row(ui, id, status, data, images) {
                     action = a;
@@ -119,7 +154,7 @@ pub fn downloads_screen(
             ui.add_space(SPACE_L * 2.0);
         });
 
-    action
+    (action, settings_changed)
 }
 
 fn row(

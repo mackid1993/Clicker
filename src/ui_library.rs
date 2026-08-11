@@ -95,47 +95,16 @@ pub fn library_screen(
                 theme::search_field(ui, &mut state.search, 300.0, theme::SEARCH_H);
                 ui.add_space(SPACE_M);
 
-                // Which order the grid below is in — the guide's filter chip,
-                // wearing a sort menu. One chip serves both tabs, each tab
-                // keeping its own choice and offering only the orders that
-                // mean something for what it shows.
-                let sort = match state.tab {
-                    LibraryTab::Shows => &mut settings.sort_shows,
-                    LibraryTab::Movies => &mut settings.sort_movies,
+                // Which order the grid below is in. One menu serves both
+                // tabs, each keeping its own choice and offering only the
+                // orders that mean something for what it shows.
+                let (sort, options) = match state.tab {
+                    LibraryTab::Shows => (&mut settings.sort_shows, &Sort::SHOWS[..]),
+                    LibraryTab::Movies => (&mut settings.sort_movies, &Sort::MOVIES[..]),
                 };
-                let options: &[Sort] = match state.tab {
-                    LibraryTab::Shows => &Sort::SHOWS,
-                    LibraryTab::Movies => &Sort::MOVIES,
-                };
-                ui.spacing_mut().interact_size.y = theme::SEARCH_H;
-                let sort_id = egui::Id::new("library-sort");
-                let sort_chip = crate::ui_guide::chip(
-                    ui,
-                    sort_id,
-                    &format!("Sort: {}", sort.label()),
-                    *sort != Sort::default(),
-                    190.0,
-                );
-                if sort_chip.clicked() {
-                    ui.memory_mut(|m| m.toggle_popup(sort_id.with("popup")));
+                if crate::ui::sort_menu(ui, "library-sort", sort, options, Sort::NameAZ) {
+                    settings_changed = true;
                 }
-                egui::popup::popup_below_widget(
-                    ui,
-                    sort_id.with("popup"),
-                    &sort_chip,
-                    egui::PopupCloseBehavior::CloseOnClick,
-                    |ui| {
-                        ui.set_min_width(190.0);
-                        for &option in options {
-                            if ui.selectable_label(*sort == option, option.label()).clicked()
-                                && *sort != option
-                            {
-                                *sort = option;
-                                settings_changed = true;
-                            }
-                        }
-                    },
-                );
             });
             ui.add_space(SPACE_S);
 
@@ -169,7 +138,7 @@ pub fn library_screen(
                     .into_iter()
                     .filter(|m| needle.is_empty() || m.title.to_lowercase().contains(&needle))
                     .collect();
-                settings.sort_movies.apply_movies(&mut matching);
+                settings.sort_movies.apply_recordings(&mut matching);
                 if matching.is_empty() {
                     ui.add_space(SPACE_L);
                     empty_note(ui, "No movies match that");
@@ -826,6 +795,9 @@ fn tab_strip(ui: &mut egui::Ui, current: &mut RecordingsTab, counts: (usize, usi
 }
 
 /// Two tabs: what is going to be recorded, and what already has been.
+///
+/// Returns what the user asked for, and whether the sort choice changed and
+/// settings need saving.
 pub fn recordings_screen(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -833,14 +805,16 @@ pub fn recordings_screen(
     tab: &mut RecordingsTab,
     images: &mut Images,
     downloads: &crate::downloads::Downloads,
+    settings: &mut crate::settings::Settings,
     now: i64,
     loading: bool,
-) -> RecordingsAction {
+) -> (RecordingsAction, bool) {
     let mut action = RecordingsAction::None;
+    let mut settings_changed = false;
 
     if loading && data.upcoming.is_empty() && data.all.is_empty() {
         crate::ui::centered_message(ui, rect, "Loading", "Reading the schedule from the DVR");
-        return action;
+        return (action, settings_changed);
     }
 
     // The header and tabs are fixed; only the list below them scrolls, so the
@@ -861,6 +835,23 @@ pub fn recordings_screen(
                 .size(24.0)
                 .color(Fluent::TEXT_PRIMARY),
         );
+        // The library's sort menu, on the tab where it means something. The
+        // schedule stays chronological: a list of what happens next sorted by
+        // anything but when is not a schedule.
+        if *tab == RecordingsTab::Recorded {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(SPACE_L * 2.0);
+                if crate::ui::sort_menu(
+                    ui,
+                    "recordings-sort",
+                    &mut settings.sort_recordings,
+                    &Sort::RECORDED,
+                    Sort::Added,
+                ) {
+                    settings_changed = true;
+                }
+            });
+        }
     });
     header.add_space(SPACE_S);
     tab_strip(&mut header, tab, (data.upcoming.len(), data.recorded.len()));
@@ -912,7 +903,12 @@ pub fn recordings_screen(
                     if data.recorded.is_empty() && !loading {
                         empty_note(ui, "Nothing recorded yet.");
                     }
-                    for item in data.recorded.iter().take(300) {
+                    // Sorted before the cap, so "A to Z" means the whole
+                    // tab's worth alphabetically, not the newest three
+                    // hundred rearranged.
+                    let mut recorded: Vec<&Recording> = data.recorded.iter().collect();
+                    settings.sort_recordings.apply_recordings(&mut recorded);
+                    for item in recorded.into_iter().take(300) {
                         if let Some(a) = episode_row(ui, item, images, downloads) {
                             action = RecordingsAction::Item(a);
                         }
@@ -923,7 +919,7 @@ pub fn recordings_screen(
 
         });
 
-    action
+    (action, settings_changed)
 }
 
 fn empty_note(ui: &mut egui::Ui, text: &str) {

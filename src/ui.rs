@@ -13,8 +13,62 @@
 use eframe::egui;
 
 use crate::images::Images;
-use crate::library::{Home, Recording};
+use crate::library::{Home, Recording, Sort};
 use crate::theme::{self, Fluent, RADIUS_SURFACE, SPACE_L, SPACE_M, SPACE_S, SPACE_XS};
+
+/// The sort menu: the guide's filter chip wearing a list of orders.
+///
+/// One function because three screens carry it — the library, the Recorded
+/// tab and the downloads screen — and three hand-wired copies would drift
+/// apart the first time one changed. `default` is the screen's natural order;
+/// the chip lights up only when the choice departs from it. Returns true when
+/// the choice changed and settings need saving.
+pub fn sort_menu(
+    ui: &mut egui::Ui,
+    salt: &str,
+    current: &mut Sort,
+    options: &[Sort],
+    default: Sort,
+) -> bool {
+    let mut changed = false;
+
+    // The chip takes its height from `interact_size`, which each screen's
+    // header sets differently; pinned to the search pill's height here so the
+    // menu matches wherever it stands, then put back.
+    let inherited = ui.spacing().interact_size.y;
+    ui.spacing_mut().interact_size.y = theme::SEARCH_H;
+    let id = egui::Id::new(salt);
+    let chip = crate::ui_guide::chip(
+        ui,
+        id,
+        &format!("Sort: {}", current.label()),
+        *current != default,
+        190.0,
+    );
+    ui.spacing_mut().interact_size.y = inherited;
+
+    if chip.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(id.with("popup")));
+    }
+    egui::popup::popup_below_widget(
+        ui,
+        id.with("popup"),
+        &chip,
+        egui::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(190.0);
+            for &option in options {
+                if ui.selectable_label(*current == option, option.label()).clicked()
+                    && *current != option
+                {
+                    *current = option;
+                    changed = true;
+                }
+            }
+        },
+    );
+    changed
+}
 
 /// Which screen is showing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

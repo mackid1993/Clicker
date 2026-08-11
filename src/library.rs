@@ -302,6 +302,9 @@ pub enum Sort {
     Unwatched,
     /// The most recordings first.
     Episodes,
+    /// Running first, then waiting, paused, failed, finished. The downloads
+    /// screen's natural order, and only its: nothing else here has a status.
+    Status,
 }
 
 /// Case-insensitive name order, without allocating.
@@ -310,7 +313,7 @@ pub enum Sort {
 /// comparison, and sorting seven thousand films is ninety thousand
 /// comparisons — every frame, because an immediate-mode grid is sorted each
 /// time it is drawn. Lowercasing the characters as they stream costs nothing.
-fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
+pub fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
     a.chars()
         .flat_map(char::to_lowercase)
         .cmp(b.chars().flat_map(char::to_lowercase))
@@ -337,6 +340,19 @@ impl Sort {
         Sort::Added,
     ];
 
+    /// What the Recorded tab offers. Year is left out: a tab of things one
+    /// DVR recorded is a tab of things from roughly now.
+    pub const RECORDED: [Sort; 5] = [
+        Sort::Added,
+        Sort::NameAZ,
+        Sort::NameZA,
+        Sort::Longest,
+        Sort::Shortest,
+    ];
+
+    /// What the downloads screen offers.
+    pub const DOWNLOADS: [Sort; 3] = [Sort::Status, Sort::NameAZ, Sort::NameZA];
+
     pub fn label(self) -> &'static str {
         match self {
             Sort::NameAZ => "A to Z",
@@ -348,14 +364,16 @@ impl Sort {
             Sort::Shortest => "Shortest",
             Sort::Unwatched => "Most unwatched",
             Sort::Episodes => "Most recordings",
+            Sort::Status => "By status",
         }
     }
 
-    /// Arrange a flat list of films.
+    /// Arrange a flat list of recordings — the Movies tab, and the Recorded
+    /// tab, which shares every order here that is not about years.
     ///
     /// Every order breaks its ties by name, so two films from 1954 stand in a
     /// predictable order rather than whichever the server sent this refresh.
-    pub fn apply_movies(self, list: &mut [&Recording]) {
+    pub fn apply_recordings(self, list: &mut [&Recording]) {
         use std::cmp::Reverse;
         match self {
             Sort::NameZA => list.sort_by(|a, b| name_order(&b.title, &a.title)),
@@ -378,7 +396,8 @@ impl Sort {
                     .total_cmp(&b.duration)
                     .then_with(|| name_order(&a.title, &b.title))
             }),
-            // A to Z, and any persisted choice that means nothing for films.
+            // A to Z, and any persisted choice that means nothing for a flat
+            // list of recordings.
             _ => list.sort_by(|a, b| name_order(&a.title, &b.title)),
         }
     }
