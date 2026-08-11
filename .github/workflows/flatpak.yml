@@ -6,7 +6,7 @@
 # Builds the Flatpak bundle. Manual only, like everything else here. The
 # result is uploaded as an artifact — install it with
 #
-#   flatpak install --user Clicker-<version>-x86_64.flatpak
+#   flatpak install --user Clicker-<version>-<arch>.flatpak
 #
 # after installing the ffmpeg-full runtime extension it declares.
 #
@@ -36,7 +36,21 @@ permissions:
 
 jobs:
   flatpak:
-    runs-on: ubuntu-latest
+    # Both architectures a Linux desktop is actually built on. The ARM job is
+    # not theatre: a Raspberry Pi or an Ampere box running a television client
+    # is exactly the machine this suits, and an x86 bundle will not run on it.
+    # Each builds natively on its own runner rather than through emulation,
+    # which for something that compiles mpv from source is the difference
+    # between six minutes and most of an hour.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -89,9 +103,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .flatpak-builder
-          key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.mackid1993.Clicker.yml') }}
+          key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('packaging/flatpak/io.github.mackid1993.Clicker.yml') }}
           restore-keys: |
-            flatpak-builder-
+            flatpak-builder-${{ matrix.arch }}-
 
       - name: Build
         run: |
@@ -100,13 +114,13 @@ jobs:
 
       - name: Bundle
         run: |
-          flatpak build-bundle repo "Clicker-${VERSION}-x86_64.flatpak" \
+          flatpak build-bundle repo "Clicker-${VERSION}-${{ matrix.arch }}.flatpak" \
             io.github.mackid1993.Clicker
 
       - name: Upload the bundle
         uses: actions/upload-artifact@v4
         with:
-          name: linux-flatpak
-          path: Clicker-${{ env.VERSION }}-x86_64.flatpak
+          name: linux-flatpak-${{ matrix.arch }}
+          path: Clicker-${{ env.VERSION }}-${{ matrix.arch }}.flatpak
           if-no-files-found: error
           retention-days: 30
