@@ -48,8 +48,8 @@ jobs:
       # than from master, so this step cannot change behavior on its own.
       - name: Vendor the cargo dependencies
         run: |
-          curl -sL -o flatpak-cargo-generator.py \
-            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/f1cd5d4b0473a1de39cb6bee1b7ce8dd75d952d7/cargo/flatpak-cargo-generator.py
+          curl -sfL -o flatpak-cargo-generator.py \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/f03a673abe6ce189cea1c2857e2b44af2dd79d1f/cargo/flatpak-cargo-generator.py
           python3 flatpak-cargo-generator.py Cargo.lock \
             -o packaging/flatpak/generated-sources.json
 
