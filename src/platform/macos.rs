@@ -52,17 +52,6 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Refresh has no key of its own — it is not in `keys::ACTIONS` at all — so
-/// its accelerator is written here. Command-R is refresh in everything that
-/// fetches anything.
-fn fixed(id: &str) -> Option<(muda::accelerator::Modifiers, muda::accelerator::Code)> {
-    use muda::accelerator::{Code, Modifiers};
-    match id {
-        "refresh" => Some((Modifiers::META, Code::KeyR)),
-        _ => None,
-    }
-}
-
 /// egui's name for a key, as muda's code for the same key.
 ///
 /// Only the keys a person might reasonably put a shortcut on. Anything not
@@ -124,28 +113,24 @@ pub fn sync_menu_shortcuts(settings: &crate::settings::Settings) {
 
     ITEMS.with_borrow(|items| {
         for (id, item) in items.iter() {
-            let accelerator = if let Some((modifiers, code)) = fixed(id) {
-                Some(Accelerator::new(Some(modifiers), code))
-            } else {
-                crate::keys::binding(settings, id)
-                    .filter(|binding| binding.has_modifier())
-                    .and_then(|binding| {
-                        let mut modifiers = Modifiers::empty();
-                        if binding.command {
-                            modifiers |= Modifiers::META;
-                        }
-                        if binding.ctrl {
-                            modifiers |= Modifiers::CONTROL;
-                        }
-                        if binding.shift {
-                            modifiers |= Modifiers::SHIFT;
-                        }
-                        if binding.alt {
-                            modifiers |= Modifiers::ALT;
-                        }
-                        Some(Accelerator::new(Some(modifiers), code_for(binding.key)?))
-                    })
-            };
+            let accelerator = crate::keys::binding(settings, id)
+                .filter(|binding| binding.has_modifier())
+                .and_then(|binding| {
+                    let mut modifiers = Modifiers::empty();
+                    if binding.command {
+                        modifiers |= Modifiers::META;
+                    }
+                    if binding.ctrl {
+                        modifiers |= Modifiers::CONTROL;
+                    }
+                    if binding.shift {
+                        modifiers |= Modifiers::SHIFT;
+                    }
+                    if binding.alt {
+                        modifiers |= Modifiers::ALT;
+                    }
+                    Some(Accelerator::new(Some(modifiers), code_for(binding.key)?))
+                });
             let _ = item.set_accelerator(accelerator);
         }
     });
@@ -273,12 +258,9 @@ pub fn install_menu_bar() {
         let _ = playback.append(entry);
     }
 
-    let refresh = item("refresh", "Refresh from the DVR", &mut registry);
     let rail = item("rail", "Show or Hide Labels", &mut registry);
     let view = Submenu::new("View", true);
     let _ = view.append_items(&[
-        &refresh,
-        &PredefinedMenuItem::separator(),
         &rail,
         &PredefinedMenuItem::separator(),
         // Ours, not the system's `fullscreen` item. Apple's is hard-wired to
@@ -319,7 +301,7 @@ pub fn install_menu_bar() {
     // The menus themselves are leaked deliberately — they own the native menu
     // objects, and dropping them here would tear the menu bar down again.
     std::mem::forget((menu, app, edit, go, playback, view, window, help));
-    std::mem::forget((settings, refresh, rail, github, go_items, play_items));
+    std::mem::forget((settings, rail, github, go_items, play_items));
 }
 
 /// Whatever the menu was asked for since the last frame, if anything.

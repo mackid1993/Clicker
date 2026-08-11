@@ -783,12 +783,11 @@ impl App {
     /// forward", reachable two ways, with no chance of the menu and the
     /// keyboard drifting apart.
     ///
-    /// The two exceptions are things no key has: refreshing, and the link in
-    /// the Help menu.
+    /// The one exception is the link in the Help menu, which is not an action
+    /// this program has a key for.
     fn pump_menu(&mut self) {
         while let Some(id) = platform::menu_command() {
             match id.as_str() {
-                "refresh" => self.refresh_data(),
                 "github" => platform::open_url("https://github.com/mackid1993/Clicker"),
                 _ => {
                     self.menu_actions.insert(id);
