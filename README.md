@@ -284,6 +284,49 @@ Once `third_party/mpv` exists, `cargo run` is enough — the application looks
 for its player there as well as inside a bundle, so there is no packaging
 step in the edit-and-run loop.
 
+## Uninstalling
+
+**Windows** — Settings → Apps → Installed apps → Clicker → Uninstall, or the
+entry in Add or Remove Programs. The installer registers an uninstaller;
+nothing has to be deleted by hand.
+
+**macOS** — drag `Clicker.app` to the Trash. Everything the application needs
+lives inside the bundle, so there is nothing else to remove.
+
+**Linux, installed from the package:**
+
+```sh
+sudo apt remove clicker          # or `purge`, which is the same here
+```
+
+**Linux, installed from source:**
+
+```sh
+sudo make uninstall              # from the directory you built in
+```
+
+`install.sh` prints the exact command with the right path when it finishes,
+because the build directory it used is `/tmp/clicker-build` rather than
+wherever you happen to be standing.
+
+### What is left behind
+
+None of the above touches settings, downloads or caches — deliberately, since
+removing an application is not the same as deciding to lose what it holds. To
+be rid of those as well:
+
+| | Settings | Downloads, caches, logs |
+|---|---|---|
+| **Windows** | `%APPDATA%\Clicker` | `%LOCALAPPDATA%\Clicker` |
+| **macOS** | `~/Library/Application Support/Clicker` | same folder |
+| **Linux** | `~/.config/Clicker` | `~/.local/share/Clicker` |
+
+Downloaded recordings are the reason the split exists: they are large, they
+are yours, and an uninstall that silently deletes forty gigabytes of offline
+television is not a helpful uninstall. If you moved the download or buffer
+folder in Settings, that folder is wherever you put it and is not listed
+above.
+
 ## Playback
 
 mpv plays. All of it: demuxing, decoding, audio output, timing, subtitles.
