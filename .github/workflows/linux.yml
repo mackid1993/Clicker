@@ -3,21 +3,32 @@
 # Clicker - an unofficial, native client for Channels DVR
 # Copyright (c) 2026 David Brustein
 #
-# Builds the Linux AppImage: one file, made executable, double-clicked.
+# Builds the Linux packages: a .deb per architecture, installed and in the
+# menu.
 #
-# This was a Flatpak first, and the Flatpak is why it is not one now. A
-# Flatpak does not use the system's graphics stack — it brings its own Mesa
-# and its own libwayland and reaches the GPU through matched driver
-# extensions — and when that match fails it falls back to software rendering
+# This was a Flatpak, then an AppImage, and both are gone for reasons worth
+# keeping.
+#
+# The Flatpak went because it does not use the machine's graphics stack. It
+# brings its own Mesa and its own libwayland and reaches the GPU through
+# matched driver extensions, and when the match fails it renders in software
 # without saying so. Measured on one machine from one commit: the native
 # binary was perfect; the Flatpak tore constantly and lost the mouse pointer.
-# An AppImage is not a sandbox. It is the binary, in a squashfs, with a
-# launcher, using the host's drivers, the host's compositor libraries and the
-# host's cursor theme.
 #
-# The manifest under packaging/flatpak is kept rather than deleted. Flathub is
-# how Linux users find things, and the sandbox deserves another attempt on
-# hardware somebody can actually test on.
+# The AppImage went because of how it meets a person. A browser download has
+# no execute bit, and even after `chmod +x` the GNOME file manager refuses to
+# launch a binary on a double click — "Run as a Program" from a context menu
+# is the only door. No menu entry and no icon until something integrates it.
+# Every one of those is the format rather than the application, and nothing
+# shipped inside the file can change any of them.
+#
+# A .deb is installed: double-clicked or `apt install ./clicker.deb`, then it
+# is in the menu with its icon, and `apt remove clicker` takes it away.
+#
+# For everything that is not Debian-shaped — Fedora, Arch, openSUSE, anything
+# — there is the source path, which is also one line:
+#
+#   curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
 #
 # libmpv IS bundled, from scripts/build-mpv.sh — FFmpeg and mpv from their
 # pinned tags, LGPL only, exactly as the Windows installer carries them.
@@ -30,14 +41,14 @@
 # which is the whole difference between this and the Flatpak that tore and
 # lost its pointer.
 #
-# Built on 22.04 deliberately: an AppImage cannot run on a glibc older than
-# the one it was compiled against, and 22.04 reaches back far enough to cover
+# Built on 22.04 deliberately: a binary cannot run on a glibc older than the
+# one it was compiled against, and 22.04 reaches back far enough to cover
 # anything current.
 
 name: Build Linux
 
 on:
-  # Dispatch to get an AppImage to try; workflow_call is how the Release
+  # Dispatch to get a package to try; workflow_call is how the Release
   # workflow asks for one. Never on a push.
   workflow_dispatch:
     inputs:
@@ -55,7 +66,7 @@ permissions:
   contents: read
 
 jobs:
-  appimage:
+  deb:
     # Both architectures a Linux desktop is actually built on, each compiled
     # natively on its own runner.
     strategy:
@@ -64,8 +75,10 @@ jobs:
         include:
           - runner: ubuntu-22.04
             arch: x86_64
+            debarch: amd64
           - runner: ubuntu-22.04-arm
             arch: aarch64
+            debarch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -89,8 +102,9 @@ jobs:
       - name: Update Rust
         run: rustup update stable --no-self-update
 
-      # What tray-icon's menu crate and the folder picker compile against, and
-      # what FFmpeg needs to offer hardware decoding.
+      # What tray-icon's menu crate and the folder picker compile against,
+      # what FFmpeg needs to offer hardware decoding, and dpkg-dev for the
+      # package itself.
       #
       # Headers, not shipped libraries. libva and libvdpau in particular are
       # deliberately NOT bundled: hardware decoding talks to the machine's own
@@ -103,28 +117,20 @@ jobs:
             libgl1-mesa-dev pkg-config meson ninja-build nasm \
             libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev \
             libunibreak-dev python3-setuptools python3-pip autoconf automake libtool \
-            libva-dev libvdpau-dev patchelf
+            libva-dev libvdpau-dev patchelf dpkg-dev
           # 22.04 ships meson 0.61 and libplacebo wants 0.63 or newer. From
           # pip rather than a newer distribution, because the point of
           # building on 22.04 is its old glibc.
           sudo pip3 install --upgrade meson
 
-      # The staged libmpv, cached whole, keyed on the script where the tags
-      # and the licensing flags live — the same arrangement the Windows job
-      # uses. Moving either rebuilds from source; everything else reuses it.
-      # The cache key comes from the pinned versions, not from the whole
-      # script.
-      #
-      # Keyed on the file, every edit to a comment or a check produced a new
-      # key and therefore a miss — which meant recompiling FFmpeg and mpv to
-      # prove that a comment had changed. What actually determines whether a
-      # staged build can be reused is the tags and the configure flags, so
-      # that is what the key is made of.
+      # The staged libmpv, cached whole, keyed on the tags and the licensing
+      # flags rather than on the file that mentions them — the same
+      # arrangement the Windows and macOS jobs use.
       - name: Work out the libmpv cache key
         id: mpvkey
         run: |
           # Comments stripped first. Keyed on the raw file, a sentence that
-          # happened to mention -Dgpl=false changed the key and rebuilt
+          # happened to mention the gpl option changed the key and rebuilt
           # FFmpeg and mpv on every runner to prove that a comment had
           # changed. Only the tags and the flags decide whether a staged
           # build can be reused, so only code is hashed.
@@ -153,17 +159,31 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ matrix.arch }}-cargo-appimage-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.arch }}-cargo-deb-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ matrix.arch }}-cargo-appimage-
+            ${{ matrix.arch }}-cargo-deb-
 
-      - name: Build the AppImage
-        run: ./scripts/build-appimage.sh
+      - name: Build the .deb
+        run: ./scripts/build-deb.sh
 
-      - name: Upload the AppImage
+      # Read back out of the package rather than trusting the script that
+      # wrote it: that the files landed where the desktop looks for them, and
+      # that the dependency line is not empty. A package that installs and
+      # then will not start is worse than one that fails to build.
+      - name: Check the package
+        run: |
+          DEB="target/deb/clicker_${VERSION}_${{ matrix.debarch }}.deb"
+          dpkg-deb --info "$DEB"
+          echo "--- where things landed ---"
+          dpkg-deb --contents "$DEB" \
+            | grep -E "usr/bin/clicker|applications/|icons/hicolor|lib/clicker/libmpv"
+          dpkg-deb --field "$DEB" Depends | grep -q . \
+            || { echo "the package declares no dependencies" >&2; exit 1; }
+
+      - name: Upload the package
         uses: actions/upload-artifact@v4
         with:
-          name: linux-appimage-${{ matrix.arch }}
-          path: target/appimage/Clicker-${{ env.VERSION }}-${{ matrix.arch }}.AppImage
+          name: linux-deb-${{ matrix.debarch }}
+          path: target/deb/clicker_${{ env.VERSION }}_${{ matrix.debarch }}.deb
           if-no-files-found: error
           retention-days: 30

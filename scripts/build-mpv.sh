@@ -17,7 +17,7 @@
 # binary before it packages anything.
 #
 # The result is staged into third_party/mpv, where build-macos.sh and
-# build-appimage.sh look for it. Nothing is installed on the machine and
+# build-deb.sh look for it. Nothing is installed on the machine and
 # nothing outside the repository is written.
 #
 #   ./scripts/build-mpv.sh              build what is missing
@@ -69,9 +69,9 @@ mkdir -p "$THIRD"
 #
 # Windows takes these from MSYS2, which has versions new enough. An Ubuntu
 # 22.04 runner does not — mpv 0.41 wants libass 0.17 and libplacebo 7.349,
-# and 22.04 ships neither — so they are built from source there, from the
-# same tags the Flatpak manifest pins. Both are permissive or LGPL, so they
-# are bundled alongside without argument.
+# and 22.04 ships neither — so they are built from source there, from the tags
+# below. Both are permissive or LGPL, so they are bundled alongside without
+# argument.
 LIBASS_TAG="0.17.4"
 LIBPLACEBO_TAG="v7.349.0"
 

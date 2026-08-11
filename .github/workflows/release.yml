@@ -47,7 +47,7 @@ on:
         default: true
         type: boolean
       linux:
-        description: "Build the Linux AppImage"
+        description: "Build the Linux .deb packages"
         required: false
         default: true
         type: boolean
@@ -125,7 +125,7 @@ jobs:
           # release page. Anything unrecognised is named as it goes, so a new
           # asset type shows up in the log rather than disappearing.
           find staging -type f \
-            ! -name '*.exe' ! -name '*.zip' ! -name '*.AppImage' \
+            ! -name '*.exe' ! -name '*.zip' ! -name '*.deb' \
             -print -delete
 
           if [ -z "$(ls -A staging/ 2>/dev/null)" ]; then

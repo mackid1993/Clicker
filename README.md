@@ -4,7 +4,9 @@
 
 # Clicker
 
-**A Unoffical native Windows client for [Channels DVR](https://getchannels.com/) Server.**
+**An unofficial native client for [Channels DVR](https://getchannels.com/) Server.**
+<br>
+**Windows, macOS and Linux.**
 <br>
 **Not affiliated or supported by Fancy Bits, LLC.**
 
@@ -12,7 +14,7 @@ Live TV, recordings and a guide, in a single Rust binary.
 
 [![Release](https://img.shields.io/github/v/release/mackid1993/Clicker?style=flat-square&color=6ca5fa&label=release)](https://github.com/mackid1993/Clicker/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mackid1993/Clicker/total?style=flat-square&color=6ca5fa)](https://github.com/mackid1993/Clicker/releases)
-![Platform](https://img.shields.io/badge/windows-10%201809%2B-6ca5fa?style=flat-square)
+![Platform](https://img.shields.io/badge/windows%20%7C%20macOS%20%7C%20linux-6ca5fa?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-6ca5fa?style=flat-square)
 
 </div>
@@ -27,10 +29,12 @@ Live TV, recordings and a guide, in a single Rust binary.
 > Do not ask Fancy Bits to support it — anything wrong with it is wrong with
 > this project.
 
-A native Windows client for [Channels DVR](https://getchannels.com/).
+A native client for [Channels DVR](https://getchannels.com/).
 
 Live TV, recordings and a guide, in a single Rust binary with a Fluent
-interface. Windows 10 1809 and up, Windows 11 included.
+interface. One codebase and one interface on all three: Windows 10 1809 and
+up, macOS 12 and up on both Apple silicon and Intel, and Linux on x86-64 and
+arm64.
 
 > **Status: 1.0.0.** It plays live TV and recordings, schedules, downloads and
 > seeks. It has been run on the machines it was written on and not much else,
@@ -85,10 +89,17 @@ registration that Channels' own applications do, which is a separate,
 undocumented protocol. The device name set in Settings is therefore sent in the
 User-Agent, where it reaches the logs and stops.
 
-**Windows only, and Windows 10 1809 at the oldest.** The custom caption, the
-resize handles and the dark window chrome are all Win32, and 1809 is the
-release that added the dark-mode attribute — below it a light system border is
-drawn around an application that is entirely dark.
+**Windows 10 1809 is the oldest Windows.** The custom caption, the resize
+handles and the dark window chrome are all Win32, and 1809 is the release that
+added the dark-mode attribute — below it a light system border is drawn around
+an application that is entirely dark.
+
+**The window frame differs by platform, and only the frame.** Windows and Linux
+get the caption this application draws itself; macOS gets its own traffic
+lights floating over the same surface, because a Mac window that does not look
+like a Mac window is worse than a consistent one. Everything inside is the
+same code — the platform-specific part of this repository is `src/platform/`,
+which is 8% of it.
 
 ## The backdrop
 
@@ -165,9 +176,13 @@ brew install meson ninja nasm pkg-config libass libplacebo
 The first is slow — FFmpeg and mpv compile from source, which is the whole
 point — and the result is cached in `third_party/`, so it happens once.
 
-* **Universal by default where it can be.** `rustup target add
-  x86_64-apple-darwin` and the build produces one binary carrying both
-  architectures; without it, arm64 alone and a line saying so.
+* **One architecture per run — this machine's.** A universal build is two of
+  these joined afterwards with `./scripts/lipo-app.sh <arm64.app> <x86_64.app>
+  <out.app>`, which is what CI does with a job on each kind of Mac. Nothing
+  cross-compiles, deliberately: cross-compiling only the application produced
+  a universal binary sitting beside arm64-only libraries, which is an Intel
+  Mac that launches and then cannot load its player. `lipo-app.sh` refuses to
+  call a bundle universal unless every library in it carries both slices.
 * **Signing is optional and automatic.** With a "Developer ID Application"
   certificate in the keychain the app is signed with the hardened runtime and
   a timestamp; with none, it falls back to the ad-hoc signature a local build
@@ -183,19 +198,69 @@ keychain holds, and CI reads five secrets that belong to whoever runs it.
 
 ### Linux
 
+**One line, any distribution:**
+
 ```sh
-sudo apt install build-essential pkg-config meson ninja-build nasm patchelf \
-  libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libgl1-mesa-dev \
-  libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev \
-  libunibreak-dev libva-dev libvdpau-dev
-pip install --upgrade meson   # distributions ship one too old for libplacebo
-./scripts/build-mpv.sh        # FFmpeg and mpv, LGPL, into third_party/mpv
-./scripts/build-appimage.sh   # Clicker-<version>-<arch>.AppImage
+curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh | bash
 ```
 
-Build on the oldest distribution you intend to support: an AppImage cannot
-run on a glibc older than the one it was compiled against. CI uses Ubuntu
-22.04 for that reason.
+On Debian, Ubuntu, Mint and Pop that downloads the `.deb` for the machine's
+architecture and installs it — seconds, nothing compiled. Anywhere else it
+installs the build dependencies, compiles FFmpeg, mpv and Clicker from source,
+and installs the result with its menu entry and icon. It says what it is about
+to do and waits for you to agree, which a script read off the internet ought
+to do.
+
+`--from-source` builds even on Debian, `--prefix=/opt` installs elsewhere,
+`--yes` skips the question.
+
+**Or the package, by hand:**
+
+```sh
+sudo apt install ./clicker_<version>_<arch>.deb
+```
+
+Binary and bundled player under `/usr/lib/clicker`, desktop entry and icon
+where the desktop looks for them, and `sudo apt remove clicker` takes it away
+again.
+
+**Or from source, with make:**
+
+```sh
+git clone https://github.com/mackid1993/Clicker && cd Clicker
+make deps          # build tools and headers (apt, dnf, pacman or zypper)
+make               # FFmpeg and mpv from source, then Clicker
+sudo make install  # into /usr/local, with the menu entry and the icon
+```
+
+`make deb` builds the package instead of installing. `make run` builds and
+runs without installing anything. `sudo make uninstall` removes it.
+`PREFIX=` and `DESTDIR=` work as expected.
+
+`make deps` covers Debian/Ubuntu, Fedora, Arch and openSUSE, and installs Rust
+through rustup if `cargo` is missing. On anything else it prints exactly what
+to install and stops.
+
+The long part is FFmpeg and mpv compiling — twenty minutes to an hour. It
+happens once: the result is cached in `third_party/` and only rebuilds when
+their pinned tags move.
+
+**Why the player is built rather than installed.** A distribution's FFmpeg is
+very often `--enable-gpl`, and its mpv links librubberband, which is GPL.
+Clicker is MIT. `scripts/build-mpv.sh` builds both from pinned tags with
+`--disable-gpl` and `-Dgpl=false`, then reads the licence back out of the
+finished library and refuses to stage anything else.
+
+**What is deliberately not bundled** is graphics: Mesa, libGL, libwayland,
+libva, libvdpau, the cursor theme. Hardware decoding talks to the machine's
+own driver and the compositor is the machine's own, so those must be the ones
+that load. That distinction is the whole lesson of the Flatpak this replaced,
+which brought its own Mesa, silently fell back to software rendering, and
+tore constantly while losing the mouse pointer.
+
+Build on the oldest distribution you intend to support: a binary cannot run on
+a glibc older than the one it was compiled against. CI uses Ubuntu 22.04 for
+that reason.
 
 ### Either, while working on it
 
@@ -288,7 +353,7 @@ refusing to stage a GPL one.
 
 They ship as **separate, unmodified libraries loaded at runtime** — DLLs
 beside the executable on Windows, dylibs in `Contents/Frameworks` on macOS,
-shared objects in `usr/lib` inside the AppImage on Linux — never folded into
+shared objects in `/usr/lib/clicker` on Linux — never folded into
 the executable and never renamed. That is what lets anyone receiving a copy
 substitute their own build of them, as LGPL-2.1 section 6 requires. The MIT
 License already permits private modification and reverse engineering outright,
