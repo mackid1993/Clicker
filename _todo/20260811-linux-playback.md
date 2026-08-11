@@ -82,22 +82,55 @@ cost. Frames drawn is the number that decides it.
 
 ## Left to do
 
-- [ ] Rebuild all three platforms and cut 1.1.7. Windows and macOS are
-      untouched by this session's changes except the font fallback, which is
-      `None` on both, and the compile is proven by `check.yml`.
-- [ ] Playtest Windows and macOS once before release. Neither has been run
-      since the port's later commits.
+- [x] Rebuild all three platforms. Windows, macOS and both Linux
+      architectures built green off 620f5e4, with `check.yml` compiling all
+      three first.
+- [ ] **Playtest Windows and macOS, then cut 1.1.7.** The port's later
+      commits changed four things in *shared* render code and neither
+      platform has been played since: the framebuffer sized to the on-screen
+      rectangle rather than the stream, its height following that rectangle's
+      exact aspect, the double-buffered surface, and the processor-time frame
+      skip. A fault there would show as geometry — a squeezed, letterboxed or
+      wrong-sized picture, especially after a resize or a fullscreen toggle —
+      rather than as stutter. `video-timing-offset=0` is the fifth shared
+      change and needs no test: mpv's documentation is explicit that it is
+      unused under `display-resample`, which is what both platforms run.
 
-## Open: white triangles in the guide, on first launch only
+## Closed: white triangles, and the guide taking a moment
 
-Reported on the shipped .deb: the guide tore with white triangles on the very
-first launch, and was clean after a video had played. Transient, self-curing,
-and not the video path — nothing draws video on the guide, and the worker is
-not spawned until something plays. The shape of it says egui's font atlas is
-being drawn from before the first upload of it has landed, which a driver
-translating OpenGL is exactly where you would expect to see. Not reproduced
-from a script yet; the next step is to launch cold, capture the first second,
-and see whether an empty atlas is what is on screen.
+**White triangles on the guide: gone, cause never identified.** An agent spent
+a long pass on it and could not reproduce it in any captured frame — not out
+of the application's own framebuffer (915 frames read back with glReadPixels
+before the swap) and not out of a recording of the screen itself (637 frames
+at 57fps through Mutter, virgl and Parallels). Three theories died on
+measurement rather than argument, and each is worth not re-running:
+
+- **The GL context is virgl on every launch, never llvmpipe.** The
+  `Suspected software renderer or indirect context` line that looked like a
+  lead is not one: mpv prints it when `glGetString` returns NULL as well as on
+  a software renderer, and mpv's render context does not exist until playback
+  starts, so it can say nothing about a guide drawn before any video.
+- **The font atlas never grows.** Fixed at 8192x32 across thousands of frames,
+  because roughly 550 glyphs fit in one row of it. The fallback font added in
+  bd37a84 does not change that, and there is no mid-frame re-upload to race.
+- **The image cache never evicts on the guide.** It peaked at 176 textures and
+  65MB against limits of 300 and 192MB, so the artwork-flicker bug class of
+  1.1.2 through 1.1.5 cannot fire there.
+
+Worth keeping for next time: a missing logo texture *would* draw as a white
+rounded quad in the channel column — `image_cover` builds a white `RectShape`
+and hangs the texture off it — so that is the shape to look for and the place
+to look. Untested: real pointer input, and dragging or resizing the window.
+A photograph of it would be worth more than another agent.
+
+**The guide taking a moment to load is Parallels, not the application.**
+Settled by comparison rather than theory: a native Mac shows it immediately,
+the same build in a VM does not, and both guests reach the server through the
+same host network path. Measured from the guest: 5.1MB in 5.7s cold, 13.3MB in
+1.4s warm. The application asks for a 24-hour window, which is a 25MB payload
+and the size of the on-disk cache. If a cold guide is ever slow on real
+hardware, `GUIDE_HOURS` in main.rs is the first knob — and it should not be
+touched on the evidence of a virtual machine.
 
 ## Known and deliberately not fixed here
 
