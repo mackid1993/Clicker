@@ -124,6 +124,16 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
+          # Checked here rather than left to Apple, which answers a missing
+          # password with "HTTP status code: 401. Invalid credentials" — a
+          # message that sends people to check a password they never set.
+          for name in APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::The $name secret is not set. See the header of this workflow." >&2
+              exit 1
+            fi
+          done
+
           # Same newline hygiene as the certificate password above.
           xcrun notarytool store-credentials notary \
             --apple-id "$(printf '%s' "$APPLE_ID" | tr -d '\r\n')" \
