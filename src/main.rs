@@ -898,6 +898,14 @@ impl App {
                     // Anything arriving from the DVR means the system is no
                     // longer standing in the way, so the panel that says it is
                     // has no business still being on screen.
+                    //
+                    // The artwork asked for while it *was* in the way is all
+                    // sitting in the cache as failures; forgetting them here
+                    // means the library fills in as it draws rather than
+                    // twenty seconds later, one card at a time.
+                    if self.permission_blocked {
+                        self.images.forget_failures();
+                    }
                     self.permission_blocked = false;
                     // Kept on disk so the next launch has titles and artwork
                     // for downloaded recordings even with no server to ask.

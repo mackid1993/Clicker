@@ -30,8 +30,16 @@ enum Entry {
     /// and the limit that was safe for three hundred logos is not the limit
     /// that is safe for three hundred heroes.
     Ready(egui::TextureHandle, u64, bool, usize, f32),
-    /// Remembered so a broken URL is not retried forever.
-    Failed,
+    /// Remembered so a broken URL is not retried on every frame — but with
+    /// the moment it failed, because "broken" is often "broken just now".
+    ///
+    /// A picture that could not be fetched because the network was refused,
+    /// or because the DVR was restarting, is not a broken URL; it is a good
+    /// one asked at a bad moment. Remembering the failure forever meant the
+    /// first launch on a Mac — where every request before the permission is
+    /// granted fails — left a library of blank cards that only a restart
+    /// could fill in.
+    Failed(std::time::Instant),
 }
 
 /// A decoded image and what the caller needs to know about how to draw it.
@@ -161,7 +169,7 @@ impl Images {
                         luma,
                     )
                 }
-                None => Entry::Failed,
+                None => Entry::Failed(std::time::Instant::now()),
             };
             self.entries.insert(url, entry);
         }
@@ -244,6 +252,15 @@ impl Images {
             .fold((0, 0), |(n, total), bytes| (n + 1, total + bytes))
     }
 
+    /// Drop every remembered failure, so the next ask fetches again.
+    ///
+    /// For the moment something changes that makes all of them worth
+    /// retrying at once — a permission granted, a server that has come back —
+    /// rather than waiting out the timer picture by picture.
+    pub fn forget_failures(&mut self) {
+        self.entries.retain(|_, entry| !matches!(entry, Entry::Failed(_)));
+    }
+
     /// The texture for a URL, starting the load if this is the first ask.
     ///
     /// Returns `None` while loading and for anything that failed, so callers
@@ -261,6 +278,19 @@ impl Images {
     pub fn get_at(&mut self, url: &str, max: u32) -> Option<&egui::TextureHandle> {
         if url.is_empty() {
             return None;
+        }
+
+        // A failure is worth another go after a while. Long enough that a
+        // genuinely dead URL is asked for seldom — a card on screen redraws
+        // sixty times a second and must not fetch sixty times — and short
+        // enough that somebody who has just granted a permission or restarted
+        // their DVR sees the artwork fill in rather than wondering what is
+        // wrong with the library.
+        const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
+        if let Some(Entry::Failed(when)) = self.entries.get(url) {
+            if when.elapsed() > RETRY_AFTER {
+                self.entries.remove(url);
+            }
         }
 
         if !self.entries.contains_key(url) {
