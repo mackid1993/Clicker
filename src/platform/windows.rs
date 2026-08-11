@@ -131,6 +131,9 @@ pub fn machine_name() -> Option<String> {
 /// Nothing stands between this program and the local network here.
 pub const LOCAL_NETWORK_HINT: &str = "";
 
+/// Nothing to request: there is no local network permission here.
+pub fn request_local_network() {}
+
 // --- where files go ----------------------------------------------------------
 
 /// The profile root settings live under. Roams with the user.

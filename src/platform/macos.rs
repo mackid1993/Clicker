@@ -39,12 +39,28 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
 
 /// Appended to a failed connection attempt.
 ///
-/// macOS gates the local network behind a permission prompt, and the first
-/// probe of a DVR usually loses the race with that dialog: the request goes
-/// out, the system says no on the user's behalf, and the prompt is still on
-/// screen when the failure lands. Saying so turns a mystery into a step.
+/// macOS gates the local network behind a permission prompt, and a probe
+/// that runs before the dialog is answered fails on the user's behalf.
+/// `request_local_network` below asks early so this rarely happens, but
+/// someone who dismissed the dialog still deserves an explanation over a
+/// mystery.
 pub const LOCAL_NETWORK_HINT: &str =
-    " If macOS just asked about the local network, allow it and try again.";
+    " If macOS asked about the local network, allow it and try again.";
+
+/// Make macOS raise its local network permission prompt now, at launch.
+///
+/// The system shows that dialog on the first packet an app aims at the
+/// local network — which, left alone, is the first attempt to reach the
+/// DVR: Connect fails, and *then* the question appears, in that order. One
+/// throwaway datagram at the mDNS multicast address is unambiguously
+/// "local network" to the classifier, costs nothing, and moves the question
+/// to while the welcome card is still being read. Asked once per launch;
+/// the system only ever prompts the first time.
+pub fn request_local_network() {
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        let _ = socket.send_to(&[0u8], "224.0.0.251:5353");
+    }
+}
 
 // --- where files go ----------------------------------------------------------
 

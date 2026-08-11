@@ -610,6 +610,11 @@ impl App {
             platform::apply_chrome(handle, true);
         }
 
+        // Where a platform gates the local network behind a question, have it
+        // asked now, while the first screen is still being read — not after
+        // the first attempt to reach the DVR has already failed on it.
+        platform::request_local_network();
+
         // Maximize by command rather than by `ViewportBuilder::with_maximized`.
         //
         // The builder is told to maximize *and* given the restored position and
