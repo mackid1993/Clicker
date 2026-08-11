@@ -84,15 +84,21 @@ jobs:
       - name: Update Rust
         run: rustup update stable --no-self-update
 
-      # What tray-icon's menu crate and the folder picker compile against.
-      # Headers, not a runtime dependency: nothing here is bundled.
+      # What tray-icon's menu crate and the folder picker compile against, and
+      # what FFmpeg needs to offer hardware decoding.
+      #
+      # Headers, not shipped libraries. libva and libvdpau in particular are
+      # deliberately NOT bundled: hardware decoding talks to the machine's own
+      # driver, so the machine's own libva has to be the one that loads — the
+      # same reason Mesa and libwayland are left alone.
       - name: Build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
             libgl1-mesa-dev pkg-config meson ninja-build nasm \
             libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev \
-            libunibreak-dev python3-setuptools python3-pip autoconf automake libtool
+            libunibreak-dev python3-setuptools python3-pip autoconf automake libtool \
+            libva-dev libvdpau-dev
           # 22.04 ships meson 0.61 and libplacebo wants 0.63 or newer. From
           # pip rather than a newer distribution, because the point of
           # building on 22.04 is its old glibc.
