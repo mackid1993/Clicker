@@ -2153,6 +2153,26 @@ impl App {
                         .or_else(paths::data_dir)
                         .unwrap_or_else(std::env::temp_dir),
                 };
+                // Up to the nearest directory that exists.
+                //
+                // A picker handed a path that is not there yet does not open
+                // empty — it opens wherever that system's dialog goes when it
+                // is given nothing, which on macOS is Documents. So the
+                // settings said one place, the dialog opened another, and it
+                // looked as though the default had been Documents all along.
+                // The default is, and remains, the application's own folder
+                // beside everything else it keeps; this is only about where
+                // the dialog starts looking.
+                let start = {
+                    let mut candidate = start.as_path();
+                    while !candidate.exists() {
+                        match candidate.parent() {
+                            Some(parent) => candidate = parent,
+                            None => break,
+                        }
+                    }
+                    candidate.to_path_buf()
+                };
                 std::thread::spawn(move || {
                     let picked = rfd::FileDialog::new()
                         .set_title(match which {

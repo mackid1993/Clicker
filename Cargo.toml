@@ -26,6 +26,7 @@ eframe = { version = "0.29", default-features = false, features = [
   "glow",
   "default_fonts",
 ] }
+
 egui = "0.29"
 egui_extras = { version = "0.29", features = ["image"] }
 
@@ -67,6 +68,21 @@ rfd = { version = "0.15", default-features = false }
 muda = { version = "0.19", default-features = false }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# The two display servers, and with them a window frame worth looking at.
+#
+# eframe is taken with default features off for the renderer's sake, and that
+# quietly took `wayland` and `x11` with it. It still ran — winit finds a
+# display server either way — but on Wayland, where GNOME does no server-side
+# decoration at all, the toolkit has to draw the frame itself, and without
+# this feature it draws its crudest fallback: a grey bar with three grey
+# squares. `wayland` is what pulls in the Adwaita decorations: a real frame,
+# with real buttons, in the user's own theme.
+eframe = { version = "0.29", default-features = false, features = [
+  "glow",
+  "default_fonts",
+  "wayland",
+  "x11",
+] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 # tray-icon has the same shape: default-features = false leaves its menu
 # crate with no backend at all on Linux, which does not even compile. GTK is

@@ -65,6 +65,13 @@ finish-args:
   - --filesystem=xdg-data/icons:ro
   - --filesystem=~/.icons:ro
   - --env=XCURSOR_PATH=~/.icons:~/.local/share/icons:/usr/share/icons:/run/host/user-share/icons:/run/host/share/icons
+  # The folder picker. rfd talks to the desktop's own file chooser through
+  # the portal, which lives on the session bus — without the name, Browse
+  # opens nothing at all and looks like a dead button. The portal is also
+  # what grants the sandbox access to whatever directory gets chosen, which
+  # is how a download folder outside the two above ever works.
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.FileChooser
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
@@ -132,6 +139,23 @@ modules:
       - type: git
         url: https://github.com/mpv-player/mpv.git
         tag: v0.41.0
+
+  # Captions are drawn by libass, which is handed a font *name* and nothing
+  # else — so the name has to be installed inside the sandbox. The runtime
+  # carries no monospaced face, which is why closed captions came out wrong
+  # or not at all. DejaVu Sans Mono is the one every Linux desktop has, and
+  # it is what the player asks for on this platform.
+  - name: dejavu-fonts
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 ttf/DejaVuSansMono.ttf /app/share/fonts/DejaVuSansMono.ttf
+      - install -Dm644 ttf/DejaVuSansMono-Bold.ttf /app/share/fonts/DejaVuSansMono-Bold.ttf
+      - install -Dm644 LICENSE /app/share/licenses/io.github.mackid1993.Clicker/DejaVu-license.txt
+    sources:
+      - type: archive
+        url: https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2
+        sha256: 7576310b219e04159d35ff61dd4a4ec4cdba4f35c00e002a136f00e96a908b0a
+        strip-components: 1
 
   - name: clicker
     buildsystem: simple

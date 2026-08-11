@@ -621,9 +621,20 @@ impl Player {
             // solid black band, and that is not a style choice — it is what
             // makes captions readable over a bright sky or a white shirt, which
             // is exactly where mpv's default of outlined text on nothing falls
-            // apart. Consolas is on every Windows this runs on; libass falls
-            // back on its own if it ever is not.
+            // apart.
+            //
+            // The face is named per platform because a name is all libass
+            // gets, and a name that is not installed does not degrade
+            // gracefully — captions come out in whatever fontconfig picks,
+            // at the wrong metrics, or not at all. Consolas is on every
+            // Windows; Menlo on every Mac; DejaVu Sans Mono is what a Linux
+            // desktop and the freedesktop runtime both actually carry.
+            #[cfg(windows)]
             ("sub-font", "Consolas"),
+            #[cfg(target_os = "macos")]
+            ("sub-font", "Menlo"),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            ("sub-font", "DejaVu Sans Mono"),
             ("sub-color", "#FFFFFFFF"),
             ("sub-border-style", "background-box"),
             ("sub-back-color", "#FF000000"),
