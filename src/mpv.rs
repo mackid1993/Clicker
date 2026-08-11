@@ -886,6 +886,19 @@ impl Player {
             // unless it is asked to. Without this the caption button had
             // nothing to turn on, on files that plainly have captions.
             ("sub-create-cc-track", "yes"),
+            // Created, but not switched on.
+            //
+            // mpv selects a subtitle track by itself — `sid` defaults to auto
+            // — and the caption track this asks it to build is the only one a
+            // broadcast has, so every channel and every recording opened with
+            // captions burned across it whether anybody wanted them or not.
+            // The log said so plainly and for a long time: `Subs --sid=1
+            // (eia_608)`, with the dot beside it that means selected.
+            //
+            // `no` leaves the track built and unselected, which is the state
+            // the caption button is written for: it turns them on by finding
+            // that track and choosing it by id, and off by coming back here.
+            ("sid", "no"),
             // Made to look like broadcast captions rather than film subtitles.
             //
             // What a television draws for CEA-608 is white monospaced text in a
