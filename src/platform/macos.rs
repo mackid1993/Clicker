@@ -335,14 +335,21 @@ pub fn permission_denied(message: &str) -> bool {
 /// The one place someone can actually fix this, and three levels down a
 /// settings application otherwise.
 pub fn open_local_network_settings() {
-    // The modern identifier first, the old one behind it. System Settings was
-    // rewritten in Ventura and the pane identifiers changed with it; the
-    // pre-Ventura URL still "opens" on a current system — `open` reports
-    // success — it simply lands somewhere else, which is worse than not
-    // trying, because the person is then looking at the wrong panel being
-    // told the setting is there.
+    // Several spellings, newest first, because System Settings was rewritten
+    // in Ventura and the anchors have moved again since. Every one of these
+    // is somebody's macOS: the first is current, the second is what Ventura
+    // through Sonoma answer to, the third is the pre-Ventura preference pane
+    // still current on Monterey, which this application supports.
+    //
+    // The deep link is best effort and treated as such. `open` reports
+    // success whether or not the anchor was understood — on this machine the
+    // current URL lands on Privacy & Security itself rather than on Local
+    // Network — so the *message* names the path as well. A link that gets
+    // somebody two thirds of the way there is worth having; a message that
+    // relies on it landing exactly is not.
     for target in [
         "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork",
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy",
         "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork",
     ] {
         if std::process::Command::new("open").arg(target).status().is_ok() {

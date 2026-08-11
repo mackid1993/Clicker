@@ -996,9 +996,10 @@ impl App {
                             // otherwise, and the address is usually fine.
                             let text = if platform::permission_denied(&e) {
                                 platform::open_local_network_settings();
-                                "The system is blocking access to your local network. \
-                                 Allow Clicker in the panel that just opened, then \
-                                 press Connect again."
+                                "macOS is blocking Clicker from your local network. \
+                                 In the System Settings window that just opened, go \
+                                 to Privacy & Security \u{2192} Local Network and turn \
+                                 Clicker on, then press Connect again."
                                     .to_string()
                             } else {
                                 format!("{e}{}", platform::LOCAL_NETWORK_HINT)
@@ -1023,8 +1024,8 @@ impl App {
         if platform::permission_denied(&text) {
             self.permission_blocked = true;
             self.toast = Some((
-                "macOS is blocking Clicker from reaching your local network. \
-                 Click here to allow it in System Settings, then try again."
+                "macOS is blocking Clicker from your local network. Click here, \
+                 then turn Clicker on under Privacy & Security \u{2192} Local Network."
                     .to_string(),
                 Instant::now(),
             ));
