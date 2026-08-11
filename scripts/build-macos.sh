@@ -34,6 +34,19 @@
 
 set -euo pipefail
 
+# --no-notarize   sign, but do not wait on Apple. For iterating.
+# --install       replace /Applications/Clicker.app with what was just built,
+#                 so there is only ever one copy and it is this one.
+NOTARIZE=yes
+INSTALL=no
+for argument in "$@"; do
+  case "$argument" in
+    --no-notarize) NOTARIZE=no ;;
+    --install) INSTALL=yes ;;
+    *) echo "unknown option: $argument" >&2; exit 2 ;;
+  esac
+done
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/target/macos"
 APP="$OUT/Clicker.app"
@@ -134,7 +147,9 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 # app on this machine and there is no reason for this project to demand a
 # name of its own.
 NOTARY_PROFILE="${NOTARY_PROFILE:-notary}"
-if [[ -n "$IDENTITY" ]] \
+if [[ "$NOTARIZE" == "no" ]]; then
+  echo "==> not notarizing (--no-notarize)"
+elif [[ -n "$IDENTITY" ]] \
   && xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
   echo "==> notarizing (this waits on Apple, usually a minute or two)"
   # Bounded, because "usually" is not "always": Apple's queue has slow
@@ -162,7 +177,20 @@ else
   echo "==> not notarized (no '$NOTARY_PROFILE' keychain profile)"
 fi
 
+# Installing means there is one Clicker on this machine and it is this one.
+# Without it a stale copy sits in /Applications looking exactly like the new
+# build, and an afternoon goes into wondering why a change did not take.
+if [[ "$INSTALL" == "yes" ]]; then
+  echo "==> installing to /Applications"
+  pkill -f "Clicker.app/Contents/MacOS/Clicker" 2>/dev/null || true
+  rm -rf /Applications/Clicker.app
+  ditto "$APP" /Applications/Clicker.app
+fi
+
 echo
 echo "Built $APP"
 echo "       $ZIP"
+if [[ "$INSTALL" == "yes" ]]; then
+  echo "Installed /Applications/Clicker.app"
+fi
 echo "Needs: brew install mpv"
