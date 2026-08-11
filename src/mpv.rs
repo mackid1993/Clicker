@@ -1663,6 +1663,18 @@ impl Player {
     /// true at every call site, all of which sit inside a paint.
     #[cfg(target_os = "linux")]
     fn threaded_active(&self) -> bool {
+        // Opt-in, for now. The architecture is right — mpv rendering on its
+        // own thread and context is how mpv itself survives slow drivers —
+        // but on the one machine it has been tried, a virtualised GPU, the
+        // cross-context handoff produced white flashes the single-context
+        // path never showed. Until it has run on real hardware, the proven
+        // path is the default and this is how a tester turns the new one on.
+        if !std::env::var("CLICKER_RENDER_THREAD")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            return false;
+        }
         match self.threaded.get_or_init(|| worker::spawn(self)) {
             Some(link) => !link.dead.load(Ordering::SeqCst),
             None => false,
