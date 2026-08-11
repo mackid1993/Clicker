@@ -905,6 +905,17 @@ impl Player {
     ///
     /// An OpenGL context must be current on the calling thread.
     unsafe fn ensure_renderer(&self, _gl: &GlFns) -> bool {
+        // The render thread claims the renderer first, wherever the first
+        // call lands. mpv allows one render context per handle, and the
+        // warm-up call that runs when a stream loads used to win the race:
+        // it created the in-paint renderer before the first paint ever
+        // reached the threaded path, and the worker then heard "There is
+        // already a mpv_render_context set" and fell back — the whole thread
+        // built and lost to its own warm-up.
+        #[cfg(target_os = "linux")]
+        if self.threaded_active() {
+            return true;
+        }
         let mut render_ctx = self.render_ctx.lock().unwrap();
         if !render_ctx.0.is_null() {
             return true;
@@ -1607,20 +1618,27 @@ impl Player {
         }
     }
 
+    /// Whether the render thread owns (or is about to own) the renderer.
+    /// Spawns it on first ask, which needs the interface's context current —
+    /// true at every call site, all of which sit inside a paint.
+    #[cfg(target_os = "linux")]
+    fn threaded_active(&self) -> bool {
+        match self.threaded.get_or_init(|| worker::spawn(self)) {
+            Some(link) => !link.dead.load(Ordering::SeqCst),
+            None => false,
+        }
+    }
+
     /// Present by way of the render thread. `None` means there is no thread —
     /// it was tried and could not be had — and the in-paint path should run.
     #[cfg(target_os = "linux")]
     unsafe fn threaded_present(&self, gl: &GlFns, rect: [i32; 4]) -> Option<bool> {
-        let link = self
-            .threaded
-            .get_or_init(|| worker::spawn(self))
-            .as_ref()?;
-        if link.dead.load(Ordering::SeqCst) {
-            // The worker cleaned up entirely before setting this, so falling
-            // back to the in-paint renderer is safe: no second render context
-            // exists.
+        if !self.threaded_active() {
+            // The worker cleaned up entirely before dying, so falling back to
+            // the in-paint renderer is safe: no second render context exists.
             return None;
         }
+        let link = self.threaded.get().and_then(|t| t.as_ref())?;
 
         let [x, bottom, w, h] = rect;
         let top = bottom + h;
