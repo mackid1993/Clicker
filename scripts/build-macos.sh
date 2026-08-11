@@ -16,9 +16,10 @@
 #     LGPL only. Copying a package manager's copy instead is not an option —
 #     Homebrew's FFmpeg is --enable-gpl — and an application somebody has to
 #     run `brew install mpv` before using is not an application you can hand
-#     to anyone. Without a staged build the bundle is still made, and still
-#     falls back to a system libmpv, which is what a developer wants when
-#     iterating.
+#     to anyone. There is no system fallback: mpv_candidates looks in the
+#     bundle, then beside the executable, then in third_party, and stops.
+#     Without a staged build the bundle is still made and will not play
+#     anything, which the line below says at the time rather than at run time.
 #   * Signing rises to whatever is available, and nothing here is anybody's
 #     in particular. With a "Developer ID Application" certificate in the
 #     keychain — or one named in CLICKER_SIGN_IDENTITY — the app is signed
@@ -163,7 +164,9 @@ if [[ -f "$STAGE/libmpv.2.dylib" ]]; then
     "$APP/Contents/MacOS/Clicker" 2>/dev/null || true
   BUNDLED=yes
 else
-  echo "==> no staged libmpv (run scripts/build-mpv.sh); the app will look for a system one"
+  echo "==> WARNING: no staged libmpv. This bundle will launch and refuse to" >&2
+  echo "    play anything — there is no Homebrew fallback by design." >&2
+  echo "    Run scripts/build-mpv.sh, or use scripts/dev-macos.sh which does." >&2
 fi
 
 # The licences, inside the bundle where they travel with it.
@@ -278,5 +281,5 @@ fi
 if [[ "$BUNDLED" == "yes" ]]; then
   echo "libmpv: bundled (LGPL, built by scripts/build-mpv.sh)"
 else
-  echo "libmpv: not bundled — needs one on the system (brew install mpv)"
+  echo "libmpv: NOT BUNDLED — this app cannot play anything. Run scripts/build-mpv.sh."
 fi
