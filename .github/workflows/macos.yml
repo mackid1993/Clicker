@@ -91,12 +91,28 @@ jobs:
       # The staged libmpv, cached whole, keyed on the script where the tags
       # and the licensing flags live — the same arrangement the Windows job
       # uses.
+      # The cache key comes from the pinned versions, not from the whole
+      # script.
+      #
+      # Keyed on the file, every edit to a comment or a check produced a new
+      # key and therefore a miss — which meant recompiling FFmpeg and mpv to
+      # prove that a comment had changed. What actually determines whether a
+      # staged build can be reused is the tags and the configure flags, so
+      # that is what the key is made of.
+      - name: Work out the libmpv cache key
+        id: mpvkey
+        run: |
+          FINGERPRINT=$(grep -E '^(FFMPEG_TAG|MPV_TAG|LIBASS_TAG|LIBPLACEBO_TAG)=|disable-gpl|Dgpl=|enable-vaapi|enable-videotoolbox' \
+            scripts/build-mpv.sh | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+          echo "key=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "libmpv cache fingerprint: $FINGERPRINT"
+
       - name: Cache libmpv
         id: mpv
         uses: actions/cache@v4
         with:
           path: third_party
-          key: macos-mpv-${{ hashFiles('scripts/build-mpv.sh') }}
+          key: macos-mpv-${{ steps.mpvkey.outputs.key }}
 
       - name: Build libmpv and FFmpeg (LGPL)
         if: steps.mpv.outputs.cache-hit != 'true'
