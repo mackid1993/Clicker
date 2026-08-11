@@ -994,11 +994,15 @@ impl App {
                         Err(e) => {
                             // A refused local network reads as a bad address
                             // otherwise, and the address is usually fine.
+                            // The same refusal, on the screen somebody meets
+                            // first. The panel says it in steps; here there is
+                            // room for one sentence, so it is the sentence
+                            // that names the switch.
                             let text = if platform::permission_denied(&e) {
                                 platform::open_local_network_settings();
-                                "macOS is blocking Clicker from your local network. \
-                                 In the System Settings window that just opened, go \
-                                 to Privacy & Security \u{2192} Local Network and turn \
+                                "Your Mac is blocking Clicker from the local network. \
+                                 Open Privacy & Security \u{2192} Local Network in the \
+                                 System Settings window that just opened, switch \
                                  Clicker on, then press Connect again."
                                     .to_string()
                             } else {
@@ -1021,17 +1025,13 @@ impl App {
         // to look at their router, their subnet and their server, and none of
         // those is the problem. Said properly it is a one-click fix, and the
         // click is offered: the toast becomes tappable and opens the pane.
+        // A refused local network gets a panel of its own rather than a
+        // sentence that slides past. See `permission_panel`.
         if platform::permission_denied(&text) {
             self.permission_blocked = true;
-            self.toast = Some((
-                "macOS is blocking Clicker from your local network. Click here, \
-                 then turn Clicker on under Privacy & Security \u{2192} Local Network."
-                    .to_string(),
-                Instant::now(),
-            ));
+            self.toast = None;
             return;
         }
-        self.permission_blocked = false;
         self.toast = Some((text, Instant::now()));
     }
 
@@ -1390,7 +1390,11 @@ impl eframe::App for App {
                     self.offline_banner(ui, content);
                 }
 
-                self.toast_banner(ui, content);
+                if self.permission_blocked {
+                    self.permission_panel(ui, content);
+                } else {
+                    self.toast_banner(ui, content);
+                }
 
                 // Last, so the borders sit above everything they overlap —
                 // notably the caption, whose drag-to-move would otherwise
@@ -3695,10 +3699,7 @@ impl App {
     fn toast_banner(&mut self, ui: &egui::Ui, area: egui::Rect) {
         let Some((text, shown)) = &self.toast else { return };
         let age = shown.elapsed().as_secs_f32();
-        // A permission message stays until it is dealt with. Four seconds is
-        // right for "volume 40%" and wrong for the one message that is asking
-        // the person to go and do something in another application.
-        let lifetime = if self.permission_blocked { f32::INFINITY } else { 4.0 };
+        let lifetime = 4.0;
         if age > lifetime {
             self.toast = None;
             return;
@@ -3709,18 +3710,22 @@ impl App {
         // come from.
         let entrance = (age / 0.18).min(1.0);
         let entrance = entrance * entrance * (3.0 - 2.0 * entrance);
-        let fading = if lifetime.is_finite() {
-            (1.0 - ((age - 3.0) / 1.0).clamp(0.0, 1.0)) * entrance
-        } else {
-            entrance
-        };
-        let alpha = (fading * 255.0) as u8;
+        let alpha =
+            (((1.0 - ((age - 3.0) / 1.0).clamp(0.0, 1.0)) * entrance) * 255.0) as u8;
         let slide = (1.0 - entrance) * -10.0;
 
-        let galley = ui.painter().layout_no_wrap(
+        // Wrapped, and bounded by the window.
+        //
+        // These were laid out without wrapping, which is fine for "Volume
+        // 40%" and wrong for anything longer: the card grew to whatever the
+        // sentence measured and ran off both edges of a window narrower than
+        // it, taking the middle of the message with it.
+        let widest = (area.width() - SPACE_L * 4.0).min(560.0).max(200.0);
+        let galley = ui.painter().layout(
             text.clone(),
             egui::FontId::proportional(13.0),
             with_alpha(Fluent::TEXT_PRIMARY, alpha),
+            widest,
         );
         let size = galley.size() + egui::vec2(SPACE_L * 2.0, SPACE_M * 1.5);
         let card = egui::Rect::from_center_size(
@@ -3740,21 +3745,85 @@ impl App {
             Fluent::TEXT_PRIMARY,
         );
 
-        // The permission message is the only one worth clicking, and it opens
-        // the exact pane rather than describing where it is.
-        if self.permission_blocked {
-            let hit = ui.interact(card, egui::Id::new("toast-permission"), egui::Sense::click());
-            if hit.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            if hit.clicked() {
-                platform::open_local_network_settings();
-                self.toast = None;
-                self.permission_blocked = false;
-            }
+        ui.ctx().request_repaint();
+    }
+
+    /// What to do when the system will not let this program onto the network.
+    ///
+    /// A card with the steps written out, because the person reading it did
+    /// not do anything wrong and cannot be expected to know that "No route to
+    /// host" means a privacy switch three panels into System Settings. The
+    /// application cannot flip that switch, cannot make the system ask again
+    /// — macOS prompts once, ever — and cannot reliably link straight to the
+    /// row, since the anchor has moved twice in three releases. What it can
+    /// do is say exactly where to go, get the window open, and offer to try
+    /// again without being restarted.
+    fn permission_panel(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
+        let card = egui::Rect::from_center_size(area.center(), egui::vec2(460.0, 300.0));
+
+        ui.painter().rect_filled(
+            card.translate(egui::vec2(0.0, 10.0)),
+            RADIUS_SURFACE + 4.0,
+            egui::Color32::from_black_alpha(90),
+        );
+        ui.painter().rect_filled(card, RADIUS_SURFACE, Fluent::LAYER_CARD);
+        ui.painter().rect_stroke(
+            card,
+            RADIUS_SURFACE,
+            egui::Stroke::new(1.0, Fluent::STROKE_SURFACE),
+        );
+
+        let mut inner = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(card.shrink2(egui::vec2(SPACE_L * 1.75, SPACE_L * 1.5)))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        inner.spacing_mut().item_spacing.y = SPACE_S;
+
+        inner.label(
+            egui::RichText::new("Clicker needs permission to reach your DVR")
+                .size(18.0)
+                .color(Fluent::TEXT_PRIMARY),
+        );
+        inner.label(
+            egui::RichText::new(
+                "Your Mac is blocking this app from the local network. Nothing is                  wrong with your DVR or your network — the switch is off.",
+            )
+            .size(12.5)
+            .color(Fluent::TEXT_SECONDARY),
+        );
+        inner.add_space(SPACE_S);
+
+        for step in [
+            "1.  Click Open System Settings below.",
+            "2.  Choose Privacy & Security in the sidebar.",
+            "3.  Scroll down and click Local Network.",
+            "4.  Switch Clicker on.",
+            "5.  Come back here and click Try Again.",
+        ] {
+            inner.label(
+                egui::RichText::new(step)
+                    .size(12.5)
+                    .color(Fluent::TEXT_PRIMARY),
+            );
         }
 
-        ui.ctx().request_repaint();
+        inner.add_space(SPACE_M);
+        inner.horizontal(|ui| {
+            if ui
+                .add(egui::Button::new("Open System Settings").min_size(egui::vec2(190.0, 32.0)))
+                .clicked()
+            {
+                platform::open_local_network_settings();
+            }
+            if ui
+                .add(egui::Button::new("Try Again").min_size(egui::vec2(110.0, 32.0)))
+                .clicked()
+            {
+                self.permission_blocked = false;
+                self.refresh_data();
+            }
+        });
     }
 
     /// Stream stats, as a Fluent card.
