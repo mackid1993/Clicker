@@ -1183,11 +1183,25 @@ impl Player {
                 if self.shared.offered.load(Ordering::Relaxed) % 300 == 0
                     && SAID.fetch_add(1, Ordering::Relaxed) < 20
                 {
+                    // Both numbers, because one of them is meaningless alone.
+                    // A long wall time with a low load is the driver waiting
+                    // for the display, which is normal and costs nothing. A
+                    // long wall time with a load near 1.0 is a core being
+                    // spent, which is the only case where skipping a frame
+                    // buys anything.
+                    let load = *self.shared.render_load.lock().unwrap();
+                    let (offered, dropped) = (
+                        self.shared.offered.load(Ordering::Relaxed),
+                        self.shared.dropped.load(Ordering::Relaxed),
+                    );
                     crate::log::line(&format!(
-                        "[mpv] render is taking {:.1}ms of wall clock. That is only \
-                         a problem if the processor time below is high too — a long \
-                         wall time on its own is the driver waiting for the display",
-                        *smoothed
+                        "[mpv] render {:.1}ms wall, {:.2} of a core, {} of {} frames \
+                         skipped ({})",
+                        *smoothed,
+                        load,
+                        dropped,
+                        offered,
+                        if load > 0.9 { "processor bound" } else { "waiting on the display" }
                     ));
                 }
             }
