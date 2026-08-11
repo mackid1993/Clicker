@@ -119,8 +119,25 @@ jobs:
             }
           }
 
-          C:\msys64\usr\bin\bash.exe -lc 'pacman -Sy --noconfirm --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-meson mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-libass mingw-w64-x86_64-libplacebo make diffutils nasm'
-          if ($LASTEXITCODE -ne 0) { throw "pacman failed with $LASTEXITCODE" }
+          # Retried, because the failure this meets is not ours. MSYS2's
+          # mirrors go slow or drop entirely — "Operation too slow, less than
+          # 1 bytes/sec transferred" is what it looks like — and a release
+          # build that dies on a mirror having a bad minute costs a rebuild
+          # and the twenty minutes of compiling behind it. Three attempts,
+          # spaced, and pacman is told to pick a different mirror each time
+          # by refreshing the database from scratch.
+          $packages = 'mingw-w64-x86_64-gcc mingw-w64-x86_64-meson ' +
+                      'mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf ' +
+                      'mingw-w64-x86_64-libass mingw-w64-x86_64-libplacebo ' +
+                      'make diffutils nasm'
+          $ok = $false
+          foreach ($attempt in 1..3) {
+            C:\msys64\usr\bin\bash.exe -lc "pacman -Syy --noconfirm --needed $packages"
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Write-Host "::warning::pacman attempt $attempt failed with $LASTEXITCODE; retrying"
+            Start-Sleep -Seconds 20
+          }
+          if (-not $ok) { throw 'pacman failed three times; the MSYS2 mirrors are down' }
 
       # FFmpeg and mpv from their pinned tags, LGPL only, staged into
       # third_party\mpv where the cache step above picks them up on the way
