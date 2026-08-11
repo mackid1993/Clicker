@@ -62,6 +62,11 @@ rfd = { version = "0.15", default-features = false }
 # own — the same door a Flatpak is required to use anyway.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# tray-icon has the same shape: default-features = false leaves its menu
+# crate with no backend at all on Linux, which does not even compile. GTK is
+# the only tray story it offers there. The tray is never *shown* on Linux —
+# platform::HAS_TRAY is false — but the crate still has to build.
+tray-icon = { version = "0.24.2", default-features = false, features = ["gtk"] }
 
 [build-dependencies]
 # Embeds the icon and version information into the executable as Win32
