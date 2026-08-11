@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: MIT
+#
+# Clicker - an unofficial, native client for Channels DVR
+# Copyright (c) 2026 David Brustein
+#
+# The Flatpak. This is the Linux distribution story in one file: the
+# freedesktop runtime supplies the desktop plumbing, mpv is built here from
+# the same pinned tag and with the same LGPL discipline as the Windows build
+# (-Dgpl=false, see scripts/build-mpv.ps1 and licenses/THIRD_PARTY.md), and
+# FFmpeg comes from the runtime's own ffmpeg-full extension rather than a
+# private copy — the sandbox's ld path swaps it in at launch.
+#
+# Rust dependencies are vendored through generated-sources.json, which CI
+# produces from Cargo.lock with flatpak-cargo-generator; the sandbox has no
+# network at build time, which is the point of a lockfile anyway.
+
+app-id: io.github.mackid1993.Clicker
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: clicker
+
+add-extensions:
+  org.freedesktop.Platform.ffmpeg-full:
+    version: '24.08'
+    directory: lib/ffmpeg
+    add-ld-path: .
+
+cleanup-commands:
+  - mkdir -p /app/lib/ffmpeg
+
+finish-args:
+  # A television client: picture, sound, and the network the DVR is on.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+
+modules:
+  # Subtitles. mpv will not configure without it, and the runtime does not
+  # carry it.
+  - name: libass
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+    sources:
+      - type: git
+        url: https://github.com/libass/libass.git
+        tag: 0.17.4
+
+  # mpv's rendering library. OpenGL only, no Vulkan: the application drives
+  # mpv through the OpenGL render API and nothing else, so the Vulkan half
+  # would be compiled, shipped, and never once called.
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Dvulkan=disabled
+      - -Dshaderc=disabled
+      - -Dglslang=disabled
+      - -Ddemos=false
+      - -Dtests=false
+    sources:
+      - type: git
+        url: https://code.videolan.org/videolan/libplacebo.git
+        tag: v7.349.0
+
+  # The player, as a library. The same tag and the same licensing flags as
+  # every other platform: -Dgpl=false is what makes libmpv LGPL, and it is
+  # not negotiable here any more than it is in build-mpv.ps1.
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dgpl=false
+      - -Dlibmpv=true
+      - -Dcplayer=false
+      - -Dlua=disabled
+      - -Djavascript=disabled
+      - -Dmanpage-build=disabled
+      - -Dtests=false
+    sources:
+      - type: git
+        url: https://github.com/mpv-player/mpv.git
+        tag: v0.41.0
+
+  - name: clicker
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/clicker/cargo
+    build-commands:
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/clicker /app/bin/clicker
+      - install -Dm644 packaging/flatpak/io.github.mackid1993.Clicker.desktop
+        /app/share/applications/io.github.mackid1993.Clicker.desktop
+      - install -Dm644 packaging/flatpak/io.github.mackid1993.Clicker.metainfo.xml
+        /app/share/metainfo/io.github.mackid1993.Clicker.metainfo.xml
+      - install -Dm644 assets/clicker.png
+        /app/share/icons/hicolor/512x512/apps/io.github.mackid1993.Clicker.png
+    sources:
+      - type: dir
+        path: ../..
+      - generated-sources.json
