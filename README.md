@@ -346,6 +346,46 @@ that was never transmitted.
 `deinterlace=auto` acts only on streams the decoder flags, so the 1080i
 affiliates get it and the 720p and 1080p channels beside them are untouched.
 
+### Where the differences live, in code
+
+Everything platform-specific is behind `src/platform/`, which is 8% of the
+tree. Each file implements the same set; a stub is an honest implementation
+where a platform has nothing to do, and `None` is an honest answer where a
+capability is genuinely absent.
+
+| What differs | Windows | macOS | Linux |
+|---|---|---|---|
+| `gl_share`, `gl_worker_begin`, `gl_worker_end` — a second GL context for the render thread | WGL | CGL, out of OpenGL.framework | EGL |
+| `MPV_LIBRARY`, `mpv_candidates` — finding the player | `mpv-2.dll` | `libmpv.2.dylib`, bundle first | `libmpv.so.2` |
+| `config_home`, `data_home` | `%APPDATA%`, `%LOCALAPPDATA%` | `~/Library/Application Support` for both | XDG |
+| `text_font`, `fallback_font` | Segoe UI Variable | San Francisco | egui's own, plus a face fontconfig names |
+| `icon_font` | Segoe Fluent Icons, from the system | bundled Fluent subset | bundled Fluent subset |
+| `NATIVE_FRAME`, `CAPTION_INSET`, `shape_window` | app draws the frame | system frame, content under the titlebar, 80pt of clearance | system frame |
+| `make_sparse`, `punch_hole` — the live buffer giving disk back | ioctl | `fcntl` | `fallocate` |
+| `local_utc_offset_seconds`, `thread_cpu_ms` | Win32 | POSIX, shared with Linux | POSIX |
+| `HAS_TRAY` | yes | — | — |
+| `install_menu_bar`, `menu_command`, `sync_menu_shortcuts` | — | muda, above the window | — |
+| `apply_chrome`, `restore_window`, `desktop_bounds`, `window_handle` | DWM and Win32 | stubs | stubs |
+| `permission_denied`, `request_local_network`, `LOCAL_NETWORK_HINT` | never refused | the local-network prompt | never refused |
+| `raise_fd_limit` | — | — | raises to the hard limit at startup |
+
+Outside that module there are eight conditionals in shared files, and they are
+all of them:
+
+| Where | What it decides |
+|---|---|
+| `mpv.rs` `PACES_ON_DISPLAY` | the pacing clock, and with it the render-thread default |
+| `mpv.rs` × 2 | the caption font's name — Consolas, Menlo, DejaVu Sans Mono |
+| `mpv.rs` `autosync` | 30 on Linux, mpv's default elsewhere |
+| `main.rs` | calling `raise_fd_limit`, which only Linux has |
+| `theme.rs` | Segoe Fluent Icons are read from the system on Windows |
+| `ui_setup.rs` × 2 | Command against Ctrl in the shortcut editor |
+
+`keys.rs` has twenty-two more, all of them default key bindings, and they want
+a `platform::DEFAULT_BINDINGS` rather than a conditional per action. That is
+the largest remaining piece of platform code outside the seam and the obvious
+next thing to move.
+
 **The render thread** exists because a driver can hold a render call for most
 of a frame while doing no work at all: a translated OpenGL, a remote display,
 a virtualised GPU. On the interface's own thread that is a window that stops
