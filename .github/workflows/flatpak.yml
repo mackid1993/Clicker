@@ -97,13 +97,23 @@ jobs:
           python3 flatpak-cargo-generator.py Cargo.lock \
             -o packaging/flatpak/generated-sources.json
 
-      # The expensive part is mpv and friends; the builder caches finished
-      # modules keyed on their sources, so only what moved rebuilds.
+      # The expensive part is mpv and friends — twenty minutes of compiling —
+      # and flatpak-builder caches finished modules keyed on their own
+      # sources, so a run that changes nothing about mpv reuses it.
+      #
+      # A rolling key, not a content hash. Keying on a hash of the manifest
+      # looked tidier and cached nothing: every edit to the file — a finish-arg,
+      # a comment — produced a new key and therefore a miss, which is most
+      # edits, because the manifest is the one file this workflow is about.
+      # `github.run_id` never repeats, so the save always happens; the prefix
+      # in restore-keys is what actually finds the newest previous cache.
+      # flatpak-builder then decides for itself which modules it can reuse,
+      # which is the decision it is qualified to make and this key is not.
       - name: Cache flatpak-builder state
         uses: actions/cache@v4
         with:
           path: .flatpak-builder
-          key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('packaging/flatpak/io.github.mackid1993.Clicker.yml') }}
+          key: flatpak-builder-${{ matrix.arch }}-${{ github.run_id }}
           restore-keys: |
             flatpak-builder-${{ matrix.arch }}-
 
