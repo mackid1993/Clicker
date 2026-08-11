@@ -508,6 +508,9 @@ struct App {
     /// Actions the menu bar asked for, waiting for `handle_keys` to act on
     /// them exactly as it would the keys of the same name.
     menu_actions: std::collections::HashSet<String>,
+    /// Whether the last failure was the system refusing the local network,
+    /// which makes the message a button rather than a statement.
+    permission_blocked: bool,
     recordings_tab: ui_library::RecordingsTab,
     /// For the crossfade between screens: which one is on show, and when it
     /// arrived.
@@ -733,6 +736,7 @@ impl App {
             guide_loading: configured,
             library_state: ui_library::LibraryState::default(),
             menu_actions: std::collections::HashSet::new(),
+            permission_blocked: false,
             recordings_tab: ui_library::RecordingsTab::default(),
             shown_screen: Screen::Home,
             screen_changed: Instant::now(),
@@ -988,12 +992,18 @@ impl App {
                             self.screen = Screen::Home;
                         }
                         Err(e) => {
-                            // The platform gets a word in: on macOS the first
-                            // probe usually loses a race with the local
-                            // network permission prompt, and the failure
-                            // should say so rather than read as a bad address.
-                            let hint = platform::LOCAL_NETWORK_HINT;
-                            self.setup.message = Some((format!("{e}{hint}"), false));
+                            // A refused local network reads as a bad address
+                            // otherwise, and the address is usually fine.
+                            let text = if platform::permission_denied(&e) {
+                                platform::open_local_network_settings();
+                                "The system is blocking access to your local network. \
+                                 Allow Clicker in the panel that just opened, then \
+                                 press Connect again."
+                                    .to_string()
+                            } else {
+                                format!("{e}{}", platform::LOCAL_NETWORK_HINT)
+                            };
+                            self.setup.message = Some((text, false));
                         }
                     }
                 }
@@ -1002,6 +1012,25 @@ impl App {
     }
 
     fn announce(&mut self, text: String) {
+        // A refused local network, named.
+        //
+        // macOS reports its own permission refusal as "No route to host
+        // (os error 65)" — the same words it uses for an unplugged cable. On
+        // a machine that can plainly see the DVR, that message sends people
+        // to look at their router, their subnet and their server, and none of
+        // those is the problem. Said properly it is a one-click fix, and the
+        // click is offered: the toast becomes tappable and opens the pane.
+        if platform::permission_denied(&text) {
+            self.permission_blocked = true;
+            self.toast = Some((
+                "macOS is blocking Clicker from reaching your local network. \
+                 Click here to allow it in System Settings, then try again."
+                    .to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        self.permission_blocked = false;
         self.toast = Some((text, Instant::now()));
     }
 
@@ -3665,7 +3694,11 @@ impl App {
     fn toast_banner(&mut self, ui: &egui::Ui, area: egui::Rect) {
         let Some((text, shown)) = &self.toast else { return };
         let age = shown.elapsed().as_secs_f32();
-        if age > 4.0 {
+        // A permission message stays until it is dealt with. Four seconds is
+        // right for "volume 40%" and wrong for the one message that is asking
+        // the person to go and do something in another application.
+        let lifetime = if self.permission_blocked { f32::INFINITY } else { 4.0 };
+        if age > lifetime {
             self.toast = None;
             return;
         }
@@ -3675,7 +3708,12 @@ impl App {
         // come from.
         let entrance = (age / 0.18).min(1.0);
         let entrance = entrance * entrance * (3.0 - 2.0 * entrance);
-        let alpha = ((1.0 - ((age - 3.0) / 1.0).clamp(0.0, 1.0)) * entrance * 255.0) as u8;
+        let fading = if lifetime.is_finite() {
+            (1.0 - ((age - 3.0) / 1.0).clamp(0.0, 1.0)) * entrance
+        } else {
+            entrance
+        };
+        let alpha = (fading * 255.0) as u8;
         let slide = (1.0 - entrance) * -10.0;
 
         let galley = ui.painter().layout_no_wrap(
@@ -3700,6 +3738,20 @@ impl App {
             galley,
             Fluent::TEXT_PRIMARY,
         );
+
+        // The permission message is the only one worth clicking, and it opens
+        // the exact pane rather than describing where it is.
+        if self.permission_blocked {
+            let hit = ui.interact(card, egui::Id::new("toast-permission"), egui::Sense::click());
+            if hit.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if hit.clicked() {
+                platform::open_local_network_settings();
+                self.toast = None;
+                self.permission_blocked = false;
+            }
+        }
 
         ui.ctx().request_repaint();
     }

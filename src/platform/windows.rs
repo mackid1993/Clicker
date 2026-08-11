@@ -128,6 +128,14 @@ pub fn machine_name() -> Option<String> {
     std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty())
 }
 
+/// Nothing here refuses the local network, so no failure is ever that.
+pub fn permission_denied(_message: &str) -> bool {
+    false
+}
+
+/// Never called: nothing to open, no permission to grant.
+pub fn open_local_network_settings() {}
+
 /// Nothing stands between this program and the local network here.
 pub const LOCAL_NETWORK_HINT: &str = "";
 

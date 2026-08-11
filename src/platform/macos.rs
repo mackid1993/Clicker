@@ -319,6 +319,27 @@ pub fn open_url(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
+/// Whether a failure is macOS refusing the local network, and what to say
+/// about it if so.
+///
+/// The system reports a refused local network the same way it reports a
+/// cable being out: `No route to host (os error 65)`. On a machine that can
+/// obviously see the DVR — its address is right there in the settings — that
+/// message sends people to check their router. It is worth naming.
+pub fn permission_denied(message: &str) -> bool {
+    message.contains("os error 65") || message.contains("No route to host")
+}
+
+/// Open the pane where the permission is granted.
+///
+/// The one place someone can actually fix this, and three levels down a
+/// settings application otherwise.
+pub fn open_local_network_settings() {
+    let _ = std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+        .spawn();
+}
+
 /// Appended to a failed connection attempt.
 ///
 /// macOS gates the local network behind a permission prompt, and a probe
