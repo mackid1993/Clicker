@@ -701,8 +701,33 @@ impl Player {
             // match, which is what it is for.
             //
             // It needs to know the real refresh rate, which is what the
-            // `report_swap` call in `present` is telling it.
-            ("video-sync", "display-resample"),
+            // `report_swap` call in `present` is telling it — and that is
+            // exactly what it does not get on a translated OpenGL.
+            //
+            // Measured on a virtual machine: display 56fps against a 60Hz
+            // screen, decoder drops zero, A/V sync zero, render costing five
+            // percent of a core, and the dropped counter climbing steadily
+            // until playback stopped. Nothing was short of time. mpv was
+            // discarding frames it believed were late, against a refresh rate
+            // it had estimated wrongly from swap timings that a virtualised
+            // compositor does not deliver evenly. mpv's own player, on the
+            // same machine and the same stream, is fine — and its default is
+            // `audio`.
+            //
+            // So: `audio` where the timing cannot be trusted, which is Linux,
+            // where the display may be Wayland, X11, a virtual GPU or a remote
+            // desktop, and nothing tells us which. Windows and macOS keep
+            // `display-resample`, where it was measured to fix a real problem
+            // — a drop counter climbing beside a healthy decoder on 60fps
+            // content — and where there is one compositor with honest vsync.
+            (
+                "video-sync",
+                if cfg!(target_os = "linux") {
+                    "audio"
+                } else {
+                    "display-resample"
+                },
+            ),
             ("user-agent", &crate::settings::user_agent()),
             // Where a live playlist is joined. The HLS demuxer defaults to
             // three segments from the end, which for Channels would throw away
