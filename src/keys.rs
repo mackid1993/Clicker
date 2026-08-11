@@ -56,6 +56,10 @@ pub const ACTIONS: &[Action] = &[
     action("settings", "Settings", "S"),
     #[cfg(not(target_os = "macos"))]
     action("rail", "Show or hide the rail's labels", "Tab"),
+    // Command and one key, throughout: the screens on their numbers, the rail
+    // on the number below them, playback on the arrows. Nothing needs two
+    // modifiers except Mute, and only because Command-M is the system's
+    // Minimize and cannot be had.
     #[cfg(target_os = "macos")]
     action("home", "Home", "Cmd+1"),
     #[cfg(target_os = "macos")]
@@ -69,7 +73,7 @@ pub const ACTIONS: &[Action] = &[
     #[cfg(target_os = "macos")]
     action("settings", "Settings", "Cmd+Comma"),
     #[cfg(target_os = "macos")]
-    action("rail", "Show or hide the rail's labels", "Ctrl+Cmd+S"),
+    action("rail", "Show or hide the rail's labels", "Cmd+0"),
 
     // Space, everywhere. The one shortcut with no menu accelerator: a menu
     // that owned Space would swallow it inside every text field, so the
@@ -97,12 +101,14 @@ pub const ACTIONS: &[Action] = &[
     #[cfg(target_os = "macos")]
     action("mute", "Mute", "Shift+Cmd+M"),
 
-    // F11 on Windows and Linux; Control-Command-F on a Mac, which is what
-    // the system's own View menu does in every application there.
+    // F11 on Windows and Linux; Command-F on a Mac. Apple's own full-screen
+    // item is Control-Command-F, and that would be the conventional choice —
+    // but this program has no Find for Command-F to clash with, one modifier
+    // is easier to press than two, and the menu prints whichever it is.
     #[cfg(not(target_os = "macos"))]
     action("fullscreen", "Full screen", "F11"),
     #[cfg(target_os = "macos")]
-    action("fullscreen", "Full screen", "Ctrl+Cmd+F"),
+    action("fullscreen", "Full screen", "Cmd+F"),
 
     #[cfg(not(target_os = "macos"))]
     action("stop", "Stop playback", "Backspace"),

@@ -340,6 +340,15 @@ fn install_fonts(ctx: &egui::Context) {
             .entry(egui::FontFamily::Proportional)
             .or_default()
             .insert(0, "system".into());
+        // And behind the monospace face, not in front of it. Code and key
+        // names still want the fixed-width font; what the system face is here
+        // for is the glyphs the bundled one has never heard of — ⌘ ⌃ ⌥ ⇧,
+        // which otherwise draw as empty boxes in the middle of a shortcut.
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .push("system".into());
     }
 
     // Caption and control glyphs. Substituting lookalike Unicode characters is

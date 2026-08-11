@@ -774,10 +774,17 @@ pub fn settings_screen(
                     } else {
                         crate::keys::display(settings, entry.id)
                     };
+                    // Monospace where a shortcut is a key *name* — PageUp,
+                    // Backspace — because a column of those wants to line up.
+                    // Proportional where it is a row of modifier glyphs, which
+                    // a fixed-width face sets at the wrong widths and, on the
+                    // bundled one, does not have at all.
+                    let glyphs = text.chars().any(|c| {
+                        matches!(c, '\u{2318}' | '\u{2303}' | '\u{2325}' | '\u{21e7}')
+                    });
+                    let styled = egui::RichText::new(text).size(if glyphs { 13.0 } else { 12.0 });
                     let button = egui::Button::new(
-                        egui::RichText::new(text)
-                            .size(12.0)
-                            .monospace()
+                        if glyphs { styled } else { styled.monospace() }
                             .color(if arming { Fluent::ACCENT } else { Fluent::TEXT_PRIMARY }),
                     )
                     .min_size(egui::vec2(KEY_COLUMN, 24.0));
