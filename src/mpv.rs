@@ -500,17 +500,12 @@ pub fn note_graphics(renderer: &str) {
 ///
 /// Unknown counts as real. A renderer nobody here has heard of is far more
 /// likely to be a graphics card than a software rasteriser.
-/// Whether to spend on scaling quality, given what was asked for and what
-/// the graphics turned out to be.
-fn scale_well(scaling: crate::settings::Scaling) -> bool {
-    use crate::settings::Scaling;
-    match scaling {
-        Scaling::Fast => false,
-        Scaling::Detailed => true,
-        Scaling::Automatic => !graphics_are_translated(),
-    }
-}
-
+///
+/// Note what this is not: a platform test. The profiles below are the same
+/// three on Windows, macOS and Linux, and they choose by what the graphics
+/// actually are — a Mac, a PC and a Linux desktop with real drivers all get
+/// the same treatment, and a virtual machine gets the same treatment
+/// whichever of the three it happens to be running.
 fn graphics_are_translated() -> bool {
     let Some(name) = GRAPHICS.get() else {
         return false;
@@ -518,6 +513,97 @@ fn graphics_are_translated() -> bool {
     ["llvmpipe", "softpipe", "swrast", "virgl", "swiftshader", "basic render"]
         .iter()
         .any(|needle| name.contains(needle))
+}
+
+/// What the picture is put through on its way to the screen. Blank means
+/// "leave mpv's default alone", which is what the option loop does with an
+/// empty value.
+struct Picture {
+    scale: &'static str,
+    cscale: &'static str,
+    dscale: &'static str,
+    correct_downscaling: &'static str,
+    linear_downscaling: &'static str,
+    sigmoid_upscaling: &'static str,
+    dither: &'static str,
+    deband: &'static str,
+}
+
+/// The three profiles, identical on all three platforms, and the reasoning.
+///
+/// What this program plays is broadcast and cable television: compressed,
+/// often heavily, frequently interlaced, and almost never the size of the
+/// window it is shown in. Every choice follows from that and from nothing
+/// else — these are not mpv's profiles for film, and they do not vary by
+/// operating system, because the content does not.
+///
+/// **Nothing sharpens.** Not the upscaler, not an unsharp mask. Both raise
+/// contrast at edges, and in compressed television the edges include the
+/// compression: mosquito noise around captions and faces, block boundaries in
+/// dark scenes. Sharpening makes the artefacts crisper and the picture worse,
+/// which is visible the moment it is tried. spline36 upscaling reads as
+/// oversharpened for the same reason, so it is not here either.
+///
+/// **Downscaling is the common case and where the cheap wins are.** A stream
+/// in a window smaller than itself is being shrunk, and mpv's default shrinks
+/// by sampling rather than filtering. `mitchell` with `correct-downscaling`
+/// filters properly and `linear-downscaling` does it in light rather than in
+/// gamma; together they cost little and show on any window smaller than the
+/// source.
+///
+/// **Upscaling cannot be won, only lost less badly.** 1080 lines on a display
+/// three thousand pixels across is an enlargement, and no kernel invents
+/// detail that was never transmitted. `catmull_rom` is sharp without ringing
+/// and `sigmoid-upscaling` keeps haloes off what edges it does produce. That
+/// is all there is; the honest answer to a soft picture on a very large
+/// screen is that the source is 1080.
+///
+/// **Dithering stops being optional once anything else is on.** Scaling in
+/// linear light quantises to eight bits at the end, and without error
+/// diffusion that is banding in exactly the places television has gradients.
+///
+/// **Debanding is what Detailed buys.** The one expensive option worth having
+/// for this material: low-bitrate television arrives with banding already in
+/// it, and it is the only thing here that removes an artefact rather than
+/// avoiding one. It costs real GPU time, which is why it is not the default.
+fn picture_for(scaling: crate::settings::Scaling) -> Picture {
+    use crate::settings::Scaling;
+    const PLAIN: Picture = Picture {
+        scale: "",
+        cscale: "",
+        dscale: "",
+        correct_downscaling: "",
+        linear_downscaling: "",
+        sigmoid_upscaling: "",
+        dither: "",
+        deband: "",
+    };
+    const GOOD: Picture = Picture {
+        scale: "catmull_rom",
+        cscale: "spline36",
+        dscale: "mitchell",
+        correct_downscaling: "yes",
+        linear_downscaling: "yes",
+        sigmoid_upscaling: "yes",
+        dither: "auto",
+        deband: "no",
+    };
+    match scaling {
+        // mpv's defaults and nothing else, for a machine that is dropping
+        // frames — where every option above is a reason it might be.
+        Scaling::Fast => PLAIN,
+        Scaling::Detailed => Picture { deband: "yes", ..GOOD },
+        // Everything cheap on graphics that are real; nothing at all on
+        // graphics that are translated or emulated, where the budget is the
+        // whole problem.
+        Scaling::Automatic => {
+            if graphics_are_translated() {
+                PLAIN
+            } else {
+                GOOD
+            }
+        }
+    }
 }
 
 /// Whether video is paced against the display rather than against the audio
@@ -722,6 +808,8 @@ impl Player {
             }
         };
 
+        let picture = picture_for(scaling);
+
         for (name, value) in [
             ("vo", "libmpv"),
             ("terminal", "no"),
@@ -779,49 +867,17 @@ impl Player {
             // The read-ahead this application argued itself into having: mpv
             // caches compressed packets, which is minutes of protection for
             // the memory a couple of seconds of decoded frames would cost.
-            // How the picture is scaled, which is the difference between a
-            // player that looks like a player and one that looks soft.
-            //
-            // mpv's defaults are deliberately cheap: bilinear for everything,
-            // no correct-downscaling, no linear light. That is the right
-            // default for mpv, which runs on anything, and the wrong one here,
-            // where the picture is nearly always being resized — a 1080p
-            // stream into a window that is not 1080p, or into a high-DPI
-            // display that is half as many points and twice as many pixels.
-            // Bilinear resizing of a whole frame, sixty times a second, is
-            // exactly what "blocky compared to the official client" looks
-            // like.
-            //
-            // These are mpv's own high-quality choices, minus the expensive
-            // ones and minus the ringing. mpv's own high-quality profile
-            // upscales with spline36, which is sharp and rings: on a
-            // high-DPI display, where every frame is being enlarged, that
-            // reads as oversharpened rather than as detail. catmull_rom is
-            // the sharp kernel that does not ring, which is the right trade
-            // for a picture nobody asked to have sharpened. Chroma keeps
-            // spline36, where ringing has nowhere to show.
-            //
-            // mitchell downscales without the aliasing; correct-downscaling
-            // makes the downscale actually filter rather than sample, which
-            // matters most because shrinking is the common case; linear
-            // downscaling does it in light rather than in gamma; sigmoid
-            // upscaling keeps the ringing off edges. Debanding is not here:
-            // it is the expensive one and it addresses a fault this source
-            // material does not have.
-            //
-            // Whether to spend it at all is the Scaling setting, which
-            // defaults to asking the driver what it is: a machine whose
-            // graphics are translated or emulated has the budget as its whole
-            // problem, and there mpv's cheap defaults stand. Somebody who
-            // disagrees with that reading can say so in Settings, and
-            // `CLICKER_MPV_OPTS` overrides either way without a restart of
-            // the argument.
-            ("scale", if scale_well(scaling) { "catmull_rom" } else { "" }),
-            ("cscale", if scale_well(scaling) { "spline36" } else { "" }),
-            ("dscale", if scale_well(scaling) { "mitchell" } else { "" }),
-            ("correct-downscaling", if scale_well(scaling) { "yes" } else { "" }),
-            ("linear-downscaling", if scale_well(scaling) { "yes" } else { "" }),
-            ("sigmoid-upscaling", if scale_well(scaling) { "yes" } else { "" }),
+            // How the picture is scaled and cleaned up. `picture_for` holds
+            // the whole of the reasoning, and is the same three profiles on
+            // every platform.
+            ("scale", picture.scale),
+            ("cscale", picture.cscale),
+            ("dscale", picture.dscale),
+            ("correct-downscaling", picture.correct_downscaling),
+            ("linear-downscaling", picture.linear_downscaling),
+            ("sigmoid-upscaling", picture.sigmoid_upscaling),
+            ("dither-depth", picture.dither),
+            ("deband", picture.deband),
             // Deinterlace what is interlaced, and nothing else.
             //
             // mpv does not deinterlace by default, and a great deal of

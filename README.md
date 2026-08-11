@@ -303,12 +303,48 @@ should be checkable:
 |---|---|---|---|
 | Video paced against | the display | the display | the audio clock |
 | Render thread by default | off | off | **on** |
-| Caption font | Consolas | Menlo | DejaVu Sans Mono |
 | `autosync` | — | — | 30 |
+| Caption font | Consolas | Menlo | DejaVu Sans Mono |
+| Interface font | Segoe UI | San Francisco | egui's own, with a fontconfig fallback |
+| Window frame | drawn by the app | system, content under the titlebar | system |
+| Notification area | yes | — | — |
+| Menu bar | — | yes | — |
+| Hardware decoding | auto-safe | auto-safe | auto-safe, or auto-copy in a Flatpak |
 
-Everything else — the worker, the context handoff, the double-buffered
-textures, the sizing, the blit — is one path, so a fault found in it is fixed
-once rather than argued about twice.
+Everything else is one path: the render worker and its context handoff, the
+double-buffered textures, the sizing, the blit, the deinterlacer, and the
+three picture profiles below. A fault found in any of it is fixed once rather
+than argued about twice.
+
+**The picture profiles are the same three everywhere**, and they choose by
+what the graphics are rather than by which operating system is asking — a Mac,
+a PC and a Linux desktop with real drivers are treated identically, and a
+virtual machine is treated identically whichever of the three it is running.
+Settings has the knob:
+
+| | what it does |
+|---|---|
+| **Automatic** (default) | The good kernels on real graphics; mpv's cheap defaults where the driver names itself `llvmpipe`, `virgl`, `SwiftShader` or Basic Render, because there a better scaler is paid for in dropped frames |
+| **Fast** | mpv's defaults always, for a machine that is dropping frames |
+| **Detailed** | The good kernels regardless, plus debanding, which costs real GPU time |
+
+What the good kernels are, and why: `catmull_rom` upscaling, which is sharp
+without the haloes `spline36` puts on every edge; `mitchell` downscaling with
+`correct-downscaling` and `linear-downscaling`, because a stream shown smaller
+than itself is the common case and mpv's default shrinks by sampling rather
+than filtering; `sigmoid-upscaling` to keep ringing off edges; and dithering,
+which stops being optional the moment anything scales in linear light.
+
+**Nothing sharpens**, and that is deliberate. Broadcast television is
+compressed, so its edges include the compression — mosquito noise around
+captions, block boundaries in dark scenes — and both a sharp kernel and an
+unsharp mask make those crisper along with the picture. A 1080-line source on
+a three-thousand-pixel display is an enlargement, and no filter invents detail
+that was never transmitted.
+
+**Interlaced material is deinterlaced** and progressive material is not:
+`deinterlace=auto` acts only on streams the decoder flags, so the 1080i
+affiliates get it and the 720p and 1080p channels beside them are untouched.
 
 **The render thread** exists because a driver can hold a render call for most
 of a frame while doing no work at all: a translated OpenGL, a remote display,
