@@ -511,8 +511,21 @@ unsafe extern "C" fn on_frame_ready(data: *mut c_void) {
 
 /// The OpenGL objects the picture lands in, all owned on the interface thread.
 struct Surface {
-    fbo: u32,
-    texture: u32,
+    /// Two of everything, drawn into alternately.
+    ///
+    /// One texture reused every frame makes each new frame a write into the
+    /// resource the previous frame's blit may still be reading on the GPU.
+    /// A real driver hides that hazard; through virtio the driver answers it
+    /// with a fence wait — DRM_IOCTL_VIRTGPU_WAIT, which is exactly where the
+    /// paint thread was found parked while audio played on — and a wait per
+    /// frame that costs several frames is a slideshow that ends in a black
+    /// window. A window system double-buffers for precisely this reason; mpv
+    /// in its own window inherits that, and rendering into our own texture
+    /// forfeited it. So it is done by hand: draw into one while the other is
+    /// being read, and never make the driver wait.
+    bufs: [(u32, u32); 2], // (fbo, texture)
+    /// Which of the two was rendered into most recently — the one to show.
+    which: usize,
     width: i32,
     height: i32,
     /// Whether mpv has drawn into it yet.
@@ -971,52 +984,63 @@ impl Player {
             .unwrap_or(true);
         if stale {
             if let Some(old) = surface.take() {
-                gl.delete_framebuffers(1, &old.fbo);
-                gl.delete_textures(1, &old.texture);
+                for (fbo, texture) in old.bufs {
+                    gl.delete_framebuffers(1, &fbo);
+                    gl.delete_textures(1, &texture);
+                }
             }
-            let mut texture = 0u32;
-            gl.gen_textures(1, &mut texture);
-            gl.bind_texture(GL_TEXTURE_2D, texture);
-            gl.tex_image_2d(
-                GL_TEXTURE_2D,
-                0,
-                GL_RGBA8,
-                width,
-                height,
-                0,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                std::ptr::null(),
-            );
-            gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            gl.bind_texture(GL_TEXTURE_2D, 0);
-
-            let mut fbo = 0u32;
-            gl.gen_framebuffers(1, &mut fbo);
+            let mut bufs = [(0u32, 0u32); 2];
             let previous = gl.draw_framebuffer();
-            gl.bind_framebuffer(GL_FRAMEBUFFER, fbo);
-            gl.framebuffer_texture_2d(
-                GL_FRAMEBUFFER,
-                GL_COLOR_ATTACHMENT0,
-                GL_TEXTURE_2D,
-                texture,
-                0,
-            );
-            let status = gl.check_framebuffer_status(GL_FRAMEBUFFER);
+            let mut failed = false;
+            for buf in bufs.iter_mut() {
+                let mut texture = 0u32;
+                gl.gen_textures(1, &mut texture);
+                gl.bind_texture(GL_TEXTURE_2D, texture);
+                gl.tex_image_2d(
+                    GL_TEXTURE_2D,
+                    0,
+                    GL_RGBA8,
+                    width,
+                    height,
+                    0,
+                    GL_RGBA,
+                    GL_UNSIGNED_BYTE,
+                    std::ptr::null(),
+                );
+                gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                gl.bind_texture(GL_TEXTURE_2D, 0);
+
+                let mut fbo = 0u32;
+                gl.gen_framebuffers(1, &mut fbo);
+                gl.bind_framebuffer(GL_FRAMEBUFFER, fbo);
+                gl.framebuffer_texture_2d(
+                    GL_FRAMEBUFFER,
+                    GL_COLOR_ATTACHMENT0,
+                    GL_TEXTURE_2D,
+                    texture,
+                    0,
+                );
+                if gl.check_framebuffer_status(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE {
+                    failed = true;
+                }
+                *buf = (fbo, texture);
+            }
             gl.bind_framebuffer(GL_FRAMEBUFFER, previous);
-            if status != GL_FRAMEBUFFER_COMPLETE {
-                gl.delete_framebuffers(1, &fbo);
-                gl.delete_textures(1, &texture);
+            if failed {
+                for (fbo, texture) in bufs {
+                    gl.delete_framebuffers(1, &fbo);
+                    gl.delete_textures(1, &texture);
+                }
                 *self.shared.error.lock().unwrap() =
                     Some(format!("the graphics driver refused a {width}x{height} target"));
                 return None;
             }
             *surface = Some(Surface {
-                fbo,
-                texture,
+                bufs,
+                which: 0,
                 width,
                 height,
                 painted: false,
@@ -1027,7 +1051,7 @@ impl Player {
         // the whole function.
         let (texture, width, height, painted) = surface
             .as_ref()
-            .map(|s| (s.texture, s.width, s.height, s.painted))?;
+            .map(|s| (s.bufs[s.which].1, s.width, s.height, s.painted))?;
 
         // Nothing new to draw: hand back what is already there rather than
         // asking mpv to redraw a frame it has already produced — unless
@@ -1125,8 +1149,14 @@ impl Player {
         let cpu_before = thread_cpu_ms();
         let wall_before = Instant::now();
 
+        // Into the buffer that is NOT on screen. The front one may still be
+        // in flight inside the driver, and writing to it is the fence wait
+        // this structure exists to avoid.
         let mut fbo = OpenGlFbo {
-            fbo: surface.as_ref().map(|s| s.fbo).unwrap_or(0) as c_int,
+            fbo: surface
+                .as_ref()
+                .map(|s| s.bufs[s.which ^ 1].0)
+                .unwrap_or(0) as c_int,
             w: width,
             h: height,
             internal_format: 0,
@@ -1172,6 +1202,9 @@ impl Player {
         let rc = (self.api.render)(render_ctx.0, params.as_mut_ptr());
         if rc >= 0 {
             if let Some(live) = surface.as_mut() {
+                // The freshly drawn buffer becomes the front one; the old
+                // front is free to finish whatever the driver is doing to it.
+                live.which ^= 1;
                 live.painted = true;
             }
         }
@@ -1263,7 +1296,8 @@ impl Player {
             }
         }
         self.shared.rendered.fetch_add(1, Ordering::Relaxed);
-        Some((texture, width, height))
+        let front = surface.as_ref().map(|s| s.bufs[s.which].1).unwrap_or(texture);
+        Some((front, width, height))
     }
 
     fn get_f64(&self, name: &str) -> Option<f64> {
@@ -1443,7 +1477,7 @@ impl Player {
             .lock()
             .unwrap()
             .as_ref()
-            .map(|s| (s.fbo, s.width, s.height))
+            .map(|s| (s.bufs[s.which].0, s.width, s.height))
         else {
             return false;
         };
@@ -1509,8 +1543,10 @@ impl Player {
             *render_ctx = Ptr(std::ptr::null_mut());
         }
         if let Some(surface) = self.surface.lock().unwrap().take() {
-            gl.delete_framebuffers(1, &surface.fbo);
-            gl.delete_textures(1, &surface.texture);
+            for (fbo, texture) in surface.bufs {
+                gl.delete_framebuffers(1, &fbo);
+                gl.delete_textures(1, &texture);
+            }
         }
     }
 
