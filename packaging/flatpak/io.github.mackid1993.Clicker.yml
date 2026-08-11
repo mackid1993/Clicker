@@ -50,6 +50,21 @@ finish-args:
   # of the choosing.
   - --filesystem=xdg-download
   - --filesystem=xdg-videos
+  # The pointer.
+  #
+  # A cursor is not drawn by the compositor over an application's own
+  # surface — the application supplies it, by loading a cursor theme. A
+  # sandbox with no theme to load supplies nothing, and the pointer simply
+  # vanishes the moment it crosses into the window, which looks like the
+  # application has hung.
+  #
+  # So: read-only sight of wherever the host keeps its themes, and an
+  # XCURSOR_PATH that lists all of them. Read-only, and icons only — this is
+  # the narrowest hole that produces a visible mouse pointer.
+  - --filesystem=/usr/share/icons:ro
+  - --filesystem=xdg-data/icons:ro
+  - --filesystem=~/.icons:ro
+  - --env=XCURSOR_PATH=~/.icons:~/.local/share/icons:/usr/share/icons:/run/host/user-share/icons:/run/host/share/icons
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
