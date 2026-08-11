@@ -39,14 +39,6 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
 
 // --- the menu bar ------------------------------------------------------------
 
-/// What a menu item asked for, when it is not something the system handles
-/// on its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuCommand {
-    OpenSettings,
-    Refresh,
-}
-
 /// Build the application menu and hand it to the running NSApplication.
 ///
 /// macOS puts the menu above the screen rather than inside the window, and a
@@ -58,13 +50,44 @@ pub enum MenuCommand {
 /// Almost every item here is one of the system's own: Apple implements Hide,
 /// Minimize, Full Screen, the clipboard verbs and Quit, and they behave
 /// exactly as they do in every other application because they *are* the same
-/// items. Only Settings and Refresh belong to this program, and those come
-/// back through [`menu_command`].
+/// items. The rest come back through [`menu_command`].
+///
+/// **The accelerators here are not the rebindable shortcuts**, and the two
+/// are deliberately different things:
+///
+///   * The settings page rebinds *bare keys* — G for the guide, Space for
+///     pause. They are read by the application, which knows when something is
+///     being typed into and stands aside.
+///   * A menu accelerator is owned by the system, which presses it before any
+///     window sees the keystroke. That is why every one of these carries
+///     Command: an unmodified menu accelerator would eat the key everywhere,
+///     including inside the search box.
+///
+/// So an action can have both, and usually does: Command-2 from the menu bar
+/// and whatever the settings page says, side by side. Rebinding cannot break
+/// the menu, and the menu cannot break typing. What the menu deliberately
+/// does *not* do is redraw itself when a binding changes — a Mac menu that
+/// renamed its own shortcuts would be lying about what the system will do.
 ///
 /// Must be called on the main thread, after the window exists.
 pub fn install_menu_bar() {
     use muda::accelerator::{Accelerator, Code, Modifiers};
     use muda::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    const CMD: Modifiers = Modifiers::META;
+
+    // Every item that does something inside the application is identified by
+    // the same string `keys::ACTIONS` uses. That is not a convenience: it
+    // means a menu click and the key it names travel the identical path
+    // through `handle_keys`, so the two cannot drift into disagreeing about
+    // what "Skip forward" does, and adding an action still means adding one
+    // line to one table.
+    fn item(id: &str, label: &str, accel: Option<Accelerator>) -> MenuItem {
+        MenuItem::with_id(id, label, true, accel)
+    }
+    fn cmd(code: Code) -> Option<Accelerator> {
+        Some(Accelerator::new(Some(CMD), code))
+    }
 
     let about = AboutMetadata {
         name: Some(crate::APP_NAME.into()),
@@ -73,19 +96,7 @@ pub fn install_menu_bar() {
         ..Default::default()
     };
 
-    let settings = MenuItem::with_id(
-        SETTINGS_ID,
-        "Settings…",
-        true,
-        Some(Accelerator::new(Some(Modifiers::META), Code::Comma)),
-    );
-    let refresh = MenuItem::with_id(
-        REFRESH_ID,
-        "Refresh from the DVR",
-        true,
-        Some(Accelerator::new(Some(Modifiers::META), Code::KeyR)),
-    );
-
+    let settings = item("settings", "Settings\u{2026}", cmd(Code::Comma));
     let app = Submenu::new(crate::APP_NAME, true);
     let _ = app.append_items(&[
         &PredefinedMenuItem::about(Some(&format!("About {}", crate::APP_NAME)), Some(about)),
@@ -116,8 +127,68 @@ pub fn install_menu_bar() {
         &PredefinedMenuItem::select_all(None),
     ]);
 
+    // The screens, on the numbers. Every Mac application that has tabs or
+    // views puts them on Command-1 upward, and this program's five screens
+    // are exactly that shape.
+    let go_items = [
+        item("home", "Home", cmd(Code::Digit1)),
+        item("guide", "Guide", cmd(Code::Digit2)),
+        item("library", "Library", cmd(Code::Digit3)),
+        item("recordings", "Recordings", cmd(Code::Digit4)),
+        item("downloads", "Downloads", cmd(Code::Digit5)),
+    ];
+    let go = Submenu::new("Go", true);
+    for entry in &go_items {
+        let _ = go.append(entry);
+    }
+
+    // Playback. Play/Pause is deliberately without an accelerator: the key
+    // for it is Space, and a menu accelerator on Space is swallowed by the
+    // menu bar before any text field sees it — which would mean no spaces in
+    // the search box. Space still works, because the application reads it
+    // itself and knows when something is being typed into.
+    let play_items = [
+        item("play", "Play or Pause", None),
+        item("back", "Skip Back", cmd(Code::ArrowLeft)),
+        item("forward", "Skip Forward", cmd(Code::ArrowRight)),
+        item("volume_up", "Volume Up", cmd(Code::ArrowUp)),
+        item("volume_down", "Volume Down", cmd(Code::ArrowDown)),
+        item(
+            "mute",
+            "Mute",
+            Some(Accelerator::new(Some(CMD | Modifiers::SHIFT), Code::KeyM)),
+        ),
+        item("channel_up", "Previous Channel", cmd(Code::BracketLeft)),
+        item("channel_down", "Next Channel", cmd(Code::BracketRight)),
+        item("stop", "Stop Playback", cmd(Code::Period)),
+    ];
+    let playback = Submenu::new("Playback", true);
+    let _ = playback.append(&play_items[0]);
+    let _ = playback.append(&PredefinedMenuItem::separator());
+    for entry in &play_items[1..6] {
+        let _ = playback.append(entry);
+    }
+    let _ = playback.append(&PredefinedMenuItem::separator());
+    for entry in &play_items[6..] {
+        let _ = playback.append(entry);
+    }
+
+    let refresh = item("refresh", "Refresh from the DVR", cmd(Code::KeyR));
+    let rail = item(
+        "rail",
+        "Show or Hide Labels",
+        Some(Accelerator::new(Some(CMD | Modifiers::CONTROL), Code::KeyS)),
+    );
     let view = Submenu::new("View", true);
-    let _ = view.append_items(&[&refresh, &PredefinedMenuItem::separator(), &PredefinedMenuItem::fullscreen(None)]);
+    let _ = view.append_items(&[
+        &refresh,
+        &PredefinedMenuItem::separator(),
+        &rail,
+        &PredefinedMenuItem::separator(),
+        // Control-Command-F, from the system, and the same item every other
+        // Mac application has. The program's own full-screen key still works.
+        &PredefinedMenuItem::fullscreen(None),
+    ]);
 
     let window = Submenu::new("Window", true);
     let _ = window.append_items(&[
@@ -127,8 +198,12 @@ pub fn install_menu_bar() {
         &PredefinedMenuItem::close_window(None),
     ]);
 
+    let github = item("github", &format!("{} on GitHub", crate::APP_NAME), None);
+    let help = Submenu::new("Help", true);
+    let _ = help.append(&github);
+
     let menu = Menu::new();
-    let _ = menu.append_items(&[&app, &edit, &view, &window]);
+    let _ = menu.append_items(&[&app, &edit, &go, &playback, &view, &window, &help]);
     let _ = menu.init_for_nsapp();
     // The Window menu has to be *named* to the system, or the window list and
     // its Bring All to Front stay empty.
@@ -136,23 +211,24 @@ pub fn install_menu_bar() {
 
     // Leaked deliberately. These own the native menu objects, and dropping
     // them at the end of this function would tear the menu bar down again.
-    std::mem::forget((menu, app, edit, view, window, settings, refresh));
+    std::mem::forget((menu, app, edit, go, playback, view, window, help));
+    std::mem::forget((settings, refresh, rail, github, go_items, play_items));
 }
 
-const SETTINGS_ID: &str = "clicker.settings";
-const REFRESH_ID: &str = "clicker.refresh";
+/// Hand a link to the desktop's browser.
+pub fn open_url(url: &str) {
+    let _ = std::process::Command::new("open").arg(url).spawn();
+}
 
 /// Whatever the menu was asked for since the last frame, if anything.
 ///
-/// Polled rather than delivered, because the menu's channel and egui's frame
-/// loop are separate worlds and this is the seam between them.
-pub fn menu_command() -> Option<MenuCommand> {
+/// The string is an action id from `keys::ACTIONS`, or one of the few this
+/// module invents; the caller decides what to do with it. Polled rather than
+/// delivered, because the menu's channel and egui's frame loop are separate
+/// worlds and this is the seam between them.
+pub fn menu_command() -> Option<String> {
     let event = muda::MenuEvent::receiver().try_recv().ok()?;
-    match event.id.0.as_str() {
-        SETTINGS_ID => Some(MenuCommand::OpenSettings),
-        REFRESH_ID => Some(MenuCommand::Refresh),
-        _ => None,
-    }
+    Some(event.id.0)
 }
 
 /// Appended to a failed connection attempt.

@@ -493,6 +493,9 @@ struct App {
     guide_state: ui_guide::GuideState,
     guide_loading: bool,
     library_state: ui_library::LibraryState,
+    /// Actions the menu bar asked for, waiting for `handle_keys` to act on
+    /// them exactly as it would the keys of the same name.
+    menu_actions: std::collections::HashSet<String>,
     recordings_tab: ui_library::RecordingsTab,
     /// For the crossfade between screens: which one is on show, and when it
     /// arrived.
@@ -714,6 +717,7 @@ impl App {
             settings,
             guide_loading: configured,
             library_state: ui_library::LibraryState::default(),
+            menu_actions: std::collections::HashSet::new(),
             recordings_tab: ui_library::RecordingsTab::default(),
             shown_screen: Screen::Home,
             screen_changed: Instant::now(),
@@ -769,13 +773,23 @@ impl App {
     /// Whatever the menu bar was asked for, on the platforms that have one.
     ///
     /// The system's own items — Quit, Hide, Full Screen, the clipboard verbs
-    /// — never arrive here; macOS acts on those itself. Only the two that
-    /// belong to this program do.
+    /// — never arrive here; macOS acts on those itself. What does arrive is
+    /// an action id from `keys::ACTIONS`, which is put in a set for
+    /// `handle_keys` to read as though the key had been pressed. That is the
+    /// whole point of using the same ids: one implementation of "skip
+    /// forward", reachable two ways, with no chance of the menu and the
+    /// keyboard drifting apart.
+    ///
+    /// The two exceptions are things no key has: refreshing, and the link in
+    /// the Help menu.
     fn pump_menu(&mut self) {
-        while let Some(command) = platform::menu_command() {
-            match command {
-                platform::MenuCommand::OpenSettings => self.screen = Screen::Settings,
-                platform::MenuCommand::Refresh => self.refresh_data(),
+        while let Some(id) = platform::menu_command() {
+            match id.as_str() {
+                "refresh" => self.refresh_data(),
+                "github" => platform::open_url("https://github.com/mackid1993/Clicker"),
+                _ => {
+                    self.menu_actions.insert(id);
+                }
             }
         }
     }
@@ -1408,19 +1422,20 @@ impl App {
     /// keys for skipping are what every player does, and doing something else
     /// would only be surprising.
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        // A focused text field owns the keyboard. Without this, typing a space
-        // into the guide's search box also toggles pause, and the arrow keys
-        // seek instead of moving the caret.
-        if ctx.memory(|m| m.focused().is_some()) {
-            return;
-        }
-
-        // A shortcut being rebound owns the keyboard for that moment. Without
-        // this, binding an action to G would also switch to the guide on the
-        // way past, which is both startling and hard to undo.
-        if self.setup.capturing.is_some() {
-            return;
-        }
+        // Whether the keyboard belongs to something else this frame.
+        //
+        // A focused text field owns it: without this, typing a space into the
+        // guide's search box also toggles pause and the arrow keys seek
+        // instead of moving the caret. So does a shortcut being rebound —
+        // binding an action to G would otherwise switch to the guide on the
+        // way past, which is startling and hard to undo.
+        //
+        // This used to return early. It cannot now, because a menu click
+        // arrives through this same function and a menu is perfectly usable
+        // while a search box has the caret: the flag suppresses the *keys*
+        // and leaves everything else standing.
+        let typing =
+            ctx.memory(|m| m.focused().is_some()) || self.setup.capturing.is_some();
 
         // Every binding sampled once, before anything acts on any of them.
         //
@@ -1431,9 +1446,21 @@ impl App {
         // disagreeing about the same frame.
         let fired: std::collections::HashMap<&'static str, bool> = keys::ACTIONS
             .iter()
-            .map(|action| (action.id, keys::pressed(ctx, &self.settings, action.id)))
+            .map(|action| {
+                (
+                    action.id,
+                    !typing && keys::pressed(ctx, &self.settings, action.id),
+                )
+            })
             .collect();
-        let bound = |id: &str| fired.get(id).copied().unwrap_or(false);
+
+        // The menu bar's clicks, taken for this frame and cleared. An action
+        // asked for from a menu is not subject to `typing` — the pointer went
+        // to the menu bar, so nothing is being typed — nor to the shortcuts
+        // master switch, which is about the keyboard and not about menus.
+        let clicked = std::mem::take(&mut self.menu_actions);
+        let bound =
+            |id: &str| fired.get(id).copied().unwrap_or(false) || clicked.contains(id);
 
         // The master switch, before anything else and regardless of it, so it
         // can be pressed again to undo itself.
@@ -1448,7 +1475,7 @@ impl App {
         // application on this desktop uses to get out of something, and a
         // full-screen window with shortcuts turned off and no way back is a
         // trap worth refusing to build.
-        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let escape = !typing && ctx.input(|i| i.key_pressed(egui::Key::Escape));
 
         let (space, left, right, home) = (
             bound("play"),

@@ -31,20 +31,17 @@ pub const LOCAL_NETWORK_HINT: &str = "";
 /// Nothing to request: there is no local network permission here.
 pub fn request_local_network() {}
 
-/// What a menu item asked for. Nothing here has a menu bar to ask from —
-/// the navigation rail is the menu — but the type is shared so the caller
-/// has one shape to handle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuCommand {
-    OpenSettings,
-    Refresh,
-}
-
-/// No menu bar. The free desktops put an application's commands inside its
-/// own window, which is where this one draws them.
+/// No menu bar: this platform puts an application's commands inside its
+/// window, which is where this one draws them.
 pub fn install_menu_bar() {}
 
-pub fn menu_command() -> Option<MenuCommand> {
+/// Hand a link to the desktop's browser.
+pub fn open_url(url: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+/// Never anything, there being no menu to ask from.
+pub fn menu_command() -> Option<String> {
     None
 }
 

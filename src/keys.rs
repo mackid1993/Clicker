@@ -46,7 +46,13 @@ pub const ACTIONS: &[Action] = &[
     action("volume_up", "Volume up", "ArrowUp"),
     action("volume_down", "Volume down", "ArrowDown"),
     action("mute", "Mute", "M"),
+    // F11 on Windows and Linux, F on a Mac. The function keys there belong to
+    // the system — F11 shows the desktop — and every Mac video player uses F
+    // for this anyway. The menu bar's Control-Command-F stands beside it.
+    #[cfg(not(target_os = "macos"))]
     action("fullscreen", "Full screen", "F11"),
+    #[cfg(target_os = "macos")]
+    action("fullscreen", "Full screen", "F"),
     action("stop", "Stop playback", "Backspace"),
     action("channel_up", "Previous channel", "PageUp"),
     action("channel_down", "Next channel", "PageDown"),
