@@ -72,6 +72,12 @@ const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: c_int = 11;
 
 const MPV_RENDER_UPDATE_FRAME: u64 = 1;
 
+// For the fences the render thread hands the interface.
+#[cfg(target_os = "linux")]
+const GL_SYNC_GPU_COMMANDS_COMPLETE: u32 = 0x9117;
+#[cfg(target_os = "linux")]
+const GL_TIMEOUT_IGNORED: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+
 #[repr(C)]
 struct OpenGlInitParams {
     get_proc_address: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
@@ -196,6 +202,13 @@ pub struct GlFns {
     enable: unsafe extern "system" fn(u32),
     disable: unsafe extern "system" fn(u32),
     is_enabled: unsafe extern "system" fn(u32) -> u8,
+    // For handing frames between two contexts: the worker fences after it
+    // renders, the interface waits on that fence — on the GPU, not the CPU —
+    // before it blits. Core since GL 3.2 and shared across a share group.
+    fence_sync: unsafe extern "system" fn(u32, u32) -> *mut c_void,
+    wait_sync: unsafe extern "system" fn(*mut c_void, u32, u64),
+    delete_sync: unsafe extern "system" fn(*mut c_void),
+    flush: unsafe extern "system" fn(),
 }
 
 impl GlFns {
@@ -231,6 +244,10 @@ impl GlFns {
             enable: find("glEnable")?,
             disable: find("glDisable")?,
             is_enabled: find("glIsEnabled")?,
+            fence_sync: find("glFenceSync")?,
+            wait_sync: find("glWaitSync")?,
+            delete_sync: find("glDeleteSync")?,
+            flush: find("glFlush")?,
         })
     }
 
@@ -550,6 +567,18 @@ pub struct Player {
     surface: Mutex<Option<Surface>>,
     shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// The render thread, where one exists: Linux only, and only when a
+    /// shared context could be made. `None` inside means it was tried and
+    /// could not be, and the in-paint path below carries on as everywhere
+    /// else.
+    #[cfg(target_os = "linux")]
+    threaded: std::sync::OnceLock<Option<Arc<worker::Link>>>,
+    #[cfg(target_os = "linux")]
+    render_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The interface's own framebuffers wrapping the worker's textures, per
+    /// generation. Containers are per-context even when textures are shared.
+    #[cfg(target_os = "linux")]
+    ui_fbos: Mutex<(u64, [u32; 2])>,
 }
 
 impl Player {
@@ -835,6 +864,12 @@ impl Player {
             started: AtomicBool::new(false),
             render_ctx: Mutex::new(Ptr(std::ptr::null_mut())),
             surface: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            threaded: std::sync::OnceLock::new(),
+            #[cfg(target_os = "linux")]
+            render_thread: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            ui_fbos: Mutex::new((0, [0, 0])),
             shared,
             thread: Some(thread),
         })
@@ -1469,6 +1504,15 @@ impl Player {
         }
         let top = bottom + h;
 
+        // The render thread, where one exists. mpv renders over there, into
+        // shared textures, and this thread only waits on a GPU-side fence and
+        // blits — so however long the driver holds the renderer hostage, it
+        // is holding a thread nobody is typing at.
+        #[cfg(target_os = "linux")]
+        if let Some(done) = self.threaded_present(gl, rect) {
+            return done;
+        }
+
         if self.render_to_texture(gl, (w, h)).is_none() {
             return false;
         }
@@ -1548,6 +1592,118 @@ impl Player {
                 gl.delete_textures(1, &texture);
             }
         }
+        // The interface's wrappers around the worker's textures. The worker's
+        // own objects — its renderer included — are freed by the worker, on
+        // the context that owns them, when Drop joins it.
+        #[cfg(target_os = "linux")]
+        {
+            let mut cache = self.ui_fbos.lock().unwrap();
+            for fbo in cache.1 {
+                if fbo != 0 {
+                    gl.delete_framebuffers(1, &fbo);
+                }
+            }
+            *cache = (0, [0, 0]);
+        }
+    }
+
+    /// Present by way of the render thread. `None` means there is no thread —
+    /// it was tried and could not be had — and the in-paint path should run.
+    #[cfg(target_os = "linux")]
+    unsafe fn threaded_present(&self, gl: &GlFns, rect: [i32; 4]) -> Option<bool> {
+        let link = self
+            .threaded
+            .get_or_init(|| worker::spawn(self))
+            .as_ref()?;
+        if link.dead.load(Ordering::SeqCst) {
+            // The worker cleaned up entirely before setting this, so falling
+            // back to the in-paint renderer is safe: no second render context
+            // exists.
+            return None;
+        }
+
+        let [x, bottom, w, h] = rect;
+        let top = bottom + h;
+
+        let (texs, front, fence, gen, painted) = {
+            let mut st = link.state.lock().unwrap();
+            if st.want != (w, h) {
+                st.want = (w, h);
+                link.wake.notify_one();
+            }
+            let fence = st.fence;
+            st.fence = 0;
+            (st.tex, st.front, fence, st.generation, st.painted)
+        };
+        if !painted {
+            return Some(false);
+        }
+
+        // Wait on the GPU, not here: the fence orders the worker's render
+        // before this blit inside the driver, and costs this thread nothing.
+        if fence != 0 {
+            (gl.wait_sync)(fence as *mut c_void, 0, GL_TIMEOUT_IGNORED);
+            (gl.delete_sync)(fence as *mut c_void);
+        }
+
+        let mut cache = self.ui_fbos.lock().unwrap();
+        if cache.0 != gen {
+            for fbo in cache.1 {
+                if fbo != 0 {
+                    gl.delete_framebuffers(1, &fbo);
+                }
+            }
+            let mut pair = [0u32; 2];
+            let previous = gl.draw_framebuffer();
+            for (i, tex) in texs.iter().enumerate() {
+                let mut fbo = 0u32;
+                gl.gen_framebuffers(1, &mut fbo);
+                gl.bind_framebuffer(GL_FRAMEBUFFER, fbo);
+                gl.framebuffer_texture_2d(
+                    GL_FRAMEBUFFER,
+                    GL_COLOR_ATTACHMENT0,
+                    GL_TEXTURE_2D,
+                    *tex,
+                    0,
+                );
+                pair[i] = fbo;
+            }
+            gl.bind_framebuffer(GL_FRAMEBUFFER, previous);
+            *cache = (gen, pair);
+        }
+        let read_fbo = cache.1[front];
+        drop(cache);
+
+        let (sw, sh) = {
+            let st = link.state.lock().unwrap();
+            (st.width, st.height)
+        };
+
+        let target = gl.draw_framebuffer();
+        let scissoring = (gl.is_enabled)(GL_SCISSOR_TEST) != 0;
+        if scissoring {
+            (gl.disable)(GL_SCISSOR_TEST);
+        }
+        gl.bind_framebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+        gl.bind_framebuffer(GL_DRAW_FRAMEBUFFER, target);
+        (gl.blit_framebuffer)(
+            0, 0, sw, sh,
+            x, bottom, x + w, top,
+            GL_COLOR_BUFFER_BIT,
+            GL_LINEAR as u32,
+        );
+        gl.bind_framebuffer(GL_READ_FRAMEBUFFER, target);
+        gl.bind_framebuffer(GL_DRAW_FRAMEBUFFER, target);
+        if scissoring {
+            (gl.enable)(GL_SCISSOR_TEST);
+        }
+
+        // A swap happened; say so. Thread-safe per mpv's contract.
+        let render_ctx = *link.render_ctx.lock().unwrap();
+        if !render_ctx.0.is_null() {
+            (self.api.render_report_swap)(render_ctx.0);
+        }
+        Some(true)
     }
 
     pub fn error(&self) -> Option<String> {
@@ -1688,6 +1844,22 @@ impl Drop for Player {
             let _ = thread.join();
         }
 
+        // The render thread next, and before the handle: the worker owns the
+        // render context, and mpv forbids destroying a handle while one
+        // exists. Joining it is what frees it, on the context that made it.
+        #[cfg(target_os = "linux")]
+        if let Some(Some(link)) = self.threaded.get() {
+            link.stop.store(true, Ordering::SeqCst);
+            link.wake.notify_all();
+            if let Some(worker) = self.render_thread.lock().unwrap().take() {
+                let _ = worker.join();
+            }
+            if !link.render_ctx.lock().unwrap().0.is_null() {
+                crate::log::line("[mpv] the render thread left its renderer behind");
+                return;
+            }
+        }
+
         // A last resort, and it should never fire.
         //
         // mpv forbids destroying a handle while a render context belonging to
@@ -1807,3 +1979,392 @@ fn event_loop(api: &'static Api, ctx: Ptr, shared: Arc<Shared>, resume_at: f64) 
         (shared.repaint)();
     }
 }
+
+/// The render thread: mpv on its own OpenGL context, Linux only.
+///
+/// eframe owns the window's context and never hands out the native handle,
+/// which is why mpv originally rented space inside egui's paint. But EGL will
+/// name the *current* context if asked during a paint, and that handle is
+/// enough to create a shared sibling. The worker renders into textures both
+/// contexts can see; the interface waits on a GPU fence and blits. However
+/// long the driver stalls the renderer — and through virtio it was measured
+/// stalling it for most of every frame — it stalls a thread nobody is typing
+/// at.
+///
+/// Everything here fails toward the in-paint path: no EGL, no current
+/// context, no shared context, no renderer — each is a log line and a clean
+/// fallback, never a broken player.
+#[cfg(target_os = "linux")]
+mod worker {
+    use super::*;
+
+    const EGL_OPENGL_API: u32 = 0x30A2;
+    const EGL_NONE: i32 = 0x3038;
+    const EGL_CONTEXT_MAJOR_VERSION: i32 = 0x3098;
+    const EGL_CONTEXT_MINOR_VERSION: i32 = 0x30FB;
+
+    struct Egl {
+        get_current_display: unsafe extern "C" fn() -> *mut c_void,
+        get_current_context: unsafe extern "C" fn() -> *mut c_void,
+        bind_api: unsafe extern "C" fn(u32) -> u32,
+        create_context:
+            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void,
+        make_current:
+            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32,
+        destroy_context: unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32,
+        release_thread: unsafe extern "C" fn() -> u32,
+    }
+
+    impl Egl {
+        fn load() -> Option<Egl> {
+            let lib = crate::platform::open_library("libEGL.so.1");
+            if lib.is_null() {
+                return None;
+            }
+            unsafe {
+                macro_rules! sym {
+                    ($name:literal) => {{
+                        let p = crate::platform::library_symbol(lib, concat!($name, "\0").as_ptr());
+                        if p.is_null() {
+                            return None;
+                        }
+                        std::mem::transmute(p)
+                    }};
+                }
+                Some(Egl {
+                    get_current_display: sym!("eglGetCurrentDisplay"),
+                    get_current_context: sym!("eglGetCurrentContext"),
+                    bind_api: sym!("eglBindAPI"),
+                    create_context: sym!("eglCreateContext"),
+                    make_current: sym!("eglMakeCurrent"),
+                    destroy_context: sym!("eglDestroyContext"),
+                    release_thread: sym!("eglReleaseThread"),
+                })
+            }
+        }
+    }
+
+    /// What the two threads share.
+    pub struct Link {
+        pub state: Mutex<Frames>,
+        pub wake: std::sync::Condvar,
+        pub stop: AtomicBool,
+        /// The worker failed and cleaned up entirely; use the in-paint path.
+        pub dead: AtomicBool,
+        /// mpv's renderer, owned by the worker. Here rather than on Player so
+        /// the thread can hold it without holding the player.
+        pub render_ctx: Mutex<Ptr>,
+    }
+
+    pub struct Frames {
+        pub tex: [u32; 2],
+        pub front: usize,
+        /// A GLsync from the worker, or 0. Taken by the interface, waited on
+        /// GPU-side, and deleted there.
+        pub fence: usize,
+        pub width: i32,
+        pub height: i32,
+        pub want: (i32, i32),
+        pub generation: u64,
+        pub painted: bool,
+    }
+
+    /// Capture the paint thread's context and start the worker. Called once,
+    /// from a paint, where that context is current.
+    pub fn spawn(player: &Player) -> Option<Arc<Link>> {
+        let egl = Egl::load()?;
+        let (display, share) = unsafe {
+            ((egl.get_current_display)(), (egl.get_current_context)())
+        };
+        if display.is_null() || share.is_null() {
+            crate::log::line("[mpv] no EGL context is current; rendering stays on the paint thread");
+            return None;
+        }
+
+        let link = Arc::new(Link {
+            state: Mutex::new(Frames {
+                tex: [0, 0],
+                front: 0,
+                fence: 0,
+                width: 0,
+                height: 0,
+                want: (0, 0),
+                generation: 0,
+                painted: false,
+            }),
+            wake: std::sync::Condvar::new(),
+            stop: AtomicBool::new(false),
+            dead: AtomicBool::new(false),
+            render_ctx: Mutex::new(Ptr(std::ptr::null_mut())),
+        });
+
+        let api = player.api;
+        let mpv = player.ctx;
+        let shared = player.shared.clone();
+        let thread_link = link.clone();
+        let (display, share) = (display as usize, share as usize);
+        let handle = std::thread::Builder::new()
+            .name("clicker-render".into())
+            .spawn(move || {
+                run(egl, display, share, api, mpv, shared, thread_link.clone());
+                thread_link.dead.store(true, Ordering::SeqCst);
+            })
+            .ok()?;
+        *player.render_thread.lock().unwrap() = Some(handle);
+        crate::log::line("[mpv] rendering on its own thread and context");
+        Some(link)
+    }
+
+    /// mpv's "a frame is ready", aimed at the worker's condvar.
+    unsafe extern "C" fn frame_ready(data: *mut c_void) {
+        let link = &*(data as *const Link);
+        link.wake.notify_all();
+    }
+
+    fn run(
+        egl: Egl,
+        display: usize,
+        share: usize,
+        api: &'static Api,
+        mpv: Ptr,
+        shared: Arc<Shared>,
+        link: Arc<Link>,
+    ) {
+        let display = display as *mut c_void;
+        let share = share as *mut c_void;
+        unsafe {
+            (egl.bind_api)(EGL_OPENGL_API);
+            // A sibling of the interface's context: same share group, so
+            // textures made here are visible there. No config and no surface,
+            // which Mesa allows and which is all a renderer that only ever
+            // draws into framebuffers needs.
+            let attribs = [
+                EGL_CONTEXT_MAJOR_VERSION, 3,
+                EGL_CONTEXT_MINOR_VERSION, 0,
+                EGL_NONE,
+            ];
+            let ctx = (egl.create_context)(display, std::ptr::null_mut(), share, attribs.as_ptr());
+            if ctx.is_null() {
+                crate::log::line("[mpv] could not create a shared context; rendering stays on the paint thread");
+                return;
+            }
+            if (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), ctx) == 0 {
+                crate::log::line("[mpv] could not make the shared context current; rendering stays on the paint thread");
+                (egl.destroy_context)(display, ctx);
+                return;
+            }
+
+            let gl = match GlFns::load() {
+                Ok(gl) => gl,
+                Err(e) => {
+                    crate::log::line(&format!("[mpv] {e}; rendering stays on the paint thread"));
+                    (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+                    (egl.destroy_context)(display, ctx);
+                    return;
+                }
+            };
+
+            // mpv's renderer, against this context.
+            let api_type = CString::new("opengl").unwrap();
+            let mut init = OpenGlInitParams {
+                get_proc_address: gl_proc_address,
+                get_proc_address_ctx: std::ptr::null_mut(),
+            };
+            let mut params = [
+                RenderParam { kind: MPV_RENDER_PARAM_API_TYPE, data: api_type.as_ptr() as *mut c_void },
+                RenderParam { kind: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, data: &mut init as *mut OpenGlInitParams as *mut c_void },
+                RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
+            ];
+            let mut created: *mut c_void = std::ptr::null_mut();
+            let rc = (api.render_create)(&mut created, mpv.0, params.as_mut_ptr());
+            if rc < 0 {
+                let why = CStr::from_ptr((api.error_string)(rc)).to_string_lossy();
+                crate::log::line(&format!("[mpv] renderer refused the shared context: {why}"));
+                (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+                (egl.destroy_context)(display, ctx);
+                return;
+            }
+            *link.render_ctx.lock().unwrap() = Ptr(created);
+            (api.render_set_update_callback)(created, frame_ready, Arc::as_ptr(&link) as *mut c_void);
+
+            let mut fbos = [0u32; 2];
+            let mut texs = [0u32; 2];
+
+            loop {
+                // Wait for a frame, a resize, or the end. The timeout is a
+                // backstop so a missed wake is a hiccup rather than a hang.
+                {
+                    let st = link.state.lock().unwrap();
+                    let _unused = link
+                        .wake
+                        .wait_timeout(st, std::time::Duration::from_millis(50))
+                        .unwrap();
+                }
+                if link.stop.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                // The stream's own size, for the clamp; not configured yet
+                // means nothing to draw.
+                let packed = shared.size.load(Ordering::Relaxed);
+                let (vw, vh) = ((packed >> 32) as i32, packed as i32);
+                if vw <= 0 || vh <= 0 {
+                    continue;
+                }
+
+                let want = link.state.lock().unwrap().want;
+                if want.0 <= 0 || want.1 <= 0 {
+                    continue;
+                }
+                // Same sizing as the in-paint path: the width quantized so a
+                // drag does not reallocate per pixel, the height following by
+                // the rectangle's exact ratio, the whole thing clamped to the
+                // stream.
+                let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
+                let width = round32(want.0).min(vw);
+                let height = ((((width as i64 * want.1 as i64) / want.0.max(1) as i64) as i32) & !1).max(2);
+
+                let stale = {
+                    let st = link.state.lock().unwrap();
+                    st.width != width || st.height != height || st.tex[0] == 0
+                };
+                if stale {
+                    for fbo in fbos {
+                        if fbo != 0 { gl.delete_framebuffers(1, &fbo); }
+                    }
+                    for tex in texs {
+                        if tex != 0 { gl.delete_textures(1, &tex); }
+                    }
+                    let previous = gl.draw_framebuffer();
+                    let mut ok = true;
+                    for i in 0..2 {
+                        let mut tex = 0u32;
+                        gl.gen_textures(1, &mut tex);
+                        gl.bind_texture(GL_TEXTURE_2D, tex);
+                        gl.tex_image_2d(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, std::ptr::null());
+                        gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                        gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                        gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                        gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                        gl.bind_texture(GL_TEXTURE_2D, 0);
+                        let mut fbo = 0u32;
+                        gl.gen_framebuffers(1, &mut fbo);
+                        gl.bind_framebuffer(GL_FRAMEBUFFER, fbo);
+                        gl.framebuffer_texture_2d(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+                        if gl.check_framebuffer_status(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE {
+                            ok = false;
+                        }
+                        texs[i] = tex;
+                        fbos[i] = fbo;
+                    }
+                    gl.bind_framebuffer(GL_FRAMEBUFFER, previous);
+                    if !ok {
+                        crate::log::line("[mpv] the driver refused the shared render target");
+                        break;
+                    }
+                    // The textures exist for the other context once flushed.
+                    (gl.flush)();
+                    let mut st = link.state.lock().unwrap();
+                    if st.fence != 0 {
+                        (gl.delete_sync)(st.fence as *mut c_void);
+                        st.fence = 0;
+                    }
+                    st.tex = texs;
+                    st.front = 0;
+                    st.width = width;
+                    st.height = height;
+                    st.generation += 1;
+                    st.painted = false;
+                }
+
+                if (api.render_update)(created) & MPV_RENDER_UPDATE_FRAME == 0 {
+                    continue;
+                }
+
+                let back = link.state.lock().unwrap().front ^ 1;
+                let cpu_before = thread_cpu_ms();
+                let wall_before = Instant::now();
+
+                let mut fbo = OpenGlFbo {
+                    fbo: fbos[back] as c_int,
+                    w: width,
+                    h: height,
+                    internal_format: 0,
+                };
+                let mut flip: c_int = 1;
+                let mut block: c_int = 0;
+                let mut render_params = [
+                    RenderParam { kind: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo as *mut OpenGlFbo as *mut c_void },
+                    RenderParam { kind: MPV_RENDER_PARAM_FLIP_Y, data: &mut flip as *mut c_int as *mut c_void },
+                    RenderParam { kind: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, data: &mut block as *mut c_int as *mut c_void },
+                    RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
+                ];
+                let rc = (api.render)(created, render_params.as_mut_ptr());
+                if rc < 0 {
+                    shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+
+                let fence = (gl.fence_sync)(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                (gl.flush)();
+                {
+                    let mut st = link.state.lock().unwrap();
+                    if st.fence != 0 {
+                        (gl.delete_sync)(st.fence as *mut c_void);
+                    }
+                    st.fence = fence as usize;
+                    st.front = back;
+                    st.painted = true;
+                }
+                shared.rendered.fetch_add(1, Ordering::Relaxed);
+
+                // The same numbers the in-paint path keeps, measured where the
+                // work now happens. Wall time here costs nobody anything, but
+                // it is still the honest record of what the driver is doing.
+                let spent_ms = wall_before.elapsed().as_secs_f32() * 1000.0;
+                {
+                    let mut smoothed = shared.render_ms.lock().unwrap();
+                    *smoothed = if *smoothed > 0.0 { *smoothed * 0.85 + spent_ms * 0.15 } else { spent_ms };
+                }
+                let cpu = thread_cpu_ms() - cpu_before;
+                let mut last = shared.last_render.lock().unwrap();
+                if let Some(previous) = last.replace(wall_before) {
+                    let interval = wall_before.duration_since(previous).as_secs_f64() * 1000.0;
+                    if interval > 0.0 {
+                        let load = (cpu / interval) as f32;
+                        let mut smoothed = shared.render_load.lock().unwrap();
+                        *smoothed = if *smoothed > 0.0 { *smoothed * 0.9 + load * 0.1 } else { load };
+                    }
+                }
+                drop(last);
+
+                // A frame is ready; ask the interface to come and get it.
+                (shared.repaint)();
+            }
+
+            // Tear down on the thread and context that own it all.
+            (api.render_set_update_callback)(created, noop_frame_ready, std::ptr::null_mut());
+            (api.render_free)(created);
+            *link.render_ctx.lock().unwrap() = Ptr(std::ptr::null_mut());
+            {
+                let mut st = link.state.lock().unwrap();
+                if st.fence != 0 {
+                    (gl.delete_sync)(st.fence as *mut c_void);
+                    st.fence = 0;
+                }
+                st.painted = false;
+                st.tex = [0, 0];
+            }
+            for fbo in fbos {
+                if fbo != 0 { gl.delete_framebuffers(1, &fbo); }
+            }
+            for tex in texs {
+                if tex != 0 { gl.delete_textures(1, &tex); }
+            }
+            (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+            (egl.destroy_context)(display, ctx);
+            (egl.release_thread)();
+        }
+    }
+}
+
