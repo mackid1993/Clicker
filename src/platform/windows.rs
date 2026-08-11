@@ -151,7 +151,7 @@ pub fn sync_menu_shortcuts(_settings: &crate::settings::Settings) {}
 
 /// Nothing to print beside a shortcut: there is no menu bar offering a
 /// second way to reach these actions.
-pub fn menu_shortcut(_id: &str) -> Option<&'static str> {
+pub fn menu_shortcut(_settings: &crate::settings::Settings, _id: &str) -> Option<String> {
     None
 }
 

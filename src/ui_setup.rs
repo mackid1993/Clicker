@@ -796,13 +796,17 @@ pub fn settings_screen(
                     // screen on Control-Command-F. Every other menu item now
                     // takes its accelerator from the binding on this row, so
                     // there is nothing extra to print for those.
-                    if let Some(fixed) = crate::platform::menu_shortcut(entry.id) {
+                    if let Some(from_menu) = crate::platform::menu_shortcut(settings, entry.id) {
                         ui.label(
-                            egui::RichText::new(fixed)
+                            egui::RichText::new(from_menu)
                                 .size(11.5)
                                 .color(Fluent::TEXT_TERTIARY),
                         )
-                        .on_hover_text("Also on the menu bar. That one cannot be changed.");
+                        .on_hover_text(
+                            "What the menu bar shows for this. Bind a combination \
+                             with Command, Control, Shift or Option and the menu \
+                             follows it.",
+                        );
                     }
 
                     // Said rather than refused. Somebody swapping two keys over

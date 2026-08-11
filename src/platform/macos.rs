@@ -52,25 +52,75 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The two accelerators this program does not let go of.
+/// What the menu bar shows for an action when nothing has been rebound.
 ///
-/// Command-comma is Settings on every Mac ever made, and Command-R is
-/// refresh in everything that fetches. They are not in the rebindable table
-/// at all — Refresh has no key of its own — so they are written here.
-fn fixed(id: &str) -> Option<(muda::accelerator::Modifiers, muda::accelerator::Code)> {
-    use muda::accelerator::{Code, Modifiers};
-    match id {
-        "settings" => Some((Modifiers::META, Code::Comma)),
-        "refresh" => Some((Modifiers::META, Code::KeyR)),
-        _ => None,
+/// The Mac conventions, so the menu is furnished the moment it opens: views
+/// on Command-1 upward, Settings on Command-comma, playback where a video
+/// player puts it. A binding made with a modifier replaces the one here; a
+/// bare key does not, for the reason in [`sync_menu_shortcuts`].
+///
+/// Written as the glyphs a Mac displays, and read back by [`accelerator`] to
+/// build the real thing — one table rather than a list of key codes beside a
+/// list of labels, which is how a menu ends up promising ⌘4 and doing ⌘5.
+const DEFAULTS: &[(&str, &str)] = &[
+    ("home", "\u{2318}1"),
+    ("guide", "\u{2318}2"),
+    ("library", "\u{2318}3"),
+    ("recordings", "\u{2318}4"),
+    ("downloads", "\u{2318}5"),
+    ("settings", "\u{2318},"),
+    ("refresh", "\u{2318}R"),
+    ("back", "\u{2318}\u{2190}"),
+    ("forward", "\u{2318}\u{2192}"),
+    ("volume_up", "\u{2318}\u{2191}"),
+    ("volume_down", "\u{2318}\u{2193}"),
+    ("mute", "\u{21e7}\u{2318}M"),
+    ("channel_up", "\u{2318}["),
+    ("channel_down", "\u{2318}]"),
+    ("stop", "\u{2318}."),
+    ("rail", "\u{2303}\u{2318}S"),
+];
+
+fn default_shortcut(id: &str) -> Option<&'static str> {
+    DEFAULTS
+        .iter()
+        .find(|(action, _)| *action == id)
+        .map(|(_, keys)| *keys)
+}
+
+/// Turn a printed shortcut back into an accelerator.
+fn accelerator(printed: &str) -> Option<muda::accelerator::Accelerator> {
+    use muda::accelerator::{Accelerator, Code, Modifiers};
+
+    let mut modifiers = Modifiers::empty();
+    let mut last = None;
+    for character in printed.chars() {
+        match character {
+            '\u{2318}' => modifiers |= Modifiers::META,
+            '\u{21e7}' => modifiers |= Modifiers::SHIFT,
+            '\u{2303}' => modifiers |= Modifiers::CONTROL,
+            '\u{2325}' => modifiers |= Modifiers::ALT,
+            other => last = Some(other),
+        }
     }
+    let code = match last? {
+        '1' => Code::Digit1, '2' => Code::Digit2, '3' => Code::Digit3,
+        '4' => Code::Digit4, '5' => Code::Digit5,
+        ',' => Code::Comma, '.' => Code::Period,
+        '[' => Code::BracketLeft, ']' => Code::BracketRight,
+        '\u{2190}' => Code::ArrowLeft, '\u{2192}' => Code::ArrowRight,
+        '\u{2191}' => Code::ArrowUp, '\u{2193}' => Code::ArrowDown,
+        'F' => Code::KeyF, 'M' => Code::KeyM, 'R' => Code::KeyR, 'S' => Code::KeyS,
+        _ => return None,
+    };
+    Some(Accelerator::new(Some(modifiers), code))
 }
 
 /// egui's name for a key, as muda's code for the same key.
 ///
 /// Only the keys a person might reasonably put a shortcut on. Anything not
-/// here simply gets no menu accelerator, which is a menu item that still
-/// works by clicking — the honest outcome for a key the menu cannot express.
+/// here gets no menu accelerator, which is a menu item that still works by
+/// clicking — the honest outcome for a key the menu cannot express.
 fn code_for(key: eframe::egui::Key) -> Option<muda::accelerator::Code> {
     use eframe::egui::Key;
     use muda::accelerator::Code;
@@ -108,56 +158,57 @@ fn code_for(key: eframe::egui::Key) -> Option<muda::accelerator::Code> {
     })
 }
 
+/// What the menu bar will show for an action: the rebound combination if
+/// there is one, the Mac convention otherwise.
+///
+/// The settings page prints this beside the key, so the page and the menu
+/// cannot describe different keyboards.
+pub fn menu_shortcut(settings: &crate::settings::Settings, id: &str) -> Option<String> {
+    if let Some(binding) = crate::keys::binding(settings, id) {
+        if binding.has_modifier() && code_for(binding.key).is_some() {
+            return Some(binding.display());
+        }
+    }
+    default_shortcut(id).map(str::to_string)
+}
+
 /// Put each menu item's accelerator in step with what the settings page says.
 ///
-/// Called once the menu exists and again every time a binding changes, so the
-/// menu bar shows the shortcut that will actually happen rather than the one
-/// it was built with.
+/// Called once the menu exists and again on every settings save, so the menu
+/// bar shows the shortcut that will actually happen rather than the one it
+/// was built with.
 ///
 /// **A bare key never becomes an accelerator.** A menu accelerator belongs to
 /// the system, which fires it before any window sees the keystroke; put a
 /// plain G on the Guide item and typing "Golf" into the search box changes
-/// screen twice. Bare bindings still work — the application reads them
-/// itself, and knows when something is being typed into — they simply are
-/// not printed beside the menu item, because the menu is not the thing that
-/// would deliver them.
+/// screen twice. So a bare binding leaves the menu on its own convention —
+/// Command-2 stays beside Guide — and the bare G keeps working because the
+/// application reads it itself and stands aside while something is typed.
 pub fn sync_menu_shortcuts(settings: &crate::settings::Settings) {
-    use muda::accelerator::Accelerator;
+    use muda::accelerator::{Accelerator, Modifiers};
 
     ITEMS.with_borrow(|items| {
-    for (id, item) in items.iter() {
-        let accelerator = if let Some((modifiers, code)) = fixed(id) {
-            Some(Accelerator::new(Some(modifiers), code))
-        } else {
-            crate::keys::binding(settings, id)
+        for (id, item) in items.iter() {
+            let from_binding = crate::keys::binding(settings, id)
                 .filter(|binding| binding.has_modifier())
                 .and_then(|binding| {
-                    let mut modifiers = muda::accelerator::Modifiers::empty();
+                    let mut modifiers = Modifiers::empty();
                     if binding.command {
-                        modifiers |= muda::accelerator::Modifiers::META;
+                        modifiers |= Modifiers::META;
                     }
                     if binding.shift {
-                        modifiers |= muda::accelerator::Modifiers::SHIFT;
+                        modifiers |= Modifiers::SHIFT;
                     }
                     if binding.alt {
-                        modifiers |= muda::accelerator::Modifiers::ALT;
+                        modifiers |= Modifiers::ALT;
                     }
                     Some(Accelerator::new(Some(modifiers), code_for(binding.key)?))
-                })
-        };
-        let _ = item.set_accelerator(accelerator);
-    }
+                });
+            let accelerator =
+                from_binding.or_else(|| default_shortcut(id).and_then(accelerator));
+            let _ = item.set_accelerator(accelerator);
+        }
     });
-}
-
-/// What the menu bar will show for an action, for the settings page to print
-/// beside the binding. `None` where the menu offers nothing.
-pub fn menu_shortcut(id: &str) -> Option<&'static str> {
-    match id {
-        "settings" => Some("\u{2318},"),
-        "fullscreen" => Some("\u{2303}\u{2318}F"),
-        _ => None,
-    }
 }
 
 /// Build the application menu and hand it to the running NSApplication.
