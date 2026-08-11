@@ -47,7 +47,7 @@ on:
         default: true
         type: boolean
       linux:
-        description: "Build the Linux Flatpak"
+        description: "Build the Linux AppImage"
         required: false
         default: true
         type: boolean
@@ -76,7 +76,7 @@ jobs:
 
   linux:
     if: inputs.linux
-    uses: ./.github/workflows/flatpak.yml
+    uses: ./.github/workflows/linux.yml
     with:
       version: ${{ inputs.version }}
 
