@@ -128,6 +128,9 @@ pub fn machine_name() -> Option<String> {
     std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty())
 }
 
+/// Nothing stands between this program and the local network here.
+pub const LOCAL_NETWORK_HINT: &str = "";
+
 // --- where files go ----------------------------------------------------------
 
 /// The profile root settings live under. Roams with the user.

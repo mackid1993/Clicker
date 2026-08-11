@@ -37,6 +37,15 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
         .with_title_shown(false)
 }
 
+/// Appended to a failed connection attempt.
+///
+/// macOS gates the local network behind a permission prompt, and the first
+/// probe of a DVR usually loses the race with that dialog: the request goes
+/// out, the system says no on the user's behalf, and the prompt is still on
+/// screen when the failure lands. Saying so turns a mystery into a step.
+pub const LOCAL_NETWORK_HINT: &str =
+    " If macOS just asked about the local network, allow it and try again.";
+
 // --- where files go ----------------------------------------------------------
 
 fn home() -> Option<PathBuf> {

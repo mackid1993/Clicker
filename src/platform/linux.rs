@@ -25,6 +25,9 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
     viewport.with_decorations(false)
 }
 
+/// Nothing stands between this program and the local network here.
+pub const LOCAL_NETWORK_HINT: &str = "";
+
 // --- where files go ----------------------------------------------------------
 
 fn home() -> Option<PathBuf> {

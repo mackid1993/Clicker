@@ -61,6 +61,10 @@ modules:
   - name: libplacebo
     buildsystem: meson
     config-opts:
+      # meson's default here is lib64, which neither pkg-config nor the
+      # sandbox's loader searches; mpv then reports libplacebo missing with
+      # libplacebo sitting right there.
+      - --libdir=lib
       - -Dvulkan=disabled
       - -Dshaderc=disabled
       - -Dglslang=disabled
@@ -77,6 +81,9 @@ modules:
   - name: mpv
     buildsystem: meson
     config-opts:
+      # Same libdir reasoning as libplacebo: libmpv.so.2 must land where
+      # dlopen's search path actually reaches.
+      - --libdir=lib
       - -Dgpl=false
       - -Dlibmpv=true
       - -Dcplayer=false

@@ -935,7 +935,14 @@ impl App {
                             self.reconnect();
                             self.screen = Screen::Home;
                         }
-                        Err(e) => self.setup.message = Some((e, false)),
+                        Err(e) => {
+                            // The platform gets a word in: on macOS the first
+                            // probe usually loses a race with the local
+                            // network permission prompt, and the failure
+                            // should say so rather than read as a bad address.
+                            let hint = platform::LOCAL_NETWORK_HINT;
+                            self.setup.message = Some((format!("{e}{hint}"), false));
+                        }
                     }
                 }
             }

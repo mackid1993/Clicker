@@ -20,6 +20,9 @@
 #     signature, not an identity: a locally built app runs fine signed
 #     ad-hoc. Distribution to other machines is where a Developer ID and
 #     notarization come in, and this script stops honestly short of it.
+#     One consequence worth knowing: macOS ties permission grants — the
+#     local network prompt included — to the signature, and an ad-hoc
+#     signature changes with every build, so a rebuild may ask again.
 #
 # Produces target/macos/Clicker.app and a zip beside it.
 
@@ -62,6 +65,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>LSMinimumSystemVersion</key><string>12.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>LSApplicationCategoryType</key><string>public.app-category.entertainment</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Clicker connects to your Channels DVR server on your local network to play live TV and recordings.</string>
 </dict>
 </plist>
 PLIST
