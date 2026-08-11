@@ -292,16 +292,55 @@ overrides the choice; `null` silences playback and tells you in ten seconds
 whether a misbehaving sound device is what is ruining the video, which is
 worth knowing because on Linux mpv paces video against the audio clock.
 
-**Video is rendered on a thread of its own** on Linux, into a texture the
-interface then draws. That is not how it works on Windows or macOS, and the
-reason is drivers that make a caller wait: where OpenGL is translated rather
-than native, a render call can hold for most of a frame while doing no work
-at all, and on the interface's own thread that is a window that stops
-answering the mouse and a picture that sheds half its frames. On a worker it
-is a thread whose whole job is to wait. Measured against a 1080p60 channel:
-60fps with one frame dropped in a minute, where the same build with
-`CLICKER_RENDER_THREAD=0` — which is the off switch — managed 50fps and
-dropped frames the whole way through.
+**One player, two settings.** The whole of the playback path is shared code
+on all three platforms — mpv rendering on a worker thread with an OpenGL
+context of its own, publishing frames the GPU has finished into textures the
+interface blits. Four platform conditionals remain in the player, and it is
+worth saying plainly what they are, because "one engine" is a claim that
+should be checkable:
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Video paced against | the display | the display | the audio clock |
+| Render thread by default | off | off | **on** |
+| Caption font | Consolas | Menlo | DejaVu Sans Mono |
+| `autosync` | — | — | 30 |
+
+Everything else — the worker, the context handoff, the double-buffered
+textures, the sizing, the blit — is one path, so a fault found in it is fixed
+once rather than argued about twice.
+
+**The render thread** exists because a driver can hold a render call for most
+of a frame while doing no work at all: a translated OpenGL, a remote display,
+a virtualised GPU. On the interface's own thread that is a window that stops
+answering the mouse and a picture shedding half its frames; on a worker it is
+a thread whose whole job is to wait. Measured against a 1080p60 channel on a
+virtualised GPU: 60fps with one frame dropped in a minute, against 50fps and
+frames dropping continuously with `CLICKER_RENDER_THREAD=0`.
+
+It is not the default where the display sets the pace, and that is a
+measurement rather than a preference. `display-resample` — which Windows and
+macOS use, and which was measured there fixing a real fault — needs drawing a
+frame and putting it on screen to be one loop it can time against, and a
+render thread makes them two. Ranked on one Mac: rendering in the paint holds
+A/V at zero; the thread sits one to two milliseconds off; the thread while
+reporting swaps to mpv wanders; the thread with audio pacing is worse again.
+So Linux, which pays against the audio clock and where the stalling driver is
+a real and measured problem, runs the thread; the other two do not.
+
+`CLICKER_RENDER_THREAD=1` turns it on anywhere and `=0` off, which is how the
+above was worked out and how it can be checked on any machine in ten seconds.
+
+**The picture is drawn at the size it is displayed at**, on every platform,
+with no cap at the stream's own resolution. That cap was there on the
+reasoning that rendering above the source only invents pixels the blit could
+invent more cheaply, and it is wrong where it matters: mpv scales from the
+source planes in one pass with the scaler it was configured with, while a blit
+can only stretch a finished picture. On a 3456-pixel-wide display a 1080p
+stream was being drawn at 1920 and stretched, which is a visibly soft picture
+for no gain. Worth knowing on a weak or translated GPU driving a large screen,
+where it is now four times the pixels it used to be — the render figures in
+the log say whether that is affordable.
 
 **Playback has a test that produces a number.** `scripts/smoke-play.sh <file
 or URL>` on macOS and Linux, `scripts/smoke-play.ps1` on Windows: it plays the

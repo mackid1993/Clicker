@@ -105,7 +105,7 @@ exists because the alternative was rebuilding to answer a question.
 
 ---
 
-## Why Linux renders on its own thread
+## Why Linux renders on its own thread and the others do not
 
 Worth knowing before changing anything under `src/mpv.rs`, because the
 architecture looks like over-engineering until the number is in front of you.
@@ -125,6 +125,14 @@ Same binary, same live 1080p60 channel, back to back:
 | `CLICKER_RENDER_THREAD=0` | 44–53 fps | 221 in 45s | 0.3–1.1ms |
 
 The render call did not get faster. The waiting moved.
+
+The same code runs on all three platforms; what differs is the default. Where
+video is paced against the display — Windows and macOS — the thread is opt-in
+via `CLICKER_RENDER_THREAD=1`, because `display-resample` needs drawing and
+presenting to be one loop it can time against and a worker makes them two. The
+A/V offset that produces is small, visible in the stats card, and will not sit
+still. Linux paces against the audio clock, needs no such feedback, and is
+where the stalling driver is a measured problem, so there the thread is on.
 
 The worker publishes only frames the GPU has finished, by calling `glFinish`
 before handing one over. An earlier version passed a GL fence across the
