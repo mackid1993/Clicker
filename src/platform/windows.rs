@@ -403,7 +403,8 @@ extern "system" {
     fn wglShareLists(source: *mut c_void, destination: *mut c_void) -> i32;
     fn wglMakeCurrent(dc: *mut c_void, context: *mut c_void) -> i32;
     fn wglDeleteContext(context: *mut c_void) -> i32;
-    fn wglGetProcAddress(name: *const u8) -> *mut c_void;
+    // wglGetProcAddress is declared with the GL loader below, which needs it
+    // for the same reason and got there first.
 }
 
 /// Capture the interface's context. Interface thread only, where it is
