@@ -72,13 +72,6 @@ horizontal streaks from the first frame. Where the graphics report themselves
 translated or emulated the maximum is capped at 2048, which is thousands more
 glyphs than this program draws.
 
-**The .deb carries what a package is supposed to carry:** a copyright file
-covering every bundled component and how to rebuild it from source rather
-than only this program's own MIT terms, AppStream metadata so a software
-centre knows the name, the licence and the icon rather than calling it
-unknown, and the icon in every size a desktop looks for instead of only the
-largest.
-
 ## 1.2.0
 
 **Clicker runs on macOS and Linux.** One codebase, one interface — the same
