@@ -134,8 +134,10 @@ pub const ACTIONS: &[Action] = &[
     // is Play/Pause to the system before this program ever hears about it.
     #[cfg(not(target_os = "macos"))]
     action("toggle", "Turn shortcuts off or on", "F8"),
+    // Command-backslash rather than a bare one, by the same rule every other
+    // Mac binding follows — see `refusal`.
     #[cfg(target_os = "macos")]
-    action("toggle", "Turn shortcuts off or on", "\\"),
+    action("toggle", "Turn shortcuts off or on", "Cmd+Backslash"),
 ];
 
 
@@ -302,8 +304,25 @@ fn key_label(key: egui::Key) -> String {
 pub fn refusal(binding: Binding) -> Option<&'static str> {
     use egui::Key;
 
-    // Modifier-free keys cannot collide with the desktop, so nothing here
-    // applies to them.
+    // On a Mac, a shortcut without a modifier is refused outright.
+    //
+    // Not for tidiness. Every binding here is also a menu item, and a menu
+    // accelerator belongs to the system, which fires it before any window
+    // sees the keystroke — so a bare G on the Guide item would change screen
+    // while somebody typed "Golf" into the search box. The alternative was to
+    // accept bare keys and leave those menu items blank, which is the exact
+    // disagreement between the menu and this page that the whole arrangement
+    // exists to prevent.
+    //
+    // Space is the one exception, because play and pause is Space in every
+    // video player ever made and nobody reaches for it holding Command. Its
+    // menu item carries no key and says so by showing none.
+    if cfg!(target_os = "macos") && !binding.has_modifier() && binding.key != Key::Space {
+        return Some("a Mac shortcut needs Command, Control, Shift or Option");
+    }
+
+    // Modifier-free keys elsewhere cannot collide with the desktop, so
+    // nothing below applies to them.
     if !binding.command {
         return None;
     }
@@ -334,7 +353,22 @@ pub fn binding(settings: &Settings, id: &str) -> Option<Binding> {
         Some(name) => name.clone(),
         None => default_for(id)?.to_string(),
     };
-    Binding::from_setting(&text)
+    let stored = Binding::from_setting(&text);
+
+    // A settings file written before Mac bindings had to carry a modifier
+    // can hold a bare key, and honouring it would put back the thing the
+    // rule exists to prevent: a shortcut this page shows and the menu bar
+    // cannot. Such a binding falls back to the default, which is one the
+    // menu can carry. Nothing is rewritten on disk — the next rebinding
+    // does that, and until then an old file still opens on the old build.
+    if cfg!(target_os = "macos") {
+        if let Some(binding) = stored {
+            if refusal(binding).is_some() {
+                return default_for(id).and_then(Binding::from_setting);
+            }
+        }
+    }
+    stored
 }
 
 pub fn default_for(id: &str) -> Option<&'static str> {
