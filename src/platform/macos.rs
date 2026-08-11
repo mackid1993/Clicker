@@ -455,6 +455,13 @@ pub fn text_font() -> Option<Vec<u8>> {
     None
 }
 
+/// Nothing to add: San Francisco is already at the front of the chain and
+/// carries the arrows and dashes an interface reaches for. See the Linux
+/// implementation for what this is for.
+pub fn fallback_font() -> Option<Vec<u8>> {
+    None
+}
+
 /// The bundled Fluent UI System Icons subset — Microsoft's own icon set,
 /// MIT-licensed, cut down to the twenty-eight glyphs the interface draws.
 /// See `theme::icon` for the codepoint table it must stay in step with, and

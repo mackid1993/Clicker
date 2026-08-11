@@ -111,6 +111,57 @@ pub fn text_font() -> Option<Vec<u8>> {
     None
 }
 
+/// A face to fall back on for the glyphs egui's own font has never heard of.
+///
+/// Windows and macOS answer this with their system face: Segoe and San
+/// Francisco carry arrows, dashes and the rest of the punctuation an
+/// interface reaches for, so `text_font` above already covers it there. On
+/// Linux nothing does — egui's bundled Ubuntu-Light stops not far past Latin
+/// — and `0:00 → 0:42` in the stats card drew `0:00 □ 0:42`.
+///
+/// So the question is put to fontconfig, which is the one piece of this that
+/// every desktop Linux agrees on, and it is put as "a sans face that contains
+/// this arrow" rather than as a font name: `charset=2192` is answered from
+/// what the machine actually has installed, which is DejaVu on Debian and
+/// Ubuntu, Noto on Fedora, Liberation where neither is. Guessing at paths is
+/// what this used to refuse to do, and the refusal was right — asking is not
+/// the same as guessing.
+///
+/// The path list underneath is for a system with no `fc-match` at all, which
+/// is rare enough that being approximately right there is fine.
+pub fn fallback_font() -> Option<Vec<u8>> {
+    let asked = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}", "sans:charset=2192"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|path| !path.is_empty());
+
+    let candidates = asked.into_iter().chain(
+        [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(&path) {
+            crate::log::line(&format!("[clicker] fallback font: {path}"));
+            return Some(bytes);
+        }
+    }
+    crate::log::line("[clicker] no fallback font: some glyphs will draw as boxes");
+    None
+}
+
 /// The bundled Fluent UI System Icons subset — Microsoft's own icon set,
 /// MIT-licensed, cut down to the twenty-eight glyphs the interface draws.
 /// See `theme::icon` for the codepoint table it must stay in step with, and
@@ -198,8 +249,10 @@ pub const MPV_LIBRARY: &str = "libmpv.so.2";
 
 /// Where libmpv might be, and deliberately nowhere else.
 ///
-/// The AppImage's own lib directory first, then beside a bare binary, then
-/// the repository's staged build for anyone running this out of `cargo`.
+/// A `bin`/`lib` split first — which is a Flatpak, and was the AppImage
+/// before it — then beside the binary, which is where `make install` and the
+/// .deb both put them, then the repository's staged build for anyone running
+/// this out of `cargo`.
 /// What is *not* here is the system loader's search path: a distribution's
 /// FFmpeg is frequently built with GPL components, and this application ships
 /// under MIT with an LGPL player. The only libmpv it loads is one built by
@@ -210,7 +263,7 @@ pub fn mpv_candidates() -> Vec<String> {
         .and_then(|p| p.parent().map(PathBuf::from));
     let mut candidates = Vec::new();
     if let Some(dir) = &exe_dir {
-        // usr/bin/../lib, which is where the AppImage puts them.
+        // usr/bin/../lib, for a layout that splits the two.
         candidates.push(dir.join("../lib").join(MPV_LIBRARY).display().to_string());
         candidates.push(dir.join(MPV_LIBRARY).display().to_string());
         candidates.push(

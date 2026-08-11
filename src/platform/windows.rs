@@ -192,6 +192,13 @@ pub fn text_font() -> Option<Vec<u8>> {
     None
 }
 
+/// Nothing to add: Segoe UI is already at the front of the chain and carries
+/// the arrows and dashes an interface reaches for. See the Linux
+/// implementation for what this is for.
+pub fn fallback_font() -> Option<Vec<u8>> {
+    None
+}
+
 /// Caption and control glyphs come from the Windows icon font. Substituting
 /// lookalike Unicode characters is what makes custom chrome read as wrong:
 /// the shapes, weights and optical sizes do not match the real thing.

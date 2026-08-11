@@ -351,6 +351,21 @@ fn install_fonts(ctx: &egui::Context) {
             .push("system".into());
     }
 
+    // Behind everything, for the glyphs nothing in front of it has. egui's
+    // bundled face stops not far past Latin, so on a system with no face of
+    // its own at the front of the chain — a Linux desktop — an arrow or a
+    // dash in the middle of a line comes out as an empty box. Last in both
+    // families, so it changes nothing about how the interface reads and only
+    // answers when the question would otherwise go unanswered.
+    if let Some(bytes) = crate::platform::fallback_font() {
+        fonts
+            .font_data
+            .insert("fallback".into(), egui::FontData::from_owned(bytes));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push("fallback".into());
+        }
+    }
+
     // Caption and control glyphs. Substituting lookalike Unicode characters is
     // what makes custom chrome read as wrong: the shapes, weights and optical
     // sizes do not match the real thing.
@@ -432,13 +447,6 @@ pub mod icon {
         CANCEL: "\u{E711}", "\u{F36A}";
         CHEVRON_DOWN: "\u{E70D}", "\u{F2A4}";
     }
-}
-
-/// A label in the icon font at a given size.
-pub fn icon_text(glyph: &str, size: f32) -> egui::RichText {
-    egui::RichText::new(glyph)
-        .family(egui::FontFamily::Name(ICON_FONT.into()))
-        .size(size)
 }
 
 /// The Fluent type ramp. Named sizes rather than arbitrary ones are what keep
