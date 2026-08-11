@@ -509,8 +509,10 @@ struct App {
     /// them exactly as it would the keys of the same name.
     menu_actions: std::collections::HashSet<String>,
     /// Whether the last failure was the system refusing the local network,
-    /// which makes the message a button rather than a statement.
+    /// which puts a panel of instructions on the screen.
     permission_blocked: bool,
+    /// When the blocked state last tried again on its own.
+    permission_retry: Instant,
     recordings_tab: ui_library::RecordingsTab,
     /// For the crossfade between screens: which one is on show, and when it
     /// arrived.
@@ -737,6 +739,7 @@ impl App {
             library_state: ui_library::LibraryState::default(),
             menu_actions: std::collections::HashSet::new(),
             permission_blocked: false,
+            permission_retry: Instant::now(),
             recordings_tab: ui_library::RecordingsTab::default(),
             shown_screen: Screen::Home,
             screen_changed: Instant::now(),
@@ -892,6 +895,10 @@ impl App {
                     }
                 }
                 Msg::Home(home) => {
+                    // Anything arriving from the DVR means the system is no
+                    // longer standing in the way, so the panel that says it is
+                    // has no business still being on screen.
+                    self.permission_blocked = false;
                     // Kept on disk so the next launch has titles and artwork
                     // for downloaded recordings even with no server to ask.
                     home.save_cache();
@@ -2666,6 +2673,24 @@ impl App {
     }
 
     fn housekeeping(&mut self) {
+        // ── Blocked by the system: try again by itself ──────────────────
+        //
+        // The permission is granted in another application, and nothing tells
+        // this one that it happened. Without this, somebody does exactly what
+        // the panel asked, comes back, and finds the same panel — so the
+        // instructions look wrong even though they worked, and the last step
+        // is a button they should not have needed.
+        //
+        // Every two seconds, quietly. It is one request to a machine on the
+        // same network, and it stops the moment it succeeds, because anything
+        // arriving from the DVR clears the flag.
+        if self.permission_blocked
+            && self.permission_retry.elapsed() > Duration::from_secs(2)
+        {
+            self.permission_retry = Instant::now();
+            self.refresh_data();
+        }
+
         // ── Position, every 20 seconds ──────────────────────────────────
         //
         // Without this, everything watched here is invisible to Continue
@@ -3799,7 +3824,7 @@ impl App {
             "2.  Choose Privacy & Security in the sidebar.",
             "3.  Scroll down and click Local Network.",
             "4.  Switch Clicker on.",
-            "5.  Come back here and click Try Again.",
+            "5.  Come back here \u{2014} this window notices on its own.",
         ] {
             inner.label(
                 egui::RichText::new(step)
@@ -3816,13 +3841,20 @@ impl App {
             {
                 platform::open_local_network_settings();
             }
+            // Still here for somebody who would rather press something than
+            // wait two seconds, but it is no longer the way out.
             if ui
                 .add(egui::Button::new("Try Again").min_size(egui::vec2(110.0, 32.0)))
                 .clicked()
             {
-                self.permission_blocked = false;
+                self.permission_retry = Instant::now();
                 self.refresh_data();
             }
+            ui.label(
+                egui::RichText::new("Checking every couple of seconds\u{2026}")
+                    .size(11.5)
+                    .color(Fluent::TEXT_TERTIARY),
+            );
         });
     }
 
