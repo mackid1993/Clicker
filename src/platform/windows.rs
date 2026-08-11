@@ -370,6 +370,113 @@ pub unsafe fn library_symbol(module: *mut c_void, name: *const u8) -> *mut c_voi
     GetProcAddress(module, name)
 }
 
+// --- a second GL context, for the render thread ------------------------------
+
+/// The interface's WGL context and the device context it belongs to,
+/// captured on the interface thread.
+///
+/// Handles as integers because this crosses a thread boundary. The third is
+/// `wglCreateContextAttribsARB` if the driver has it: it must be asked for
+/// through `wglGetProcAddress`, which only answers while a context is
+/// current, so it has to be fetched here rather than on the worker.
+pub struct GlShare {
+    dc: usize,
+    context: usize,
+    create_attribs: usize,
+}
+
+/// A context of the worker's own, current on the worker's thread.
+pub struct GlWorker {
+    context: usize,
+}
+
+type CreateContextAttribs =
+    unsafe extern "system" fn(*mut c_void, *mut c_void, *const i32) -> *mut c_void;
+
+const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
+const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
+
+extern "system" {
+    fn wglGetCurrentDC() -> *mut c_void;
+    fn wglGetCurrentContext() -> *mut c_void;
+    fn wglCreateContext(dc: *mut c_void) -> *mut c_void;
+    fn wglShareLists(source: *mut c_void, destination: *mut c_void) -> i32;
+    fn wglMakeCurrent(dc: *mut c_void, context: *mut c_void) -> i32;
+    fn wglDeleteContext(context: *mut c_void) -> i32;
+    fn wglGetProcAddress(name: *const u8) -> *mut c_void;
+}
+
+/// Capture the interface's context. Interface thread only, where it is
+/// current.
+pub fn gl_share() -> Option<GlShare> {
+    unsafe {
+        let dc = wglGetCurrentDC();
+        let context = wglGetCurrentContext();
+        if dc.is_null() || context.is_null() {
+            return None;
+        }
+        // Asked for here because it can only be asked for here. A null answer
+        // is fine: `gl_worker_begin` falls back to the older pair of calls.
+        let create_attribs = wglGetProcAddress(b"wglCreateContextAttribsARB\0".as_ptr());
+        Some(GlShare {
+            dc: dc as usize,
+            context: context as usize,
+            create_attribs: create_attribs as usize,
+        })
+    }
+}
+
+/// A sibling of that context, made current on this thread.
+///
+/// Two ways to get one, and the modern way is tried first because it is the
+/// one with no ordering trap in it: `wglCreateContextAttribsARB` takes the
+/// context to share with as an argument, so the sharing is part of creating
+/// it. The fallback creates a context and then calls `wglShareLists`, which
+/// is only lawful while the new context has no objects of its own — true
+/// here, since it has just been made and nothing has touched it.
+pub fn gl_worker_begin(share: &GlShare) -> Option<GlWorker> {
+    unsafe {
+        let dc = share.dc as *mut c_void;
+        let source = share.context as *mut c_void;
+
+        let context = if share.create_attribs != 0 {
+            let create: CreateContextAttribs = std::mem::transmute(share.create_attribs);
+            let attribs = [
+                WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+                WGL_CONTEXT_MINOR_VERSION_ARB, 2,
+                0,
+            ];
+            create(dc, source, attribs.as_ptr())
+        } else {
+            let fresh = wglCreateContext(dc);
+            if !fresh.is_null() && wglShareLists(source, fresh) == 0 {
+                wglDeleteContext(fresh);
+                return None;
+            }
+            fresh
+        };
+
+        if context.is_null() {
+            return None;
+        }
+        if wglMakeCurrent(dc, context) == 0 {
+            wglDeleteContext(context);
+            return None;
+        }
+        Some(GlWorker {
+            context: context as usize,
+        })
+    }
+}
+
+/// Give it back, on the thread that owns it.
+pub fn gl_worker_end(worker: GlWorker) {
+    unsafe {
+        wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut());
+        wglDeleteContext(worker.context as *mut c_void);
+    }
+}
+
 /// How mpv finds the OpenGL functions of the context eframe created.
 ///
 /// `wglGetProcAddress` answers only for OpenGL 1.2 and later; everything from

@@ -603,13 +603,10 @@ pub struct Player {
     /// shared context could be made. `None` inside means it was tried and
     /// could not be, and the in-paint path below carries on as everywhere
     /// else.
-    #[cfg(target_os = "linux")]
     threaded: std::sync::OnceLock<Option<Arc<worker::Link>>>,
-    #[cfg(target_os = "linux")]
     render_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The interface's own framebuffers wrapping the worker's textures, per
     /// generation. Containers are per-context even when textures are shared.
-    #[cfg(target_os = "linux")]
     ui_fbos: Mutex<(u64, [u32; 2])>,
 }
 
@@ -974,11 +971,8 @@ impl Player {
             started: AtomicBool::new(false),
             render_ctx: Mutex::new(Ptr(std::ptr::null_mut())),
             surface: Mutex::new(None),
-            #[cfg(target_os = "linux")]
             threaded: std::sync::OnceLock::new(),
-            #[cfg(target_os = "linux")]
             render_thread: Mutex::new(None),
-            #[cfg(target_os = "linux")]
             ui_fbos: Mutex::new((0, [0, 0])),
             shared,
             thread: Some(thread),
@@ -1022,7 +1016,6 @@ impl Player {
         // reached the threaded path, and the worker then heard "There is
         // already a mpv_render_context set" and fell back — the whole thread
         // built and lost to its own warm-up.
-        #[cfg(target_os = "linux")]
         if self.threaded_active() {
             return true;
         }
@@ -1597,7 +1590,6 @@ impl Player {
         // shared textures, and this thread only waits on a GPU-side fence and
         // blits — so however long the driver holds the renderer hostage, it
         // is holding a thread nobody is typing at.
-        #[cfg(target_os = "linux")]
         if let Some(done) = self.threaded_present(gl, rect) {
             return done;
         }
@@ -1805,7 +1797,6 @@ impl Player {
         // The interface's wrappers around the worker's textures. The worker's
         // own objects — its renderer included — are freed by the worker, on
         // the context that owns them, when Drop joins it.
-        #[cfg(target_os = "linux")]
         {
             let mut cache = self.ui_fbos.lock().unwrap();
             for fbo in cache.1 {
@@ -1820,14 +1811,17 @@ impl Player {
     /// Whether the render thread owns (or is about to own) the renderer.
     /// Spawns it on first ask, which needs the interface's context current —
     /// true at every call site, all of which sit inside a paint.
-    #[cfg(target_os = "linux")]
     fn threaded_active(&self) -> bool {
-        // On by default. It was parked once, over white flashes that turned
-        // out to be the cross-context fence handoff — on the driver this
-        // thread exists for, fences are the broken primitive — and the
-        // handoff no longer uses them: the worker publishes only frames the
-        // GPU has finished. CLICKER_RENDER_THREAD=0 is the off switch if a
-        // machine ever needs the in-paint path back.
+        // On by default, on every platform. It was parked once, over white
+        // flashes that turned out to be the cross-context fence handoff — on
+        // the driver this thread was built for, fences are the broken
+        // primitive — and the handoff no longer uses one: the worker publishes
+        // only frames the GPU has finished, so a published frame is whole by
+        // construction and the interface waits on nothing.
+        //
+        // CLICKER_RENDER_THREAD=0 is the off switch, and it is a real one: the
+        // in-paint path is still here, still correct, and still what runs
+        // wherever a shared context cannot be had.
         if std::env::var("CLICKER_RENDER_THREAD")
             .map(|v| v == "0")
             .unwrap_or(false)
@@ -1842,7 +1836,6 @@ impl Player {
 
     /// Present by way of the render thread. `None` means there is no thread —
     /// it was tried and could not be had — and the in-paint path should run.
-    #[cfg(target_os = "linux")]
     unsafe fn threaded_present(&self, gl: &GlFns, rect: [i32; 4]) -> Option<bool> {
         if !self.threaded_active() {
             // The worker cleaned up entirely before dying, so falling back to
@@ -2069,7 +2062,6 @@ impl Drop for Player {
         // The render thread next, and before the handle: the worker owns the
         // render context, and mpv forbids destroying a handle while one
         // exists. Joining it is what frees it, on the context that made it.
-        #[cfg(target_os = "linux")]
         if let Some(Some(link)) = self.threaded.get() {
             link.stop.store(true, Ordering::SeqCst);
             link.wake.notify_all();
@@ -2202,69 +2194,31 @@ fn event_loop(api: &'static Api, ctx: Ptr, shared: Arc<Shared>, resume_at: f64) 
     }
 }
 
-/// The render thread: mpv on its own OpenGL context, Linux only.
+/// The render thread: mpv on an OpenGL context of its own, on every platform.
 ///
 /// eframe owns the window's context and never hands out the native handle,
-/// which is why mpv originally rented space inside egui's paint. But EGL will
-/// name the *current* context if asked during a paint, and that handle is
-/// enough to create a shared sibling. The worker renders into textures both
-/// contexts can see; the interface waits on a GPU fence and blits. However
-/// long the driver stalls the renderer — and through virtio it was measured
+/// which is why mpv originally rented space inside egui's paint. But every
+/// graphics API here will name the *current* context if asked during a paint,
+/// and that handle is enough to create a shared sibling: EGL on Linux, WGL on
+/// Windows, CGL on macOS, each behind `platform::gl_share`. The worker renders
+/// into textures both contexts can see and publishes only frames the GPU has
+/// finished; the interface blits one and synchronizes with nothing. However
+/// long the driver stalls the renderer — through virtio it was measured
 /// stalling it for most of every frame — it stalls a thread nobody is typing
 /// at.
 ///
-/// Everything here fails toward the in-paint path: no EGL, no current
-/// context, no shared context, no renderer — each is a log line and a clean
-/// fallback, never a broken player.
-#[cfg(target_os = "linux")]
+/// This began as a Linux fix and is now how the picture is drawn everywhere,
+/// deliberately. Two rendering paths meant a bug found on one platform had to
+/// be reasoned about twice and could be fixed on the wrong one; and the
+/// separate context is a wall as well as a thread, because the interface
+/// cannot leave state behind in a context it has no handle to — which is the
+/// mechanism behind the worst playback bug this program has shipped.
+///
+/// Everything here fails toward the in-paint path: no shareable context, no
+/// sibling, no renderer — each is a log line and a clean fallback, never a
+/// broken player. `CLICKER_RENDER_THREAD=0` forces that path.
 mod worker {
     use super::*;
-
-    const EGL_OPENGL_API: u32 = 0x30A2;
-    const EGL_NONE: i32 = 0x3038;
-    const EGL_CONTEXT_MAJOR_VERSION: i32 = 0x3098;
-    const EGL_CONTEXT_MINOR_VERSION: i32 = 0x30FB;
-
-    struct Egl {
-        get_current_display: unsafe extern "C" fn() -> *mut c_void,
-        get_current_context: unsafe extern "C" fn() -> *mut c_void,
-        bind_api: unsafe extern "C" fn(u32) -> u32,
-        create_context:
-            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void,
-        make_current:
-            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32,
-        destroy_context: unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32,
-        release_thread: unsafe extern "C" fn() -> u32,
-    }
-
-    impl Egl {
-        fn load() -> Option<Egl> {
-            let lib = crate::platform::open_library("libEGL.so.1");
-            if lib.is_null() {
-                return None;
-            }
-            unsafe {
-                macro_rules! sym {
-                    ($name:literal) => {{
-                        let p = crate::platform::library_symbol(lib, concat!($name, "\0").as_ptr());
-                        if p.is_null() {
-                            return None;
-                        }
-                        std::mem::transmute(p)
-                    }};
-                }
-                Some(Egl {
-                    get_current_display: sym!("eglGetCurrentDisplay"),
-                    get_current_context: sym!("eglGetCurrentContext"),
-                    bind_api: sym!("eglBindAPI"),
-                    create_context: sym!("eglCreateContext"),
-                    make_current: sym!("eglMakeCurrent"),
-                    destroy_context: sym!("eglDestroyContext"),
-                    release_thread: sym!("eglReleaseThread"),
-                })
-            }
-        }
-    }
 
     /// What the two threads share.
     pub struct Link {
@@ -2298,14 +2252,18 @@ mod worker {
     /// Capture the paint thread's context and start the worker. Called once,
     /// from a paint, where that context is current.
     pub fn spawn(player: &Player) -> Option<Arc<Link>> {
-        let egl = Egl::load()?;
-        let (display, share) = unsafe {
-            ((egl.get_current_display)(), (egl.get_current_context)())
-        };
-        if display.is_null() || share.is_null() {
-            crate::log::line("[mpv] no EGL context is current; rendering stays on the paint thread");
+        // Captured here, on the interface's own thread, because that is the
+        // only place its context is current — and on two of the three
+        // platforms the question can only be asked from the thread that owns
+        // the answer. What comes back is opaque: a display and a context on
+        // EGL, a device context and a rendering context on Windows, a CGL
+        // context on macOS. See `platform::gl_share`.
+        let Some(share) = crate::platform::gl_share() else {
+            crate::log::line(
+                "[mpv] no shareable graphics context; rendering stays on the paint thread",
+            );
             return None;
-        }
+        };
 
         let link = Arc::new(Link {
             state: Mutex::new(Frames {
@@ -2328,11 +2286,10 @@ mod worker {
         let mpv = player.ctx;
         let shared = player.shared.clone();
         let thread_link = link.clone();
-        let (display, share) = (display as usize, share as usize);
         let handle = std::thread::Builder::new()
             .name("clicker-render".into())
             .spawn(move || {
-                run(egl, display, share, api, mpv, shared, thread_link.clone());
+                run(share, api, mpv, shared, thread_link.clone());
                 thread_link.dead.store(true, Ordering::SeqCst);
             })
             .ok()?;
@@ -2349,44 +2306,30 @@ mod worker {
     }
 
     fn run(
-        egl: Egl,
-        display: usize,
-        share: usize,
+        share: crate::platform::GlShare,
         api: &'static Api,
         mpv: Ptr,
         shared: Arc<Shared>,
         link: Arc<Link>,
     ) {
-        let display = display as *mut c_void;
-        let share = share as *mut c_void;
         unsafe {
-            (egl.bind_api)(EGL_OPENGL_API);
-            // A sibling of the interface's context: same share group, so
-            // textures made here are visible there. No config and no surface,
-            // which Mesa allows and which is all a renderer that only ever
-            // draws into framebuffers needs.
-            let attribs = [
-                EGL_CONTEXT_MAJOR_VERSION, 3,
-                EGL_CONTEXT_MINOR_VERSION, 0,
-                EGL_NONE,
-            ];
-            let ctx = (egl.create_context)(display, std::ptr::null_mut(), share, attribs.as_ptr());
-            if ctx.is_null() {
-                crate::log::line("[mpv] could not create a shared context; rendering stays on the paint thread");
+            // A sibling of the interface's context, made current on this
+            // thread: the same share group, so the textures drawn here are the
+            // ones the interface blits, and no drawable of its own, which is
+            // all a renderer that only ever draws into framebuffers needs. How
+            // that is spelled is the platform's business, not this file's.
+            let Some(worker_ctx) = crate::platform::gl_worker_begin(&share) else {
+                crate::log::line(
+                    "[mpv] could not create a shared context; rendering stays on the paint thread",
+                );
                 return;
-            }
-            if (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), ctx) == 0 {
-                crate::log::line("[mpv] could not make the shared context current; rendering stays on the paint thread");
-                (egl.destroy_context)(display, ctx);
-                return;
-            }
+            };
 
             let gl = match GlFns::load() {
                 Ok(gl) => gl,
                 Err(e) => {
                     crate::log::line(&format!("[mpv] {e}; rendering stays on the paint thread"));
-                    (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
-                    (egl.destroy_context)(display, ctx);
+                    crate::platform::gl_worker_end(worker_ctx);
                     return;
                 }
             };
@@ -2407,8 +2350,7 @@ mod worker {
             if rc < 0 {
                 let why = CStr::from_ptr((api.error_string)(rc)).to_string_lossy();
                 crate::log::line(&format!("[mpv] renderer refused the shared context: {why}"));
-                (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
-                (egl.destroy_context)(display, ctx);
+                crate::platform::gl_worker_end(worker_ctx);
                 return;
             }
             *link.render_ctx.lock().unwrap() = Ptr(created);
@@ -2593,9 +2535,7 @@ mod worker {
             for tex in texs {
                 if tex != 0 { gl.delete_textures(1, &tex); }
             }
-            (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
-            (egl.destroy_context)(display, ctx);
-            (egl.release_thread)();
+            crate::platform::gl_worker_end(worker_ctx);
         }
     }
 }
