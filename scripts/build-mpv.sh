@@ -167,7 +167,21 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
       pristine "$THIRD/pipewire-src"
       (
         cd "$THIRD/pipewire-src"
-        meson setup build --prefix="$DEPS" --libdir=lib           -Dsession-managers=[] -Dspa-plugins=disabled           -Dexamples=disabled -Dtests=disabled           -Dgstreamer=disabled -Dsystemd=disabled           -Dpipewire-alsa=disabled -Dpipewire-jack=disabled -Djack=disabled           -Dlibcamera=disabled -Ddocs=disabled -Dman=disabled
+        # auto_features=disabled is the whole trick: every optional feature
+        # off at once, without naming one. Naming them individually tripped a
+        # meson bug in pipewire's module tree — a module left enabled while
+        # spa-plugins was disabled references a variable only the disabled
+        # half defines ("audioconvert_dep"), and setup dies on it. With
+        # nothing auto-enabled that module is never evaluated, and what
+        # remains is exactly what is wanted: libpipewire, its headers, and
+        # nothing else.
+        meson setup build --prefix="$DEPS" --libdir=lib \
+          -Dauto_features=disabled \
+          -Dsession-managers=[] -Dspa-plugins=disabled \
+          -Dexamples=disabled -Dtests=disabled \
+          -Dgstreamer=disabled -Dsystemd=disabled \
+          -Dpipewire-alsa=disabled -Dpipewire-jack=disabled -Djack=disabled \
+          -Dlibcamera=disabled -Ddocs=disabled -Dman=disabled
         ninja -C build && ninja -C build install
       )
     fi
