@@ -32,7 +32,7 @@ jobs:
       - name: Install flatpak-builder
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder python3-aiohttp python3-toml
+          sudo apt-get install -y flatpak flatpak-builder python3-aiohttp python3-tomlkit
 
       - name: Add Flathub and install the runtime
         run: |
