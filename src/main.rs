@@ -1350,6 +1350,31 @@ impl eframe::App for App {
         self.player = None;
     }
 
+    /// Cap how large a texture egui believes it may make.
+    ///
+    /// egui keeps every glyph in one atlas and sizes it to whatever the
+    /// driver says the maximum texture side is. virgl says 16384, so egui
+    /// builds an atlas 8192 pixels wide and a few dozen tall — a shape a real
+    /// driver handles and a translated one does not: the text came out as
+    /// horizontal streaks from the very first frame, on Linux only, with
+    /// Windows and macOS clean on identical code.
+    ///
+    /// 2048 is four million pixels of atlas, which is thousands of glyphs at
+    /// interface sizes — far more than this program draws — and a shape any
+    /// driver has seen a hundred times. Only where the graphics say they are
+    /// translated or emulated, because there is no reason to take it from a
+    /// driver that is handling the honest answer fine.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !mpv::graphics_are_translated() {
+            return;
+        }
+        if let Some(side) = raw_input.max_texture_side.as_mut() {
+            if *side > 2048 {
+                *side = 2048;
+            }
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.open_from_environment();
         self.pump_tray(ctx);

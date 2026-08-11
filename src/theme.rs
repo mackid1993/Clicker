@@ -357,15 +357,6 @@ fn install_fonts(ctx: &egui::Context) {
     // dash in the middle of a line comes out as an empty box. Last in both
     // families, so it changes nothing about how the interface reads and only
     // answers when the question would otherwise go unanswered.
-    // Not on graphics that are translated or emulated. The fallback is a
-    // whole extra face in the atlas, and the atlas is one texture that egui
-    // sizes to whatever the driver says it can take — 8192 wide, where virgl
-    // says 16384 — which is a shape a real driver handles and a translated
-    // one has been seen to smear: text drawn as horizontal streaks from the
-    // first frame, on Linux only, where Windows and macOS with the same code
-    // are clean. An arrow drawn as a box is a far smaller loss than a guide
-    // nobody can read, and this is the machine that has the box.
-    if !crate::mpv::graphics_are_translated() {
     if let Some(bytes) = crate::platform::fallback_font() {
         fonts
             .font_data
@@ -373,7 +364,6 @@ fn install_fonts(ctx: &egui::Context) {
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             fonts.families.entry(family).or_default().push("fallback".into());
         }
-    }
     }
 
     // Caption and control glyphs. Substituting lookalike Unicode characters is

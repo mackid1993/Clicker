@@ -342,6 +342,17 @@ unsharp mask make those crisper along with the picture. A 1080-line source on
 a three-thousand-pixel display is an enlargement, and no filter invents detail
 that was never transmitted.
 
+**Text is kept out of a texture shape a translated driver cannot draw.** egui
+keeps every glyph in one atlas and sizes it to whatever the driver says its
+maximum texture side is. Ask virgl and it says 16384, so the atlas comes out
+8192 pixels wide and a few dozen tall — legal, handled by every real driver,
+and mangled by that one: the interface drew its text as horizontal streaks
+from the first frame, on Linux only, with Windows and macOS clean on identical
+code. Where the graphics report themselves translated or emulated the maximum
+is capped at 2048, which is four million pixels of atlas and thousands more
+glyphs than this program draws, in a shape nothing has trouble with. Real
+graphics are told the truth, as before.
+
 **Interlaced material is deinterlaced** and progressive material is not:
 `deinterlace=auto` acts only on streams the decoder flags, so the 1080i
 affiliates get it and the 720p and 1080p channels beside them are untouched.
@@ -371,6 +382,13 @@ capability is genuinely absent.
 
 Outside that module there are eight conditionals in shared files, and they are
 all of them:
+
+Three behaviours are chosen at runtime by what the graphics say they are —
+`llvmpipe`, `virgl`, `SwiftShader` and Basic Render are read as translated or
+emulated — rather than by which platform is running: the picture profile under
+Automatic, whether video renders on its own thread, and the cap on egui's
+texture atlas. A Mac, a PC and a Linux desktop with real drivers are treated
+alike, and a virtual machine is treated alike whichever of them it is running.
 
 | Where | What it decides |
 |---|---|
