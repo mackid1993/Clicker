@@ -787,7 +787,25 @@ impl Player {
             // `CLICKER_AO=null clicker` silences it entirely and is the
             // ten-second test of whether audio timing is the culprit at all.
             // Unset, mpv picks as it always did.
-            ("ao", &std::env::var("CLICKER_AO").unwrap_or_default()),
+            (
+                "ao",
+                &std::env::var("CLICKER_AO").unwrap_or_else(|_| {
+                    if cfg!(target_os = "linux") {
+                        // Native PipeWire first, explicitly. mpv's own probe
+                        // order tries PulseAudio before PipeWire — kept that
+                        // way upstream because the compatibility shim makes
+                        // pulse "work" — so the shim connects, the native
+                        // output this build carries is never asked, and the
+                        // jittery shim clock ruins the picture that is paced
+                        // against it. The trailing comma keeps the rest of
+                        // the probe order as fallback for machines without
+                        // PipeWire at all.
+                        "pipewire,".into()
+                    } else {
+                        String::new()
+                    }
+                }),
+            ),
             // Where a live playlist is joined. The HLS demuxer defaults to
             // three segments from the end, which for Channels would throw away
             // the server-side buffer that makes a channel rewindable from the
