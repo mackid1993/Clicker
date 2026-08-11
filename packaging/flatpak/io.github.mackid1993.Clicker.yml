@@ -115,6 +115,24 @@ modules:
     build-commands:
       - cargo --offline build --release --locked
       - install -Dm755 target/release/clicker /app/bin/clicker
+      # The licences, in the place the freedesktop conventions put them.
+      #
+      # Not optional and not a formality. Clicker's own terms are MIT, which
+      # requires its notice to travel with the thing; the icon font compiled
+      # into the binary is MIT for the same reason; and mpv, which this
+      # manifest builds from source a few modules above, is LGPL-2.1 and
+      # obliges a copy of that text as well. The Windows installer has always
+      # carried the same four files — this bundle was the one that did not.
+      - install -Dm644 LICENSE.md
+        /app/share/licenses/io.github.mackid1993.Clicker/LICENSE.md
+      - install -Dm644 NOTICE.md
+        /app/share/licenses/io.github.mackid1993.Clicker/NOTICE.md
+      - install -Dm644 licenses/THIRD_PARTY.md
+        /app/share/licenses/io.github.mackid1993.Clicker/THIRD_PARTY.md
+      - install -Dm644 licenses/LGPL-2.1.txt
+        /app/share/licenses/io.github.mackid1993.Clicker/LGPL-2.1.txt
+      - install -Dm644 licenses/FluentSystemIcons-MIT.txt
+        /app/share/licenses/io.github.mackid1993.Clicker/FluentSystemIcons-MIT.txt
       - install -Dm644 packaging/flatpak/io.github.mackid1993.Clicker.desktop
         /app/share/applications/io.github.mackid1993.Clicker.desktop
       - install -Dm644 packaging/flatpak/io.github.mackid1993.Clicker.metainfo.xml

@@ -77,6 +77,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# The licences, inside the bundle where they travel with it.
+#
+# Not a formality: Clicker's own terms are MIT and require the notice to go
+# with the thing, the icon font compiled into the binary is MIT for the same
+# reason, and the LGPL text is here because libmpv is what plays every frame.
+# The Windows installer has carried these four files since the first release;
+# the .app was shipping none of them.
+echo "==> licences"
+cp "$ROOT/LICENSE.md" "$ROOT/NOTICE.md" "$APP/Contents/Resources/"
+mkdir -p "$APP/Contents/Resources/licenses"
+cp "$ROOT"/licenses/* "$APP/Contents/Resources/licenses/"
+
 # The icon, rendered from the same PNG the other platforms use. sips and
 # iconutil ship with macOS, so this costs no dependency.
 echo "==> icon"
