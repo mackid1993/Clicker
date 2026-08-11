@@ -84,17 +84,39 @@ jobs:
             echo "The MACOS_CERTIFICATE secret is not set; see the header of this workflow." >&2
             exit 1
           fi
+
+          # Newlines are stripped from both secrets before use, because the
+          # commonest way to store one is `echo "…" | gh secret set`, and echo
+          # appends a newline that becomes part of the value. A password with
+          # an invisible trailing newline fails as "MAC verification failed
+          # (wrong password?)", which sends people hunting for a typo that
+          # isn't there. Only CR and LF are removed; a password is not
+          # allowed to contain them anyway.
+          PW="$(printf '%s' "$MACOS_CERTIFICATE_PASSWORD" | tr -d '\r\n')"
+
           KC="$RUNNER_TEMP/build.keychain-db"
           KC_PASS="$(uuidgen)"
           security create-keychain -p "$KC_PASS" "$KC"
           security set-keychain-settings -lut 21600 "$KC"
           security unlock-keychain -p "$KC_PASS" "$KC"
-          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KC" \
-            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          printf '%s' "$MACOS_CERTIFICATE" | tr -d '\r\n' | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          if ! security import "$RUNNER_TEMP/cert.p12" -k "$KC" \
+               -P "$PW" -T /usr/bin/codesign; then
+            echo "::error::Could not import the certificate. 'MAC verification failed' means" >&2
+            echo "::error::MACOS_CERTIFICATE_PASSWORD is not the password the .p12 was exported" >&2
+            echo "::error::with. Check it locally: openssl pkcs12 -in Certificates.p12 -noout" >&2
+            rm -f "$RUNNER_TEMP/cert.p12"
+            exit 1
+          fi
+
           security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASS" "$KC" >/dev/null
           security list-keychains -d user -s "$KC" login.keychain-db
           rm "$RUNNER_TEMP/cert.p12"
+
+          # Say which identity arrived, so a wrong-certificate mistake is
+          # visible here rather than three steps later at codesign time.
+          security find-identity -v -p codesigning "$KC"
 
       - name: Store notarization credentials
         env:
@@ -102,9 +124,11 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
+          # Same newline hygiene as the certificate password above.
           xcrun notarytool store-credentials notary \
-            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD"
+            --apple-id "$(printf '%s' "$APPLE_ID" | tr -d '\r\n')" \
+            --team-id "$(printf '%s' "$APPLE_TEAM_ID" | tr -d '\r\n')" \
+            --password "$(printf '%s' "$APPLE_APP_PASSWORD" | tr -d '\r\n')"
 
       # The script finds the imported identity and the stored profile on its
       # own; CI builds and desk builds go through the identical path.
