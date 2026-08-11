@@ -699,8 +699,15 @@ pub fn settings_screen(
             section(
                 ui,
                 "Keyboard",
-                "The whole application can be driven without a mouse. Click a key \
-                 to change it, then press the one you want.",
+                if crate::platform::menu_shortcut("home").is_some() {
+                    "The whole application can be driven without a mouse. Click a key \
+                     to change it, then press the one you want. The grey shortcut \
+                     beside an action is the menu bar's own, which belongs to the \
+                     system and cannot be changed here."
+                } else {
+                    "The whole application can be driven without a mouse. Click a key \
+                     to change it, then press the one you want."
+                },
             );
 
             control_row(ui, |ui| {
@@ -768,6 +775,25 @@ pub fn settings_screen(
                             .size(12.0)
                             .color(Fluent::TEXT_SECONDARY),
                     );
+
+                    // What the menu bar offers for the same action, where
+                    // there is a menu bar. Two ways to reach one action is
+                    // normal on a Mac and confusing only when one of them is
+                    // invisible: the menu shows ⌘2 for the guide, this page
+                    // showed G, and nothing on either said the other existed.
+                    //
+                    // Not editable, deliberately. A menu accelerator belongs
+                    // to the system, which presses it before this program
+                    // sees the key, so offering to rebind it here would be
+                    // offering something that cannot be done.
+                    if let Some(menu_key) = crate::platform::menu_shortcut(entry.id) {
+                        ui.label(
+                            egui::RichText::new(menu_key)
+                                .size(11.5)
+                                .color(Fluent::TEXT_TERTIARY),
+                        )
+                        .on_hover_text("From the menu bar. Not rebindable.");
+                    }
 
                     // Said rather than refused. Somebody swapping two keys over
                     // passes through a clash on the way, and refusing the first

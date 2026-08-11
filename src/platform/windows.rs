@@ -145,6 +145,12 @@ pub fn open_url(url: &str) {
         .spawn();
 }
 
+/// Nothing to print beside a shortcut: there is no menu bar offering a
+/// second way to reach these actions.
+pub fn menu_shortcut(_id: &str) -> Option<&'static str> {
+    None
+}
+
 /// Never anything, there being no menu to ask from.
 pub fn menu_command() -> Option<String> {
     None

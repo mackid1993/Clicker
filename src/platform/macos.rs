@@ -39,6 +39,86 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
 
 // --- the menu bar ------------------------------------------------------------
 
+/// The menu bar's accelerators, by the action id they belong to.
+///
+/// One table, read twice: [`install_menu_bar`] turns each into a real
+/// accelerator, and the settings page prints it beside the rebindable key, so
+/// the two lists cannot describe different keyboards.
+///
+/// The strings are what a Mac shows — ⌘ ⇧ ⌃ ⌥ — because that is what has to
+/// appear on screen; [`accelerator`] reads them back to build the menu.
+pub const MENU_SHORTCUTS: &[(&str, &str)] = &[
+    ("home", "\u{2318}1"),
+    ("guide", "\u{2318}2"),
+    ("library", "\u{2318}3"),
+    ("recordings", "\u{2318}4"),
+    ("downloads", "\u{2318}5"),
+    ("settings", "\u{2318},"),
+    ("refresh", "\u{2318}R"),
+    ("back", "\u{2318}\u{2190}"),
+    ("forward", "\u{2318}\u{2192}"),
+    ("volume_up", "\u{2318}\u{2191}"),
+    ("volume_down", "\u{2318}\u{2193}"),
+    ("mute", "\u{21e7}\u{2318}M"),
+    ("channel_up", "\u{2318}["),
+    ("channel_down", "\u{2318}]"),
+    ("stop", "\u{2318}."),
+    ("rail", "\u{2303}\u{2318}S"),
+    // The system's own item provides this one; it is here so the settings
+    // page can say so.
+    ("fullscreen", "\u{2303}\u{2318}F"),
+];
+
+/// What the menu bar offers for an action, if anything.
+pub fn menu_shortcut(id: &str) -> Option<&'static str> {
+    MENU_SHORTCUTS
+        .iter()
+        .find(|(action, _)| *action == id)
+        .map(|(_, keys)| *keys)
+}
+
+/// Turn a printed shortcut back into an accelerator.
+///
+/// Reading the display string rather than keeping a second list of key codes
+/// beside it: two lists is how a menu ends up promising ⌘4 and doing ⌘5.
+fn accelerator(id: &str) -> Option<muda::accelerator::Accelerator> {
+    use muda::accelerator::{Accelerator, Code, Modifiers};
+
+    let printed = menu_shortcut(id)?;
+    let mut modifiers = Modifiers::empty();
+    let mut last = None;
+    for character in printed.chars() {
+        match character {
+            '\u{2318}' => modifiers |= Modifiers::META,
+            '\u{21e7}' => modifiers |= Modifiers::SHIFT,
+            '\u{2303}' => modifiers |= Modifiers::CONTROL,
+            '\u{2325}' => modifiers |= Modifiers::ALT,
+            other => last = Some(other),
+        }
+    }
+    let code = match last? {
+        '1' => Code::Digit1,
+        '2' => Code::Digit2,
+        '3' => Code::Digit3,
+        '4' => Code::Digit4,
+        '5' => Code::Digit5,
+        ',' => Code::Comma,
+        '.' => Code::Period,
+        '[' => Code::BracketLeft,
+        ']' => Code::BracketRight,
+        '\u{2190}' => Code::ArrowLeft,
+        '\u{2192}' => Code::ArrowRight,
+        '\u{2191}' => Code::ArrowUp,
+        '\u{2193}' => Code::ArrowDown,
+        'F' => Code::KeyF,
+        'M' => Code::KeyM,
+        'R' => Code::KeyR,
+        'S' => Code::KeyS,
+        _ => return None,
+    };
+    Some(Accelerator::new(Some(modifiers), code))
+}
+
 /// Build the application menu and hand it to the running NSApplication.
 ///
 /// macOS puts the menu above the screen rather than inside the window, and a
@@ -50,7 +130,9 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
 /// Almost every item here is one of the system's own: Apple implements Hide,
 /// Minimize, Full Screen, the clipboard verbs and Quit, and they behave
 /// exactly as they do in every other application because they *are* the same
-/// items. The rest come back through [`menu_command`].
+/// items. The rest come back through [`menu_command`], identified by the same
+/// action ids `keys::ACTIONS` uses — so a menu click and the key it names
+/// travel one path through `handle_keys` and cannot disagree.
 ///
 /// **The accelerators here are not the rebindable shortcuts**, and the two
 /// are deliberately different things:
@@ -59,34 +141,24 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
 ///     pause. They are read by the application, which knows when something is
 ///     being typed into and stands aside.
 ///   * A menu accelerator is owned by the system, which presses it before any
-///     window sees the keystroke. That is why every one of these carries
-///     Command: an unmodified menu accelerator would eat the key everywhere,
-///     including inside the search box.
+///     window sees the keystroke. That is why every one carries Command: an
+///     unmodified menu accelerator would eat the key everywhere, including
+///     inside the search box. It is also why Play or Pause has none — its key
+///     is Space, and a menu that owned Space would mean no spaces typed
+///     anywhere in the program.
 ///
 /// So an action can have both, and usually does: Command-2 from the menu bar
 /// and whatever the settings page says, side by side. Rebinding cannot break
 /// the menu, and the menu cannot break typing. What the menu deliberately
-/// does *not* do is redraw itself when a binding changes — a Mac menu that
+/// does *not* do is relabel itself when a binding changes — a Mac menu that
 /// renamed its own shortcuts would be lying about what the system will do.
 ///
 /// Must be called on the main thread, after the window exists.
 pub fn install_menu_bar() {
-    use muda::accelerator::{Accelerator, Code, Modifiers};
     use muda::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
-    const CMD: Modifiers = Modifiers::META;
-
-    // Every item that does something inside the application is identified by
-    // the same string `keys::ACTIONS` uses. That is not a convenience: it
-    // means a menu click and the key it names travel the identical path
-    // through `handle_keys`, so the two cannot drift into disagreeing about
-    // what "Skip forward" does, and adding an action still means adding one
-    // line to one table.
-    fn item(id: &str, label: &str, accel: Option<Accelerator>) -> MenuItem {
-        MenuItem::with_id(id, label, true, accel)
-    }
-    fn cmd(code: Code) -> Option<Accelerator> {
-        Some(Accelerator::new(Some(CMD), code))
+    fn item(id: &str, label: &str) -> MenuItem {
+        MenuItem::with_id(id, label, true, accelerator(id))
     }
 
     let about = AboutMetadata {
@@ -96,7 +168,7 @@ pub fn install_menu_bar() {
         ..Default::default()
     };
 
-    let settings = item("settings", "Settings\u{2026}", cmd(Code::Comma));
+    let settings = item("settings", "Settings\u{2026}");
     let app = Submenu::new(crate::APP_NAME, true);
     let _ = app.append_items(&[
         &PredefinedMenuItem::about(Some(&format!("About {}", crate::APP_NAME)), Some(about)),
@@ -127,40 +199,30 @@ pub fn install_menu_bar() {
         &PredefinedMenuItem::select_all(None),
     ]);
 
-    // The screens, on the numbers. Every Mac application that has tabs or
-    // views puts them on Command-1 upward, and this program's five screens
-    // are exactly that shape.
+    // The screens, on the numbers. Every Mac application with tabs or views
+    // puts them on Command-1 upward, and five screens are exactly that shape.
     let go_items = [
-        item("home", "Home", cmd(Code::Digit1)),
-        item("guide", "Guide", cmd(Code::Digit2)),
-        item("library", "Library", cmd(Code::Digit3)),
-        item("recordings", "Recordings", cmd(Code::Digit4)),
-        item("downloads", "Downloads", cmd(Code::Digit5)),
+        item("home", "Home"),
+        item("guide", "Guide"),
+        item("library", "Library"),
+        item("recordings", "Recordings"),
+        item("downloads", "Downloads"),
     ];
     let go = Submenu::new("Go", true);
     for entry in &go_items {
         let _ = go.append(entry);
     }
 
-    // Playback. Play/Pause is deliberately without an accelerator: the key
-    // for it is Space, and a menu accelerator on Space is swallowed by the
-    // menu bar before any text field sees it — which would mean no spaces in
-    // the search box. Space still works, because the application reads it
-    // itself and knows when something is being typed into.
     let play_items = [
-        item("play", "Play or Pause", None),
-        item("back", "Skip Back", cmd(Code::ArrowLeft)),
-        item("forward", "Skip Forward", cmd(Code::ArrowRight)),
-        item("volume_up", "Volume Up", cmd(Code::ArrowUp)),
-        item("volume_down", "Volume Down", cmd(Code::ArrowDown)),
-        item(
-            "mute",
-            "Mute",
-            Some(Accelerator::new(Some(CMD | Modifiers::SHIFT), Code::KeyM)),
-        ),
-        item("channel_up", "Previous Channel", cmd(Code::BracketLeft)),
-        item("channel_down", "Next Channel", cmd(Code::BracketRight)),
-        item("stop", "Stop Playback", cmd(Code::Period)),
+        item("play", "Play or Pause"),
+        item("back", "Skip Back"),
+        item("forward", "Skip Forward"),
+        item("volume_up", "Volume Up"),
+        item("volume_down", "Volume Down"),
+        item("mute", "Mute"),
+        item("channel_up", "Previous Channel"),
+        item("channel_down", "Next Channel"),
+        item("stop", "Stop Playback"),
     ];
     let playback = Submenu::new("Playback", true);
     let _ = playback.append(&play_items[0]);
@@ -173,12 +235,8 @@ pub fn install_menu_bar() {
         let _ = playback.append(entry);
     }
 
-    let refresh = item("refresh", "Refresh from the DVR", cmd(Code::KeyR));
-    let rail = item(
-        "rail",
-        "Show or Hide Labels",
-        Some(Accelerator::new(Some(CMD | Modifiers::CONTROL), Code::KeyS)),
-    );
+    let refresh = item("refresh", "Refresh from the DVR");
+    let rail = item("rail", "Show or Hide Labels");
     let view = Submenu::new("View", true);
     let _ = view.append_items(&[
         &refresh,
@@ -186,7 +244,7 @@ pub fn install_menu_bar() {
         &rail,
         &PredefinedMenuItem::separator(),
         // Control-Command-F, from the system, and the same item every other
-        // Mac application has. The program's own full-screen key still works.
+        // Mac application has.
         &PredefinedMenuItem::fullscreen(None),
     ]);
 
@@ -198,7 +256,12 @@ pub fn install_menu_bar() {
         &PredefinedMenuItem::close_window(None),
     ]);
 
-    let github = item("github", &format!("{} on GitHub", crate::APP_NAME), None);
+    let github = MenuItem::with_id(
+        "github",
+        &format!("{} on GitHub", crate::APP_NAME),
+        true,
+        None,
+    );
     let help = Submenu::new("Help", true);
     let _ = help.append(&github);
 
@@ -215,20 +278,19 @@ pub fn install_menu_bar() {
     std::mem::forget((settings, refresh, rail, github, go_items, play_items));
 }
 
-/// Hand a link to the desktop's browser.
-pub fn open_url(url: &str) {
-    let _ = std::process::Command::new("open").arg(url).spawn();
-}
-
 /// Whatever the menu was asked for since the last frame, if anything.
 ///
 /// The string is an action id from `keys::ACTIONS`, or one of the few this
-/// module invents; the caller decides what to do with it. Polled rather than
-/// delivered, because the menu's channel and egui's frame loop are separate
-/// worlds and this is the seam between them.
+/// module invents. Polled rather than delivered, because the menu's channel
+/// and egui's frame loop are separate worlds and this is the seam.
 pub fn menu_command() -> Option<String> {
     let event = muda::MenuEvent::receiver().try_recv().ok()?;
     Some(event.id.0)
+}
+
+/// Hand a link to the desktop's browser.
+pub fn open_url(url: &str) {
+    let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
 /// Appended to a failed connection attempt.

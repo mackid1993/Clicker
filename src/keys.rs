@@ -54,12 +54,28 @@ pub const ACTIONS: &[Action] = &[
     #[cfg(target_os = "macos")]
     action("fullscreen", "Full screen", "F"),
     action("stop", "Stop playback", "Backspace"),
+    // Page Up and Page Down on a desktop keyboard; brackets on a Mac, where
+    // a laptop has no such keys and reaching them means holding fn and an
+    // arrow. The brackets are also what the menu bar puts these on, so the
+    // two agree.
+    #[cfg(not(target_os = "macos"))]
     action("channel_up", "Previous channel", "PageUp"),
+    #[cfg(not(target_os = "macos"))]
     action("channel_down", "Next channel", "PageDown"),
+    #[cfg(target_os = "macos")]
+    action("channel_up", "Previous channel", "["),
+    #[cfg(target_os = "macos")]
+    action("channel_down", "Next channel", "]"),
     // Last, because it is the one that governs the others, and because a
     // reader arriving at it having read the rest understands immediately why
     // it has to keep working when they are all off.
+    //
+    // Not a function key on a Mac: F7 to F9 are the media keys there, so F8
+    // is Play/Pause to the system before this program ever hears about it.
+    #[cfg(not(target_os = "macos"))]
     action("toggle", "Turn shortcuts off or on", "F8"),
+    #[cfg(target_os = "macos")]
+    action("toggle", "Turn shortcuts off or on", "\\"),
 ];
 
 /// The action that enables and disables the rest.
