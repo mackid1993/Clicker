@@ -796,6 +796,22 @@ impl Player {
                 },
             ),
             ("user-agent", &crate::settings::user_agent()),
+            // The other half of BLOCK_FOR_TARGET_TIME=0, which render.h is
+            // explicit about and this embedding never did: "you don't need to
+            // wait yourself, or set the video-timing-offset to 0 instead.
+            // Disabling this without doing anything in addition will result
+            // in A/V sync being slightly off."
+            //
+            // With the offset at its 50ms default, mpv hands over each frame
+            // up to 50ms EARLY — expecting the embedder to hold it until its
+            // display time, which is the blocking this render path rightly
+            // refuses to do on the interface thread. Every frame was being
+            // shown the moment it arrived, early by a different amount each
+            // time. Where video is timed to audio, that is an unevenness no
+            // renderer fix could touch, and it is why the picture was smooth
+            // with no audio and never with it. Zero means: produce the frame
+            // at its display time, so showing it immediately is correct.
+            ("video-timing-offset", "0"),
             // mpv's own remedy for an untrustworthy audio clock, applied in a
             // VM only. The manual names the exact symptom: "an uneven video
             // framerate in a movie which plays fine with --no-audio" — which
