@@ -189,6 +189,24 @@ if [[ ! -f "$DEPS/lib/libmpv.$LIBEXT" ]]; then
     # -Dlua and -Djavascript disabled because the scripts they run are turned
     # off anyway (see NO_SCRIPTS in src/mpv.rs) and LuaJIT's generated code is
     # what macOS's hardened runtime kills.
+    # Audio outputs, named rather than left to detection.
+    #
+    # This is the bug that shipped: every audio output in mpv is `auto` by
+    # default, meaning "build it if the headers happen to be installed", and
+    # the runners had none of them. The build succeeded, the licence gate
+    # passed, the package installed, video played — and the only audio output
+    # compiled in was `null`. Silence, with nothing anywhere saying why.
+    #
+    # `enabled` rather than `auto` for the two that matter, so a machine
+    # missing the headers fails the build instead of producing a mute player.
+    # PipeWire stays `auto` because 22.04's is too old to insist on, and a
+    # PipeWire desktop is served by the PulseAudio output through its own
+    # compatibility layer regardless.
+    AUDIO="-Dalsa=enabled -Dpulse=enabled -Dpipewire=auto -Djack=disabled -Dsndio=disabled"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      AUDIO="-Dcoreaudio=enabled"
+    fi
+    # shellcheck disable=SC2086
     meson setup build \
       --prefix="$DEPS" \
       --libdir=lib \
@@ -198,7 +216,8 @@ if [[ ! -f "$DEPS/lib/libmpv.$LIBEXT" ]]; then
       -Dlua=disabled \
       -Djavascript=disabled \
       -Dmanpage-build=disabled \
-      -Dtests=false
+      -Dtests=false \
+      $AUDIO
     ninja -C build
     ninja -C build install
   )
@@ -299,6 +318,35 @@ for lib in "$STAGE"/*; do
       ;;
   esac
 done
+
+# ------------------------------------------------------------------- audio ---
+#
+# Read out of the library, for the same reason the licence is.
+#
+# mpv builds every audio output conditionally and says nothing when it builds
+# none: the result plays video perfectly and is silent, which is a much harder
+# thing to diagnose than a build that failed. So the finished library is asked
+# what outputs it has, and a staging with nothing but `null` is refused.
+echo "==> audio"
+case "$(uname -s)" in
+  Darwin) WANTED="coreaudio|avfoundation" ;;
+  *)      WANTED="pulse|alsa|pipewire" ;;
+esac
+
+MPV_LIB=$(ls "$STAGE"/libmpv.* 2>/dev/null | head -1)
+OUTPUTS=$(grep -a -oE "^($WANTED)$" "$MPV_LIB" 2>/dev/null | sort -u | tr '\n' ' ')
+# Some platforms keep the names unanchored in the string table.
+[[ -n "${OUTPUTS// /}" ]] || OUTPUTS=$(strings "$MPV_LIB" 2>/dev/null \
+  | grep -xE "$WANTED" | sort -u | tr '\n' ' ')
+
+if [[ -z "${OUTPUTS// /}" ]]; then
+  echo "this libmpv has no audio output compiled in — it would play video and" >&2
+  echo "nothing else. Install the development headers and build again:" >&2
+  echo "  Linux:  libasound2-dev libpulse-dev libpipewire-0.3-dev" >&2
+  echo "  macOS:  CoreAudio comes with the system; check the meson log" >&2
+  exit 1
+fi
+echo "    audio outputs: $OUTPUTS"
 
 ls -1 "$STAGE"
 echo
