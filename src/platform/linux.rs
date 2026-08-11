@@ -12,17 +12,30 @@ use std::path::PathBuf;
 
 // --- window chrome -----------------------------------------------------------
 
-/// Drawn by the application, as on Windows. Client-side decorations are the
-/// norm on the free desktops anyway — GNOME apps draw their own headers —
-/// so a window providing its own frame is at home here.
-pub const NATIVE_FRAME: bool = false;
+/// The compositor's frame, not ours.
+///
+/// This was the other way round to begin with, on the reasoning that the free
+/// desktops draw their own headers anyway. They do — but *they* do it, from
+/// inside the toolkit, in cooperation with the compositor. An undecorated
+/// window that provides its own buttons and its own resize edges depends on
+/// asking the compositor to take over a drag, and what that costs is not
+/// uniform: X11 and Wayland differ, GNOME and KDE differ, and a window whose
+/// buttons do nothing or which cannot be resized is not a stylistic
+/// disappointment, it is a broken window.
+///
+/// So the system decorates it. The title bar sits above a surface that is
+/// otherwise entirely ours, which is what every other application on that
+/// desktop looks like, and the buttons are the ones the user's own theme
+/// draws — working, in the place they expect, on every compositor.
+pub const NATIVE_FRAME: bool = true;
 
-/// Nothing sits in the top-left corner but our own title.
+/// The frame is above the surface rather than over it, so nothing has to be
+/// kept clear the way the traffic lights do on a Mac.
 pub const CAPTION_INSET: f32 = 0.0;
 
-/// An undecorated window, everything inside it ours to draw.
+/// A decorated window, with the interior ours.
 pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
-    viewport.with_decorations(false)
+    viewport.with_decorations(true)
 }
 
 /// Nothing stands between this program and the local network here.

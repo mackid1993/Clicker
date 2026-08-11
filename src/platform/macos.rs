@@ -79,7 +79,22 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("channel_down", "\u{2318}]"),
     ("stop", "\u{2318}."),
     ("rail", "\u{2303}\u{2318}S"),
+    // The system's own item, in the View menu, which macOS puts in every
+    // application and labels itself. Listed so the settings page can show it;
+    // see `system_owned`.
+    ("fullscreen", "\u{2303}\u{2318}F"),
 ];
+
+/// Shortcuts the system owns, which a rebinding here cannot move.
+///
+/// Full screen is macOS's own menu item, Control-Command-F in every
+/// application ever shipped. The program's own full-screen key is rebindable
+/// and works; the *menu's* is not ours to change, so the settings page must
+/// keep saying Control-Command-F however the key beside it is bound. Saying
+/// anything else would be describing a menu that does not exist.
+fn system_owned(id: &str) -> bool {
+    id == "fullscreen"
+}
 
 fn default_shortcut(id: &str) -> Option<&'static str> {
     DEFAULTS
@@ -164,6 +179,9 @@ fn code_for(key: eframe::egui::Key) -> Option<muda::accelerator::Code> {
 /// The settings page prints this beside the key, so the page and the menu
 /// cannot describe different keyboards.
 pub fn menu_shortcut(settings: &crate::settings::Settings, id: &str) -> Option<String> {
+    if system_owned(id) {
+        return default_shortcut(id).map(str::to_string);
+    }
     if let Some(binding) = crate::keys::binding(settings, id) {
         if binding.has_modifier() && code_for(binding.key).is_some() {
             return Some(binding.display());
