@@ -1717,11 +1717,13 @@ impl Player {
             (gl.enable)(GL_SCISSOR_TEST);
         }
 
-        // A swap happened; say so. Thread-safe per mpv's contract.
-        let render_ctx = *link.render_ctx.lock().unwrap();
-        if !render_ctx.0.is_null() {
-            (self.api.render_report_swap)(render_ctx.0);
-        }
+        // No report_swap here, deliberately — two reasons. It exists to feed
+        // display-resample's refresh estimate, and Linux paces against the
+        // audio clock instead. And it takes mpv's internal render lock, which
+        // is the lock the worker holds while rendering: the one call that
+        // made the interface wait for the worker was this one, and waiting on
+        // the worker is the entire thing this thread arrangement exists to
+        // end.
         Some(true)
     }
 
@@ -2322,11 +2324,14 @@ mod worker {
                     internal_format: 0,
                 };
                 let mut flip: c_int = 1;
-                // Block until the frame is due. On the paint thread this was
-                // rightly 0 — waiting there starved the interface — but this
-                // thread exists to wait: mpv holds the render until the
-                // frame's presentation time and cadence comes out right.
-                let mut block: c_int = 1;
+                // Render immediately, do not wait for the frame's due time.
+                // Blocking sounded right for a thread built to wait, and froze
+                // the interface instead: mpv holds its internal render lock
+                // for the whole wait, the interface's report_swap wanted that
+                // same lock once per paint, and the window sat behind the
+                // worker's sleep. The latch above already paces this loop to
+                // mpv's announcements; nothing needs the wait.
+                let mut block: c_int = 0;
                 let mut render_params = [
                     RenderParam { kind: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo as *mut OpenGlFbo as *mut c_void },
                     RenderParam { kind: MPV_RENDER_PARAM_FLIP_Y, data: &mut flip as *mut c_int as *mut c_void },
