@@ -36,12 +36,22 @@ interface. One codebase and one interface on all three: Windows 10 1809 and
 up, macOS 12 and up on both Apple silicon and Intel, and Linux on x86-64 and
 arm64.
 
-> **Status: 1.0.0.** It plays live TV and recordings, schedules, downloads and
+> **Status: 1.1.7.** It plays live TV and recordings, schedules, downloads and
 > seeks. It has been run on the machines it was written on and not much else,
-> so expect the occasional rough edge.
+> so expect the occasional rough edge. Windows is the platform with the most
+> hours on it; macOS and Linux are newer.
 
-Installers are on the
-[Releases page](https://github.com/mackid1993/Clicker/releases).
+Downloads are on the
+[Releases page](https://github.com/mackid1993/Clicker/releases):
+
+| Platform | What to get |
+|---|---|
+| **Windows** | `Clicker-Setup-<version>.exe` — 10 1809 and up |
+| **macOS** | `Clicker-macOS-<version>-universal.zip` — one app, Apple silicon and Intel, signed and notarized |
+| **Linux** | `clicker_<version>_amd64.deb` / `_arm64.deb`, or one line: <br>`curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/install.sh \| bash` |
+
+The Linux one-liner installs the package on Debian, Ubuntu, Mint and Pop, and
+builds from source anywhere else.
 
 ## What it does
 
@@ -71,7 +81,9 @@ Installers are on the
 - **Home screen** — continue watching, up next, and what was recorded recently
 - **Multiple DVRs**, switchable at any time
 - **Can keep running in the notification area** when the window is closed, so a
-  download that is nine tenths transferred survives it — off until asked for
+  download that is nine tenths transferred survives it — off until asked for.
+  Windows only: macOS has the Dock for this and Linux has no tray worth
+  relying on
 - **Reconnects by itself** after sleep, a network change or a DVR restart
 - Full screen, an auto-hiding transport, and keyboard control throughout
 
@@ -107,7 +119,8 @@ The interface is translucent over a Mica-like material, which on Windows 11 is
 something an application can simply ask the compositor for. Asking is also what
 made this Windows 11 only: the material does not exist before build 22000, and
 a window shaped to reveal it on Windows 10 is a transparent hole to the
-desktop.
+desktop. It is also what would have made it Windows-only, since neither macOS
+nor any Linux compositor offers the same thing.
 
 So it is painted instead — a soft, dark, slightly blue-lifted gradient,
 brightest at the top left and falling away across the window. Four pixels,
@@ -140,8 +153,11 @@ transparency trick and no hit-testing to get wrong.
 
 ## Building
 
-Two steps. Nothing is installed on the machine and nothing is written outside
-the repository.
+Every platform is two steps: build libmpv and FFmpeg from source once, then
+build the application. Nothing is installed on the machine and nothing is
+written outside the repository, apart from the build tools each section names.
+
+### Windows
 
 ```powershell
 .\bootstrap.ps1 -Install     # toolchain, then libmpv and FFmpeg from source
@@ -262,7 +278,7 @@ Build on the oldest distribution you intend to support: a binary cannot run on
 a glibc older than the one it was compiled against. CI uses Ubuntu 22.04 for
 that reason.
 
-### Either, while working on it
+### Any of them, while working on it
 
 Once `third_party/mpv` exists, `cargo run` is enough — the application looks
 for its player there as well as inside a bundle, so there is no packaging
