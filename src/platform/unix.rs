@@ -48,6 +48,20 @@ pub const HAS_TRAY: bool = false;
 extern "C" {
     fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlerror() -> *const c_char;
+}
+
+/// Why the last attempt to open a library failed, in the loader's own words.
+///
+/// "libavcodec.so.62: cannot open shared object file" is the sentence that
+/// tells somebody their bundle is missing a dependency; "not found" is the
+/// sentence that tells them nothing.
+pub fn library_error() -> Option<String> {
+    let message = unsafe { dlerror() };
+    if message.is_null() {
+        return None;
+    }
+    Some(unsafe { std::ffi::CStr::from_ptr(message) }.to_string_lossy().into_owned())
 }
 
 /// The same value on macOS and Linux, one of the few flags that is.

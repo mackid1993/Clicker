@@ -57,6 +57,29 @@ if [[ -f "$STAGE/libmpv.so.2" ]]; then
   echo "==> bundling libmpv and FFmpeg"
   mkdir -p "$APPDIR/usr/lib"
   cp -a "$STAGE"/*.so* "$APPDIR/usr/lib/"
+
+  # Teach each library to look beside itself.
+  #
+  # libmpv links libavcodec and the rest, and was built with an rpath naming
+  # the directory it was compiled in — a path that exists on no other
+  # machine. The loader does not search the folder a library happens to live
+  # in, so dlopen fails on a dependency and the application reports the only
+  # thing it can see: that libmpv could not be opened.
+  #
+  # $ORIGIN is the loader's word for "the directory this file is in", and it
+  # is set on the bundled libraries alone. Doing the same job with
+  # LD_LIBRARY_PATH would put this directory in front of the system's for
+  # *every* library, which is how a bundle ends up using its own libstdc++ or
+  # its own Mesa — the failure this AppImage exists to avoid.
+  if command -v patchelf >/dev/null; then
+    for lib in "$APPDIR/usr/lib/"*.so*; do
+      [[ -f "$lib" && ! -L "$lib" ]] || continue
+      patchelf --set-rpath '$ORIGIN' "$lib" 2>/dev/null || true
+    done
+  else
+    echo "patchelf is missing: the bundled libraries will not find each other" >&2
+    exit 1
+  fi
 else
   echo "no staged libmpv — run scripts/build-mpv.sh first" >&2
   exit 1

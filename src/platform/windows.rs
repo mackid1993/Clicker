@@ -342,6 +342,13 @@ pub fn mpv_candidates() -> Vec<String> {
         .collect()
 }
 
+/// Why the last attempt to open a library failed. Windows reports this
+/// through GetLastError rather than a string, and the codes it gives for a
+/// missing dependency are not worth translating, so nothing is offered.
+pub fn library_error() -> Option<String> {
+    None
+}
+
 /// Open a shared library by path or name. Null on failure.
 pub fn open_library(name: &str) -> *mut c_void {
     unsafe { LoadLibraryW(wide(name).as_ptr()) }

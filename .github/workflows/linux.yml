@@ -98,7 +98,7 @@ jobs:
             libgl1-mesa-dev pkg-config meson ninja-build nasm \
             libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev \
             libunibreak-dev python3-setuptools python3-pip autoconf automake libtool \
-            libva-dev libvdpau-dev
+            libva-dev libvdpau-dev patchelf
           # 22.04 ships meson 0.61 and libplacebo wants 0.63 or newer. From
           # pip rather than a newer distribution, because the point of
           # building on 22.04 is its old glibc.

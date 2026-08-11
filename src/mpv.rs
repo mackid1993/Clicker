@@ -322,14 +322,27 @@ fn library() -> Result<&'static Api, String> {
     static LOADED: std::sync::OnceLock<Result<Api, String>> = std::sync::OnceLock::new();
     LOADED
         .get_or_init(|| {
+            // Every attempt's reason is kept, because the interesting failure
+            // is almost never "no such file". A bundled library that cannot
+            // find its own dependencies fails here too, and reporting that as
+            // "not found" sends everybody looking for a missing file that is
+            // sitting right there.
+            let mut refusals = Vec::new();
             for candidate in crate::platform::mpv_candidates() {
                 let module = crate::platform::open_library(&candidate);
                 if !module.is_null() {
                     return unsafe { Api::load(module) };
                 }
+                if let Some(why) = crate::platform::library_error() {
+                    refusals.push(why);
+                }
             }
+            let detail = refusals
+                .last()
+                .map(|why| format!(": {why}"))
+                .unwrap_or_default();
             Err(format!(
-                "{} was not found beside the application",
+                "{} could not be loaded{detail}",
                 crate::platform::MPV_LIBRARY
             ))
         })
