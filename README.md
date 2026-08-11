@@ -306,12 +306,14 @@ dropped frames the whole way through.
 **Playback has a test that produces a number.** `scripts/smoke-play.sh <file
 or URL>` on macOS and Linux, `scripts/smoke-play.ps1` on Windows: it plays the
 source for a minute, reads the player's own log, and compares the frames that
-reached the screen against the frames the decoder produced. It exits non-zero
+reached the screen against the frames the decoder produced, exiting non-zero
 when the renderer falls behind. That comparison is the one a person watching
 cannot make reliably — the failure that costs a night is the one where every
 counter reads healthy and half the frames are missing — and it is what a
 release should turn on rather than an impression formed on whichever machine
-was to hand.
+was to hand. [docs/TESTING.md](docs/TESTING.md) has the rest: what each figure
+in the log means, the environment variables that make a question answerable
+without a rebuild, and what to check before cutting a release.
 
 **Three environment variables exist for testing**, and are the reason a
 playback question no longer costs an evening. `CLICKER_PLAY=<file or URL>`

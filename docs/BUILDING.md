@@ -91,7 +91,10 @@ Build paths and your username are kept out of the shipped binaries:
   destination goes to `make install`), because FFmpeg records its entire
   configure line inside the binary where anyone can read it
 - `RUSTFLAGS=--remap-path-prefix` rewrites the cargo registry, the repository
-  root and the user profile
+  root and the user profile. The same three remaps are applied by `build.ps1`,
+  by the `Makefile`, by `scripts/build-macos.sh` and by `scripts/build-deb.sh`,
+  so a release built at a desk carries no more of that desk than one built by
+  CI does
 - `build.ps1` greps the finished binaries for your profile name and warns if
   any of that failed
 
