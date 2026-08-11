@@ -430,6 +430,10 @@ struct Shared {
     /// the window stops answering the mouse while every counter says the
     /// renderer is healthy.
     render_ms: Mutex<f32>,
+    /// How much smaller than the window the picture is being rendered — a
+    /// step into SCALE_LEVELS — and when it last changed. See the sizing in
+    /// `render_to_texture` for why this exists at all.
+    render_scale: Mutex<(usize, Instant)>,
     /// Frames offered to the renderer, for the skipping below.
     offered: AtomicU64,
     /// When the last frame was drawn, so the figure above is per second of
@@ -771,6 +775,7 @@ impl Player {
             error: Mutex::new(None),
             render_load: Mutex::new(0.0),
             render_ms: Mutex::new(0.0),
+            render_scale: Mutex::new((0, Instant::now())),
             offered: AtomicU64::new(0),
             last_render: Mutex::new(None),
             size: AtomicU64::new(0),
@@ -950,9 +955,49 @@ impl Player {
         //
         // Rounded up to a multiple of 32 so that dragging a window edge does
         // not reallocate the framebuffer on every pixel of the drag.
+        // And fewer pixels still while the graphics driver cannot keep up.
+        //
+        // The measurement that forced this: sixteen milliseconds of wall
+        // clock against two hundredths of a core. The processor is idle — the
+        // driver is the entire budget, and through a translated OpenGL that
+        // budget is spent on pixels. Nothing this code does with its own time
+        // moves the number; the only lever is asking for fewer of them.
+        //
+        // So the picture steps down — 80%, 65%, half — while a frame is
+        // costing more than 14ms, and steps back up once it is comfortably
+        // under 8ms. Two seconds between steps, and the two thresholds are
+        // far enough apart that a step up which proves too expensive settles
+        // back instead of flapping. A slightly soft sixty beats a sharp
+        // thirty that stops responding.
+        //
+        // This is deliberately self-gating rather than platform-gated: on
+        // hardware that keeps up, render costs the millisecond or two it
+        // should and the first threshold is never approached, so Windows,
+        // macOS and a normal Linux desktop never see it engage. The same
+        // machines that were fine stay exactly as they were.
+        const SCALE_LEVELS: [f32; 4] = [1.0, 0.8, 0.65, 0.5];
+        let scale = {
+            let budget = *self.shared.render_ms.lock().unwrap();
+            let mut level = self.shared.render_scale.lock().unwrap();
+            if level.1.elapsed().as_secs_f32() > 2.0 {
+                if budget > 14.0 && level.0 + 1 < SCALE_LEVELS.len() {
+                    level.0 += 1;
+                    level.1 = Instant::now();
+                    crate::log::line(&format!(
+                        "[mpv] a frame is costing the driver {budget:.1}ms; rendering \
+                         the picture at {:.0}% to hold the rate",
+                        SCALE_LEVELS[level.0] * 100.0
+                    ));
+                } else if budget < 8.0 && level.0 > 0 {
+                    level.0 -= 1;
+                    level.1 = Instant::now();
+                }
+            }
+            SCALE_LEVELS[level.0]
+        };
         let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-        let width = round32(target.0).min(video_w);
-        let height = round32(target.1).min(video_h);
+        let width = round32((target.0 as f32 * scale) as i32).min(video_w);
+        let height = round32((target.1 as f32 * scale) as i32).min(video_h);
         let mut surface = self.surface.lock().unwrap();
         let stale = surface
             .as_ref()
@@ -1219,14 +1264,19 @@ impl Player {
                         self.shared.offered.load(Ordering::Relaxed),
                         self.shared.dropped.load(Ordering::Relaxed),
                     );
+                    let at = surface
+                        .as_ref()
+                        .map(|s| format!("{}x{}", s.width, s.height))
+                        .unwrap_or_default();
                     crate::log::line(&format!(
-                        "[mpv] render {:.1}ms wall, {:.2} of a core, {} of {} frames \
-                         skipped ({})",
+                        "[mpv] render {:.1}ms wall, {:.2} of a core, at {}, {} of {} \
+                         frames skipped ({})",
                         *smoothed,
                         load,
+                        at,
                         dropped,
                         offered,
-                        if load > 0.9 { "processor bound" } else { "waiting on the display" }
+                        if load > 0.9 { "processor bound" } else { "the driver is the limit" }
                     ));
                 }
             }
