@@ -414,6 +414,15 @@ struct Shared {
     repaint: Box<dyn Fn() + Send + Sync>,
 }
 
+/// Whether this is the Flatpak build, running inside its sandbox.
+///
+/// The file is what Flatpak itself puts there for exactly this question, and
+/// asking it costs one stat, once.
+fn in_flatpak() -> bool {
+    static INSIDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *INSIDE.get_or_init(|| std::path::Path::new("/.flatpak-info").exists())
+}
+
 /// The built-in Lua scripts, every one of them turned off.
 ///
 /// mpv ships nine, and every one is dead weight here: they draw an on-screen
@@ -551,7 +560,31 @@ impl Player {
             // for that before any graphics context exists, and never exports
             // the vendor symbols that ask for the discrete chip. See
             // `prefer_integrated_gpu`.
-            ("hwdec", if software_decoding { "no" } else { "auto-safe" }),
+            // "auto-safe" everywhere but a Flatpak, where it is "auto-copy".
+            //
+            // auto-safe lets mpv keep decoded frames in driver memory and
+            // hand this application the hardware surface. That needs the
+            // decoder's driver and the GL context's driver to be the same
+            // Mesa — true on a normal Linux desktop, and routinely false
+            // inside a sandbox, where the runtime ships one Mesa and the host
+            // has another. What that produces is a stream that opens, reports
+            // no error, and then stalls or tears: exactly "live TV craps
+            // out", and only on the packaged build.
+            //
+            // auto-copy still decodes on the chip and copies the frame back
+            // to normal memory, which costs a little bandwidth and works
+            // whatever the two drivers are. Windows and macOS are untouched:
+            // there is one driver stack on each and auto-safe is right there.
+            (
+                "hwdec",
+                if software_decoding {
+                    "no"
+                } else if in_flatpak() {
+                    "auto-copy"
+                } else {
+                    "auto-safe"
+                },
+            ),
             // Which codecs the graphics chip is allowed to decode.
             //
             // "auto-safe" whitelists decoding *methods*, not codecs, so it will

@@ -133,6 +133,22 @@ impl Timeshift {
                             let upto = total - keep_bytes;
                             if crate::platform::punch_hole(&file, gone, upto - gone) {
                                 task_discarded.store(upto, Ordering::SeqCst);
+                            } else {
+                                // Said once, not every chunk. A file system
+                                // that will not punch holes is survivable —
+                                // the buffer keeps everything it is given —
+                                // but it is also the reason a long live
+                                // session eventually fills a disk, and that
+                                // is worth being able to read in a log
+                                // rather than deduce from a full disk.
+                                static COMPLAINED: std::sync::atomic::AtomicBool =
+                                    std::sync::atomic::AtomicBool::new(false);
+                                if !COMPLAINED.swap(true, Ordering::SeqCst) {
+                                    crate::log::line(
+                                        "[timeshift] this file system will not release \
+                                         disk behind the buffer; it will keep growing",
+                                    );
+                                }
                             }
                         }
                     }
