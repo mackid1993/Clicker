@@ -569,6 +569,8 @@ struct App {
     /// Playing a downloaded local file. Quality does not apply there: the file
     /// is the file, and downloads always fetch the original.
     playing_local: bool,
+    /// Whether `CLICKER_PLAY` has had its turn. See `open_from_environment`.
+    environment_opened: bool,
     /// How the current source is being carried, for the stats card. Known here
     /// rather than asked of the player: mpv opens the address and does not
     /// report back which of these it decided the address was.
@@ -774,6 +776,7 @@ impl App {
             show_quality: false,
             current_recording: None,
             playing_local: false,
+            environment_opened: false,
             transport: None,
             open_generation: 0,
             timeshift: None,
@@ -1199,6 +1202,10 @@ impl App {
                             player.present(
                                 gl,
                                 [at.left_px, at.from_bottom_px, at.width_px, at.height_px],
+                                [
+                                    info.screen_size_px[0] as i32,
+                                    info.screen_size_px[1] as i32,
+                                ],
                             )
                         };
                     }
@@ -1294,6 +1301,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.open_from_environment();
         self.pump_tray(ctx);
         self.pump_menu();
         self.drain_messages();
@@ -2858,6 +2866,45 @@ impl App {
                 .unwrap_or(recording.playback_time);
             self.open_recording(recording, position);
         }
+    }
+
+    /// Play whatever `CLICKER_PLAY` names, once, at startup.
+    ///
+    /// A file or an address, opened as though it had been picked from the
+    /// library. It exists so that playback can be started from a script, on a
+    /// machine being tested, without a server, a login or a hand on the mouse:
+    ///
+    /// ```sh
+    /// CLICKER_PLAY=~/test60.mp4 clicker
+    /// ```
+    ///
+    /// Which is worth a field and a dozen lines because of what it replaces.
+    /// Every playback question this port has asked — is it the renderer, the
+    /// audio clock, the driver, this option or that one — was answered by
+    /// building, installing, launching, signing in, tuning a channel and
+    /// watching, then doing it again for the next theory, with no two runs
+    /// carrying quite the same content. One repeatable file, driven from a
+    /// script, is how those questions stop taking an evening each.
+    fn open_from_environment(&mut self) {
+        if self.environment_opened {
+            return;
+        }
+        self.environment_opened = true;
+        let Some(uri) = std::env::var("CLICKER_PLAY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        crate::log::line(&format!("[clicker] opening {uri} from the environment"));
+        let transport = stream::Transport::of(&uri);
+        self.playing_local = transport == stream::Transport::Direct && !uri.contains("://");
+        self.loading = Loading::recording(&uri);
+        self.live_channel = None;
+        self.current_recording = None;
+        self.commercials.clear();
+        self.spawn_open(uri, transport, 0.0, stream::JoinAt::Start);
     }
 
     /// Open a source off the UI thread.

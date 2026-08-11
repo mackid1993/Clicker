@@ -40,7 +40,7 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::stream::{JoinAt, Transport};
 
@@ -71,12 +71,6 @@ const MPV_RENDER_PARAM_FLIP_Y: c_int = 4;
 const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: c_int = 11;
 
 const MPV_RENDER_UPDATE_FRAME: u64 = 1;
-
-// For the fences the render thread hands the interface.
-#[cfg(target_os = "linux")]
-const GL_SYNC_GPU_COMMANDS_COMPLETE: u32 = 0x9117;
-#[cfg(target_os = "linux")]
-const GL_TIMEOUT_IGNORED: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
 #[repr(C)]
 struct OpenGlInitParams {
@@ -202,13 +196,10 @@ pub struct GlFns {
     enable: unsafe extern "system" fn(u32),
     disable: unsafe extern "system" fn(u32),
     is_enabled: unsafe extern "system" fn(u32) -> u8,
-    // For handing frames between two contexts: the worker fences after it
-    // renders, the interface waits on that fence — on the GPU, not the CPU —
-    // before it blits. Core since GL 3.2 and shared across a share group.
-    fence_sync: unsafe extern "system" fn(u32, u32) -> *mut c_void,
-    wait_sync: unsafe extern "system" fn(*mut c_void, u32, u64),
-    delete_sync: unsafe extern "system" fn(*mut c_void),
     flush: unsafe extern "system" fn(),
+    // How the render thread hands a frame over: it finishes, then publishes.
+    // A GL fence was tried first and is the reason the thread was parked for
+    // a while — see the worker, which explains why it is not one.
     finish: unsafe extern "system" fn(),
 }
 
@@ -245,9 +236,6 @@ impl GlFns {
             enable: find("glEnable")?,
             disable: find("glDisable")?,
             is_enabled: find("glIsEnabled")?,
-            fence_sync: find("glFenceSync")?,
-            wait_sync: find("glWaitSync")?,
-            delete_sync: find("glDeleteSync")?,
             flush: find("glFlush")?,
             finish: find("glFinish")?,
         })
@@ -456,6 +444,16 @@ struct Shared {
     render_ms: Mutex<f32>,
     /// Frames offered to the renderer, for the skipping below.
     offered: AtomicU64,
+    /// Frames actually put on screen, and when that was last reported.
+    ///
+    /// The one number that settles an argument about playback. Render times,
+    /// processor load and drop counters can all read healthy while half the
+    /// frames never reach the glass, and every renderer theory this project
+    /// has entertained was argued from one of those instead of from this.
+    presented: AtomicU64,
+    reported: Mutex<Option<Instant>>,
+    last_reported: AtomicU64,
+    last_painted: AtomicU64,
     /// When the last frame was drawn, so the figure above is per second of
     /// real time rather than per second of drawing.
     last_render: Mutex<Option<Instant>>,
@@ -491,6 +489,33 @@ fn in_vm() -> bool {
     {
         false
     }
+}
+
+/// Where mpv is asked to draw its picture.
+///
+/// `Offscreen` is the arrangement this application is built around: mpv draws
+/// into a framebuffer of its own and the interface blits that into whatever
+/// egui is drawing into, which is what lets the controls, the guide and the
+/// picture share one window and one pass.
+///
+/// `Window` hands mpv the window's own framebuffer instead — no offscreen
+/// target, no blit — and with it the whole window, so the interface's own
+/// drawing underneath is overwritten. That is not something to ship, and it
+/// is the only way to weigh the offscreen target itself: `CLICKER_VIDEO=window`
+/// against the default, on the machine in question, reading the frame rate
+/// this file now logs.
+#[derive(Clone, Copy, PartialEq)]
+enum VideoTarget {
+    Offscreen,
+    Window,
+}
+
+fn video_target() -> VideoTarget {
+    static CHOSEN: std::sync::OnceLock<VideoTarget> = std::sync::OnceLock::new();
+    *CHOSEN.get_or_init(|| match std::env::var("CLICKER_VIDEO").as_deref() {
+        Ok("window") => VideoTarget::Window,
+        _ => VideoTarget::Offscreen,
+    })
 }
 
 /// The built-in Lua scripts, every one of them turned off.
@@ -686,19 +711,18 @@ impl Player {
                     "auto-safe"
                 },
             ),
-            // Which codecs the graphics chip is allowed to decode.
+            // No `hwdec-codecs` here, deliberately, and it is worth writing
+            // down why the obvious hazard is already handled. `auto-safe`
+            // whitelists decoding *methods*, not codecs, so a chip can be
+            // handed a stream it cannot decode and report success — Intel's
+            // Arc parts removed the MPEG-2 decoder outright, and a great deal
+            // of broadcast television is still MPEG-2, which comes out as
+            // macroblock hash with every counter reading healthy. mpv's own
+            // default for that option is already
+            // `h264,vc1,hevc,vp8,vp9,av1,prores,prores_raw,ffv1,dpx`, with
+            // MPEG-2 absent, so the protection is the default and setting it
+            // here would only be a chance to get it wrong.
             //
-            // "auto-safe" whitelists decoding *methods*, not codecs, so it will
-            // hand a stream to a chip that cannot decode it and take the
-            // driver's word that it worked. Intel's Arc parts removed the
-            // MPEG-2 decoder outright, and a great deal of cable and broadcast
-            // television is still MPEG-2: the result is a picture made of
-            // macroblock hash, with the decoder reporting no dropped frames and
-            // no errors, because as far as it knows nothing went wrong.
-            //
-            // These four are the ones that are universally implemented and
-            // worth offloading. MPEG-2 and VC-1 are old enough that decoding
-            // them on the processor costs almost nothing.
             // The read-ahead this application argued itself into having: mpv
             // caches compressed packets, which is minutes of protection for
             // the memory a couple of seconds of decoded frames would cost.
@@ -814,8 +838,10 @@ impl Player {
             // with no audio and never with it. Zero means: produce the frame
             // at its display time, so showing it immediately is correct.
             ("video-timing-offset", "0"),
-            // mpv's own remedy for an untrustworthy audio clock, applied in a
-            // VM only. The manual names the exact symptom: "an uneven video
+            // mpv's own remedy for an untrustworthy audio clock, on every
+            // Linux rather than only in a VM: the axis that matters is the
+            // audio clock pacing the video, which is all Linux, not the
+            // hypervisor. The manual names the exact symptom: "an uneven video
             // framerate in a movie which plays fine with --no-audio" — which
             // is word for word what this machine showed — and prescribes
             // autosync to smooth video timing against jittery audio delay
@@ -825,20 +851,16 @@ impl Player {
                 "autosync",
                 if cfg!(target_os = "linux") { "30" } else { "" },
             ),
-            // Which audio output, overridable from the environment.
+            // Which audio output, from the environment only; mpv's own probe
+            // order stands otherwise.
             //
-            // For separating causes, and it earned its place the hard way: on
-            // Linux, video presentation is slaved to the audio clock, so a
-            // sound path that jitters or underruns — a virtual machine's, for
-            // one — makes *video* stumble while every video counter reads
-            // healthy. Muting the build made the picture smooth, which was
-            // the tell. `CLICKER_AO=alsa clicker` tries the device directly;
-            // `CLICKER_AO=null clicker` silences it entirely and is the
-            // ten-second test of whether audio timing is the culprit at all.
-            // Unset, mpv picks as it always did.
-            // Which audio output, from the environment only. mpv's own probe
-            // order stands otherwise. CLICKER_AO=null remains the ten-second
-            // test of whether a sound device is what is ruining the video.
+            // It earned its place the hard way: on Linux video presentation is
+            // slaved to the audio clock, so a sound path that jitters or
+            // underruns — a virtual machine's, for one — makes *video* stumble
+            // while every video counter reads healthy. `CLICKER_AO=alsa`
+            // tries the device directly; `CLICKER_AO=null` silences it
+            // entirely and is the ten-second test of whether a sound device is
+            // what is ruining the picture.
             ("ao", &std::env::var("CLICKER_AO").unwrap_or_default()),
             // Where a live playlist is joined. The HLS demuxer defaults to
             // three segments from the end, which for Channels would throw away
@@ -873,6 +895,28 @@ impl Player {
             }
         }
 
+        // Anything else, from the environment, applied last so it wins.
+        //
+        // `CLICKER_MPV_OPTS="profile=fast,hwdec=no"` — mpv's own option names,
+        // comma separated. This exists because the alternative is what this
+        // port kept doing: rebuild, reinstall and replay a channel to learn
+        // what one option does. Every knob mpv has is now a restart away, and
+        // what gets hard-coded above is only ever what a run like that proved.
+        if let Ok(extra) = std::env::var("CLICKER_MPV_OPTS") {
+            for option in extra.split(',').filter(|s| !s.trim().is_empty()) {
+                let (name, value) = option.split_once('=').unwrap_or((option, "yes"));
+                let (name, value) = (name.trim(), value.trim());
+                let (Ok(n), Ok(v)) = (CString::new(name), CString::new(value)) else {
+                    continue;
+                };
+                let rc = unsafe { (api.set_option)(ctx.0, n.as_ptr(), v.as_ptr()) };
+                crate::log::line(&format!(
+                    "[mpv] {name}={value} from the environment{}",
+                    if rc < 0 { ": refused" } else { "" }
+                ));
+            }
+        }
+
         // Everything mpv has to say, into the log file beside the crash log.
         // This is the thing the built-in pipeline could not give a user.
         let level = CString::new("info").unwrap();
@@ -888,6 +932,10 @@ impl Player {
             render_load: Mutex::new(0.0),
             render_ms: Mutex::new(0.0),
             offered: AtomicU64::new(0),
+            presented: AtomicU64::new(0),
+            reported: Mutex::new(None),
+            last_reported: AtomicU64::new(0),
+            last_painted: AtomicU64::new(0),
             last_render: Mutex::new(None),
             size: AtomicU64::new(0),
             repaint: Box::new(repaint),
@@ -1054,7 +1102,7 @@ impl Player {
         if video_w == 0 || video_h == 0 {
             return None;
         }
-        let (video_w, video_h) = (video_w as i32, video_h as i32);
+        let video_w = video_w as i32;
 
         if !self.ensure_renderer(gl) {
             return None;
@@ -1361,44 +1409,6 @@ impl Player {
             } else {
                 spent_ms
             };
-            // Said once a second at most, and only when it is bad enough to
-            // be the reason somebody is complaining that the window has gone
-            // stiff.
-            if *smoothed > 10.0 {
-                static SAID: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let now = wall_before.elapsed().as_secs();
-                let _ = now;
-                if self.shared.offered.load(Ordering::Relaxed) % 300 == 0
-                    && SAID.fetch_add(1, Ordering::Relaxed) < 20
-                {
-                    // Both numbers, because one of them is meaningless alone.
-                    // A long wall time with a low load is the driver waiting
-                    // for the display, which is normal and costs nothing. A
-                    // long wall time with a load near 1.0 is a core being
-                    // spent, which is the only case where skipping a frame
-                    // buys anything.
-                    let load = *self.shared.render_load.lock().unwrap();
-                    let (offered, dropped) = (
-                        self.shared.offered.load(Ordering::Relaxed),
-                        self.shared.dropped.load(Ordering::Relaxed),
-                    );
-                    let at = surface
-                        .as_ref()
-                        .map(|s| format!("{}x{}", s.width, s.height))
-                        .unwrap_or_default();
-                    crate::log::line(&format!(
-                        "[mpv] render {:.1}ms wall, {:.2} of a core, at {}, {} of {} \
-                         frames skipped ({})",
-                        *smoothed,
-                        load,
-                        at,
-                        dropped,
-                        offered,
-                        if load > 0.9 { "processor bound" } else { "the driver is the limit" }
-                    ));
-                }
-            }
         }
 
         let cpu = thread_cpu_ms() - cpu_before;
@@ -1581,13 +1591,19 @@ impl Player {
     /// # Safety
     ///
     /// An OpenGL context must be current on the calling thread.
-    pub unsafe fn present(&self, gl: &GlFns, rect: [i32; 4]) -> bool {
+    pub unsafe fn present(&self, gl: &GlFns, rect: [i32; 4], screen: [i32; 2]) -> bool {
         // The rect first, because the renderer now sizes its target to it.
         let [x, bottom, w, h] = rect;
         if w <= 0 || h <= 0 {
             return false;
         }
         let top = bottom + h;
+
+        // Straight into the window, when something is being weighed. See
+        // `VideoTarget`: this is a diagnostic arm, not a mode to ship.
+        if video_target() == VideoTarget::Window {
+            return self.present_to_window(gl, screen);
+        }
 
         // The render thread, where one exists. mpv renders over there, into
         // shared textures, and this thread only waits on a GPU-side fence and
@@ -1651,7 +1667,128 @@ impl Player {
         if !render_ctx.0.is_null() {
             (self.api.render_report_swap)(render_ctx.0);
         }
+        self.note_present((sw, sh));
         true
+    }
+
+    /// Draw the frame into the window's own framebuffer, with no target of
+    /// this application's own and no blit.
+    ///
+    /// A measuring instrument. It overwrites everything egui has drawn so far
+    /// this frame, because mpv is being handed the whole window and clears it,
+    /// and it ignores where the picture was supposed to sit. What it answers
+    /// is the one question the shipped path cannot: how much of a frame goes
+    /// on the offscreen target and the blit, rather than on decoding and
+    /// shading the picture. See `VideoTarget`.
+    ///
+    /// # Safety
+    ///
+    /// An OpenGL context must be current on the calling thread.
+    unsafe fn present_to_window(&self, gl: &GlFns, screen: [i32; 2]) -> bool {
+        let [sw, sh] = screen;
+        if sw <= 0 || sh <= 0 || !self.ensure_renderer(gl) {
+            return false;
+        }
+        let render_ctx = *self.render_ctx.lock().unwrap();
+        if render_ctx.0.is_null() {
+            return false;
+        }
+        if (self.api.render_update)(render_ctx.0) & MPV_RENDER_UPDATE_FRAME == 0 {
+            return false;
+        }
+
+        let wall_before = Instant::now();
+        let mut fbo = OpenGlFbo {
+            fbo: 0,
+            w: sw,
+            h: sh,
+            internal_format: 0,
+        };
+        let mut flip: c_int = 1;
+        let mut block: c_int = 0;
+        let mut params = [
+            RenderParam {
+                kind: MPV_RENDER_PARAM_OPENGL_FBO,
+                data: &mut fbo as *mut OpenGlFbo as *mut c_void,
+            },
+            RenderParam {
+                kind: MPV_RENDER_PARAM_FLIP_Y,
+                data: &mut flip as *mut c_int as *mut c_void,
+            },
+            RenderParam {
+                kind: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                data: &mut block as *mut c_int as *mut c_void,
+            },
+            RenderParam {
+                kind: MPV_RENDER_PARAM_INVALID,
+                data: std::ptr::null_mut(),
+            },
+        ];
+        let rc = (self.api.render)(render_ctx.0, params.as_mut_ptr());
+        if rc < 0 {
+            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        self.shared.offered.fetch_add(1, Ordering::Relaxed);
+        self.shared.rendered.fetch_add(1, Ordering::Relaxed);
+        let spent_ms = wall_before.elapsed().as_secs_f32() * 1000.0;
+        {
+            let mut smoothed = self.shared.render_ms.lock().unwrap();
+            *smoothed = if *smoothed > 0.0 {
+                *smoothed * 0.85 + spent_ms * 0.15
+            } else {
+                spent_ms
+            };
+        }
+        (self.api.render_report_swap)(render_ctx.0);
+        self.note_present((sw, sh));
+        true
+    }
+
+    /// Say, every few seconds, what is actually reaching the screen.
+    ///
+    /// Frames on the glass per second, mpv's own count of what it threw away,
+    /// and how long the render call is taking. Enough, in one line, to tell
+    /// the three cases apart that this port kept confusing: a renderer that is
+    /// slow, a renderer that is merely waiting, and a player dropping frames
+    /// because the audio clock says they are late.
+    fn note_present(&self, at: (i32, i32)) {
+        let count = self.shared.presented.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut reported = self.shared.reported.lock().unwrap();
+        let Some(since) = reported.as_ref().map(|t| t.elapsed().as_secs_f32()) else {
+            *reported = Some(Instant::now());
+            return;
+        };
+        if since < 5.0 {
+            return;
+        }
+        *reported = Some(Instant::now());
+        let painted = self.shared.rendered.load(Ordering::Relaxed);
+        let before = self.shared.last_reported.swap(count, Ordering::Relaxed);
+        let before_painted = self.shared.last_painted.swap(painted, Ordering::Relaxed);
+        drop(reported);
+
+        // Two rates, because they answer different questions and this file
+        // spent a session confusing them. Frames are pictures mpv actually
+        // drew, which is what playback looks like. Paints are times the
+        // interface put something on screen, which is how responsive the
+        // window is — and which counts a frame twice when the interface is
+        // faster than the video.
+        let frames = painted.saturating_sub(before_painted) as f32 / since;
+        let paints = count.saturating_sub(before) as f32 / since;
+        let render_ms = *self.shared.render_ms.lock().unwrap();
+        let load = *self.shared.render_load.lock().unwrap();
+        let dropped = self.get_i64("frame-drop-count").unwrap_or(-1);
+        let late = self.get_i64("vo-delayed-frame-count").unwrap_or(-1);
+        let decoder = self.get_f64("estimated-vf-fps").unwrap_or(0.0);
+        let skipped = self.shared.dropped.load(Ordering::Relaxed);
+        let offered = self.shared.offered.load(Ordering::Relaxed);
+        crate::log::line(&format!(
+            "[mpv] {frames:.1}fps drawn, {paints:.1}fps painted, at {}x{}; decoder \
+             {decoder:.1}fps, mpv dropped {dropped}, late {late}; render \
+             {render_ms:.1}ms at {load:.2} of a core, {skipped} of {offered} skipped",
+            at.0, at.1
+        ));
     }
 
     /// Release the OpenGL objects, on the thread that owns them.
@@ -1729,16 +1866,14 @@ impl Player {
         let [x, bottom, w, h] = rect;
         let top = bottom + h;
 
-        let (texs, front, fence, gen, painted) = {
+        let (texs, front, gen, painted) = {
             let mut st = link.state.lock().unwrap();
             if st.want != (w, h) {
                 st.want = (w, h);
                 link.pending.store(true, Ordering::Release);
                 link.wake.notify_one();
             }
-            let fence = st.fence;
-            st.fence = 0;
-            (st.tex, st.front, fence, st.generation, st.painted)
+            (st.tex, st.front, st.generation, st.painted)
         };
         if !painted {
             return Some(false);
@@ -1746,8 +1881,6 @@ impl Player {
 
         // Nothing to wait on: the worker publishes only frames the GPU has
         // finished, so by the time a texture is visible here it is whole.
-        let _ = fence;
-
         let mut cache = self.ui_fbos.lock().unwrap();
         if cache.0 != gen {
             for fbo in cache.1 {
@@ -1807,6 +1940,7 @@ impl Player {
         // made the interface wait for the worker was this one, and waiting on
         // the worker is the entire thing this thread arrangement exists to
         // end.
+        self.note_present((sw, sh));
         Some(true)
     }
 
@@ -1872,10 +2006,6 @@ impl Player {
     /// text back, so there is nothing here for the interface to render.
     pub fn caption(&self) -> Option<String> {
         None
-    }
-
-    pub fn stop(&self) {
-        self.shared.quit.store(true, Ordering::SeqCst);
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -2170,9 +2300,6 @@ mod worker {
     pub struct Frames {
         pub tex: [u32; 2],
         pub front: usize,
-        /// A GLsync from the worker, or 0. Taken by the interface, waited on
-        /// GPU-side, and deleted there.
-        pub fence: usize,
         pub width: i32,
         pub height: i32,
         pub want: (i32, i32),
@@ -2196,7 +2323,6 @@ mod worker {
             state: Mutex::new(Frames {
                 tex: [0, 0],
                 front: 0,
-                fence: 0,
                 width: 0,
                 height: 0,
                 want: (0, 0),
@@ -2380,10 +2506,6 @@ mod worker {
                     // The textures exist for the other context once flushed.
                     (gl.flush)();
                     let mut st = link.state.lock().unwrap();
-                    if st.fence != 0 {
-                        (gl.delete_sync)(st.fence as *mut c_void);
-                        st.fence = 0;
-                    }
                     st.tex = texs;
                     st.front = 0;
                     st.width = width;
@@ -2474,10 +2596,6 @@ mod worker {
             *link.render_ctx.lock().unwrap() = Ptr(std::ptr::null_mut());
             {
                 let mut st = link.state.lock().unwrap();
-                if st.fence != 0 {
-                    (gl.delete_sync)(st.fence as *mut c_void);
-                    st.fence = 0;
-                }
                 st.painted = false;
                 st.tex = [0, 0];
             }
