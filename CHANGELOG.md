@@ -1,5 +1,84 @@
 # Changelog
 
+## 1.2.1
+
+**The picture is drawn at the resolution the display actually has.** It was
+capped at the resolution of the stream, so on a high-DPI screen a 1080-line
+broadcast was rendered at 1920 pixels wide and then stretched to fill — a
+bilinear enlargement of an already-finished picture, on every frame. The cap
+was defended on the grounds that rendering above the source only invents
+pixels the blit could invent more cheaply, and that is wrong where it counts:
+mpv scales from the source planes in one pass with the scaler it is
+configured with, and a blit can only stretch a finished picture. On a
+3456-pixel-wide display the same machine now draws at 3456x1944 and holds
+sixty frames a second with the render call under a millisecond.
+
+Nothing is resampled for free any more either. The framebuffer's width was
+rounded up to a multiple of 32 so that dragging a window edge would not
+reallocate a texture on every pixel of the drag, and the picture was then
+blitted from 1728 pixels into 1712 — a fractional resample of every frame,
+for nothing. The rounding now applies to the texture and not to what mpv is
+asked to draw, so the blit is one to one.
+
+**Interlaced channels are deinterlaced.** They were not, at all. A great deal
+of broadcast television is 1080i — most network affiliates that are not 720p
+— and interlaced video shown without deinterlacing does not look soft, it
+looks torn: comb teeth along every moving edge. Only streams the decoder
+flags as interlaced are touched, so the progressive channels beside them are
+unchanged.
+
+**Picture scaling is a setting, in Settings under Video.** Automatic is the
+default and is right for almost everybody: good scaling where the graphics
+are real, and mpv's cheap defaults where the driver reports itself software
+or virtualised and a better scaler would be paid for in dropped frames. Fast
+is the cheap path always. Detailed adds debanding, which costs real GPU time
+and earns it on low-bitrate channels that arrive with banding already in
+them.
+
+Nothing sharpens, deliberately. Broadcast is compressed, so its edges include
+the compression — mosquito noise around captions, block boundaries in dark
+scenes — and both a sharp kernel and an unsharp mask make those crisper along
+with the picture. What the good profiles use is catmull_rom upscaling, which
+is sharp without the haloes spline36 leaves, mitchell downscaling with
+correct and linear downscaling because shrinking is the common case, and
+dithering, which stops being optional once anything scales in linear light.
+
+**Full screen letterboxes to black** rather than showing the interface's own
+material around a picture that is not the shape of the screen.
+
+**One player on all three platforms.** The render worker, its graphics-context
+handoff, the sizing, the scaling profiles and the deinterlacer are shared code
+now; what differs is how each graphics API names the context that is current —
+EGL, WGL and CGL — and that lives behind the platform module with the rest of
+the platform differences. Two rendering paths meant a fault found on one
+platform had to be reasoned about twice and could be fixed on the wrong one.
+
+The worker is the default where video is paced by the audio clock, which is
+Linux, and opt-in elsewhere: display-sync needs drawing a frame and putting it
+on screen to be one loop it can time against, and a render thread makes them
+two. `CLICKER_RENDER_THREAD=1` or `=0` overrides either way, on any platform.
+
+**The recording mark in the guide means what it says.** A season pass set to
+new episodes only was marking every showing of the series, including the
+repeats the DVR had no intention of recording. A cell is marked when the pass
+will actually take that showing; cancelling a pass is still offered from any
+showing of the series.
+
+**Text no longer smears on a virtualised GPU.** egui keeps every
+glyph in one texture and sizes it to whatever the driver says its maximum
+side is — virgl answers 16384, so the atlas came out 8192 pixels wide and a
+few dozen tall, a shape every real driver handles and that one mangles into
+horizontal streaks from the first frame. Where the graphics report themselves
+translated or emulated the maximum is capped at 2048, which is thousands more
+glyphs than this program draws.
+
+**The .deb carries what a package is supposed to carry:** a copyright file
+covering every bundled component and how to rebuild it from source rather
+than only this program's own MIT terms, AppStream metadata so a software
+centre knows the name, the licence and the icon rather than calling it
+unknown, and the icon in every size a desktop looks for instead of only the
+largest.
+
 ## 1.2.0
 
 **Clicker runs on macOS and Linux.** One codebase, one interface — the same
