@@ -8,8 +8,11 @@
 #
 # The deliberate omissions, so nobody wonders:
 #
-#   * No Intel slice. The machines this is for are Apple silicon, and a
-#     universal binary doubles the surface nobody tests.
+#   * Universal when it can be, Apple silicon when it cannot. If the
+#     x86_64 target is installed the two slices are built and `lipo`d into
+#     one binary that runs on any Mac; if it is not, the build says so and
+#     produces an arm64-only bundle rather than failing. Add the target
+#     with: rustup target add x86_64-apple-darwin
 #   * libmpv is NOT bundled. The app looks in Contents/Frameworks first and
 #     then in /opt/homebrew/lib, so `brew install mpv` is the runtime
 #     prerequisite. Bundling means carrying mpv's entire dylib closure —
@@ -52,17 +55,40 @@ OUT="$ROOT/target/macos"
 APP="$OUT/Clicker.app"
 
 if [[ "$(uname -m)" != "arm64" ]]; then
-  echo "This build is Apple silicon only, and this machine is $(uname -m)." >&2
+  echo "This build runs on Apple silicon, and this machine is $(uname -m)." >&2
   exit 1
 fi
 
-echo "==> cargo build --release"
-cargo build --release --manifest-path "$ROOT/Cargo.toml"
+# Both architectures when the toolchain has both.
+#
+# Intel Macs are not the future and are still plenty of people's present, and
+# a universal binary costs one extra compile rather than a second pipeline.
+# The Intel slice is cross-compiled here on Apple silicon, which Rust and the
+# system linker both do without ceremony.
+ARM_BIN="$ROOT/target/aarch64-apple-darwin/release/clicker"
+INTEL_BIN="$ROOT/target/x86_64-apple-darwin/release/clicker"
+
+echo "==> cargo build --release (arm64)"
+cargo build --release --target aarch64-apple-darwin --manifest-path "$ROOT/Cargo.toml"
+
+UNIVERSAL=no
+if rustc --print target-list >/dev/null 2>&1 &&    rustup target list --installed 2>/dev/null | grep -q '^x86_64-apple-darwin$'; then
+  echo "==> cargo build --release (x86_64)"
+  cargo build --release --target x86_64-apple-darwin --manifest-path "$ROOT/Cargo.toml"
+  UNIVERSAL=yes
+else
+  echo "==> arm64 only (add the Intel slice with: rustup target add x86_64-apple-darwin)"
+fi
 
 echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
-cp "$ROOT/target/release/clicker" "$APP/Contents/MacOS/Clicker"
+if [[ "$UNIVERSAL" == "yes" ]]; then
+  lipo -create "$ARM_BIN" "$INTEL_BIN" -output "$APP/Contents/MacOS/Clicker"
+  echo "    universal: $(lipo -archs "$APP/Contents/MacOS/Clicker")"
+else
+  cp "$ARM_BIN" "$APP/Contents/MacOS/Clicker"
+fi
 
 # The version out of Cargo.toml, which build.ps1 keeps as the single source
 # of truth on every platform.
@@ -134,7 +160,11 @@ else
   codesign --force --deep -s - "$APP"
 fi
 
-ZIP="$OUT/Clicker-macOS-${VERSION}-arm64.zip"
+if [[ "$UNIVERSAL" == "yes" ]]; then
+  ZIP="$OUT/Clicker-macOS-${VERSION}-universal.zip"
+else
+  ZIP="$OUT/Clicker-macOS-${VERSION}-arm64.zip"
+fi
 echo "==> zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 

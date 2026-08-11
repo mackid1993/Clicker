@@ -3,8 +3,9 @@
 # Clicker - an unofficial, native client for Channels DVR
 # Copyright (c) 2026 David Brustein
 #
-# Builds and signs Clicker.app on Apple silicon and uploads the zip as an
-# artifact. It publishes nothing: the Release workflow is what gathers this
+# Builds and signs Clicker.app — universal, both architectures — and uploads
+# the zip as an artifact. The runner is Apple silicon and cross-compiles the
+# Intel slice; `lipo` joins the two. It publishes nothing: the Release workflow is what gathers this
 # and the other platforms into one draft release.
 #
 # Notarizing is off unless asked for, and the Release workflow is what asks.
@@ -73,6 +74,12 @@ jobs:
       - name: Update Rust
         run: rustup update stable --no-self-update
 
+      # The Intel half of the universal binary. The runner is Apple silicon
+      # and cross-compiles the other slice; `lipo` in build-macos.sh joins
+      # them. One extra compile, no second runner.
+      - name: Add the Intel target
+        run: rustup target add x86_64-apple-darwin
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -81,9 +88,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-universal-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-universal-
 
       - name: Check the version is a version
         env:
@@ -181,6 +188,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-app
-          path: target/macos/Clicker-macOS-${{ env.VERSION }}-arm64.zip
+          path: target/macos/Clicker-macOS-${{ env.VERSION }}-universal.zip
           if-no-files-found: error
           retention-days: 30

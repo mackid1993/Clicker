@@ -641,10 +641,21 @@ impl Player {
             ("sub-border-size", "0"),
             ("sub-shadow-offset", "0"),
             ("sub-bold", "no"),
-            // Sat on the lower third, where a broadcaster puts them and where
-            // they are clear of the transport controls.
-            ("sub-align-x", "center"),
-            ("sub-align-y", "bottom"),
+            // No alignment override, deliberately.
+            //
+            // These forced captions to the bottom centre, which is right for a
+            // subtitle file and wrong for broadcast closed captions. A caption
+            // track carries its own geometry: every event arrives tagged
+            // `{\an7}` — anchor to the top-left — and padded with hard spaces
+            // to put it in a particular row and column, because that is what
+            // roll-up captions are. Forcing an anchor of our own fights that
+            // per-event positioning, and the rows end up stacked against the
+            // order they were written in, which is what "the subtitles are
+            // backwards" looks like on screen.
+            //
+            // Verified out of a real broadcast: ffmpeg decodes channel 2.1's
+            // captions in the right order, with those tags on them. What was
+            // reordering them was here.
             // Pace the picture against the display rather than the sound.
             //
             // The default, `audio`, presents each frame at the time the audio

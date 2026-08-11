@@ -42,7 +42,7 @@ on:
         default: true
         type: boolean
       macos:
-        description: "Build and notarize the macOS app"
+        description: "Build and notarize the macOS app (universal)"
         required: false
         default: true
         type: boolean
