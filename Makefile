@@ -103,7 +103,7 @@ deps:
 	    libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
 	    libgl1-mesa-dev libfreetype6-dev libfribidi-dev libharfbuzz-dev \
 	    libfontconfig1-dev libunibreak-dev libva-dev libvdpau-dev \
-	    libasound2-dev libpulse-dev libpipewire-0.3-dev; \
+	    libasound2-dev libpulse-dev; \
 	  sudo apt-get install -y libass-dev libplacebo-dev || true; \
 	  meson --version 2>/dev/null | grep -qE '^0\.6[3-9]|^[1-9]' || sudo pip3 install --upgrade meson; \
 	elif command -v dnf >/dev/null; then \
@@ -113,7 +113,7 @@ deps:
 	    gtk3-devel libxdo-devel libappindicator-gtk3-devel \
 	    mesa-libGL-devel freetype-devel fribidi-devel harfbuzz-devel \
 	    fontconfig-devel libunibreak-devel libva-devel libvdpau-devel \
-	    alsa-lib-devel pulseaudio-libs-devel pipewire-devel; \
+	    alsa-lib-devel pulseaudio-libs-devel; \
 	  sudo dnf install -y libass-devel libplacebo-devel || true; \
 	elif command -v pacman >/dev/null; then \
 	  echo "==> pacman"; \
@@ -121,7 +121,7 @@ deps:
 	    meson ninja nasm patchelf autoconf automake libtool \
 	    gtk3 xdotool libayatana-appindicator \
 	    mesa freetype2 fribidi harfbuzz fontconfig libunibreak libva libvdpau \
-	    alsa-lib libpulse libpipewire; \
+	    alsa-lib libpulse; \
 	  sudo pacman -S --needed --noconfirm libass libplacebo || true; \
 	elif command -v zypper >/dev/null; then \
 	  echo "==> zypper"; \
@@ -131,7 +131,7 @@ deps:
 	    gtk3-devel xdotool-devel libayatana-appindicator3-devel \
 	    Mesa-libGL-devel freetype2-devel fribidi-devel harfbuzz-devel \
 	    fontconfig-devel libunibreak-devel libva-devel libvdpau-devel \
-	    alsa-lib-devel pulseaudio-libs-devel pipewire-devel; \
+	    alsa-lib-devel pulseaudio-libs-devel; \
 	  sudo zypper install -y libass-devel libplacebo-devel || true; \
 	else \
 	  echo "No package manager I recognise. Install the equivalents of:" >&2; \

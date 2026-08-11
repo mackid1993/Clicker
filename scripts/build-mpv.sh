@@ -74,7 +74,6 @@ mkdir -p "$THIRD"
 # argument.
 LIBASS_TAG="0.17.4"
 LIBPLACEBO_TAG="v7.349.0"
-PIPEWIRE_TAG="1.0.7"
 
 have_new_enough() {
   pkg-config --exists --print-errors "$1 >= $2" 2>/dev/null
@@ -142,49 +141,6 @@ if ! have_new_enough libplacebo 7.349; then
         -Ddemos=false -Dtests=false
       ninja -C build && ninja -C build install
     )
-  fi
-fi
-
-# ---------------------------------------------------------------- pipewire ---
-#
-# The client library only, so mpv can carry a native PipeWire output.
-#
-# This is the fix for a day of stuttering video. Modern desktops route sound
-# through PipeWire; without this output, mpv talks to the pipewire-pulse
-# compatibility shim, and on Linux video presentation is slaved to the audio
-# clock — a shim that jitters or underruns makes the *picture* stumble while
-# every video counter reads healthy. The distribution's own mpv carries this
-# output, which is why it played smoothly on machines where ours could not.
-#
-# Only the library and headers are built (-Dspa-plugins=disabled and the rest):
-# the plugins, the daemon and the session manager are the machine's own, found
-# at runtime. PipeWire is MIT, so bundling the client raises nothing.
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  if ! have_new_enough libpipewire-0.3 0.3.57; then
-    if [[ ! -f "$DEPS/lib/libpipewire-0.3.$LIBEXT" ]]; then
-      echo "==> building pipewire $PIPEWIRE_TAG (client library only)"
-      [[ -d "$THIRD/pipewire-src" ]] || git clone --depth 1 --branch "$PIPEWIRE_TAG"         https://gitlab.freedesktop.org/pipewire/pipewire.git "$THIRD/pipewire-src"
-      pristine "$THIRD/pipewire-src"
-      (
-        cd "$THIRD/pipewire-src"
-        # auto_features=disabled turns off everything optional in one
-        # stroke. spa-plugins stays ON, deliberately: pipewire's module tree
-        # references a variable the plugin half defines ("audioconvert_dep")
-        # from code that is built unconditionally, so disabling the plugins
-        # kills the configure outright — tried twice, failed identically.
-        # With every external feature off, the plugins that remain are the
-        # dependency-free ones; they cost seconds to compile and are simply
-        # not staged. Only libpipewire and its headers travel.
-        meson setup build --prefix="$DEPS" --libdir=lib \
-          -Dauto_features=disabled \
-          -Dsession-managers=[] \
-          -Dexamples=disabled -Dtests=disabled \
-          -Dgstreamer=disabled -Dsystemd=disabled \
-          -Dpipewire-alsa=disabled -Dpipewire-jack=disabled -Djack=disabled \
-          -Dlibcamera=disabled -Ddocs=disabled -Dman=disabled
-        ninja -C build && ninja -C build install
-      )
-    fi
   fi
 fi
 
@@ -259,7 +215,7 @@ if [[ ! -f "$DEPS/lib/libmpv.$LIBEXT" ]]; then
     # PipeWire stays `auto` because 22.04's is too old to insist on, and a
     # PipeWire desktop is served by the PulseAudio output through its own
     # compatibility layer regardless.
-    AUDIO="-Dalsa=enabled -Dpulse=enabled -Dpipewire=enabled -Djack=disabled -Dsndio=disabled"
+    AUDIO="-Dalsa=enabled -Dpulse=enabled -Dpipewire=auto -Djack=disabled -Dsndio=disabled"
     if [[ "$(uname -s)" == "Darwin" ]]; then
       AUDIO="-Dcoreaudio=enabled"
     fi
@@ -289,9 +245,6 @@ cp -a "$DEPS/lib/"libmpv.* "$STAGE/" 2>/dev/null || true
 cp -a "$DEPS/lib/"libav*.* "$DEPS/lib/"libsw*.* "$STAGE/" 2>/dev/null || true
 # libass and libplacebo too, when they were built here rather than found.
 cp -a "$DEPS/lib/"libass.* "$DEPS/lib/"libplacebo.* "$STAGE/" 2>/dev/null || true
-# The PipeWire client, when it was built here. MIT-licensed; the daemon and
-# plugins stay the machine's own.
-cp -a "$DEPS/lib/"libpipewire-0.3.* "$STAGE/" 2>/dev/null || true
 # Neither the .a files nor the unversioned development symlinks belong in a
 # staged runtime.
 rm -f "$STAGE"/*.a "$STAGE"/*.la 2>/dev/null || true

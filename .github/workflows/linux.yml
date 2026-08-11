@@ -122,7 +122,7 @@ jobs:
             libfreetype6-dev libfribidi-dev libharfbuzz-dev libfontconfig1-dev \
             libunibreak-dev python3-setuptools python3-pip autoconf automake libtool \
             libva-dev libvdpau-dev patchelf dpkg-dev \
-            libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev
+            libasound2-dev libpulse-dev
           # 22.04 ships meson 0.61 and libplacebo wants 0.63 or newer. From
           # pip rather than a newer distribution, because the point of
           # building on 22.04 is its old glibc.
@@ -145,7 +145,7 @@ jobs:
           # changed. Only the tags and the flags decide whether a staged
           # build can be reused, so only code is hashed.
           FINGERPRINT=$(sed 's/#.*//' scripts/build-mpv.sh \
-            | grep -E '^(FFMPEG_TAG|MPV_TAG|LIBASS_TAG|LIBPLACEBO_TAG|PIPEWIRE_TAG)=|disable-gpl|Dgpl=|enable-vaapi|enable-videotoolbox|Dalsa=|Dpulse=|Dpipewire=|Dcoreaudio=' \
+            | grep -E '^(FFMPEG_TAG|MPV_TAG|LIBASS_TAG|LIBPLACEBO_TAG)=|disable-gpl|Dgpl=|enable-vaapi|enable-videotoolbox|Dalsa=|Dpulse=|Dpipewire=|Dcoreaudio=' \
             | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
           echo "key=$FINGERPRINT" >> "$GITHUB_OUTPUT"
           echo "libmpv cache fingerprint: $FINGERPRINT"

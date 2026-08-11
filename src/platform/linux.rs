@@ -287,54 +287,10 @@ pub fn virtualization() -> Option<&'static str> {
     })
 }
 
-/// Point the bundled PipeWire client at the machine's own plugins.
-///
-/// The client library we may carry was built with our staging prefix baked in
-/// as its plugin path — a directory that exists on no user's machine. The
-/// daemon, the SPA plugins and the modules are the machine's own and live
-/// where its distribution put them, so name the first directory that exists.
-/// A user's explicit setting is always left alone.
+/// Say when this is a virtual machine, and make the one allowance that has
+/// survived scrutiny (auto-copy decode happens in mpv.rs). Everything bundled
+/// speaks to the sound server the machine's own way.
 pub fn audio_environment() {
-    let pick = |var: &str, candidates: &[&str]| {
-        if std::env::var_os(var).is_some() {
-            return;
-        }
-        for dir in candidates {
-            if std::path::Path::new(dir).is_dir() {
-                std::env::set_var(var, dir);
-                return;
-            }
-        }
-    };
-    pick(
-        "SPA_PLUGIN_DIR",
-        &[
-            "/usr/lib/aarch64-linux-gnu/spa-0.2",
-            "/usr/lib/x86_64-linux-gnu/spa-0.2",
-            "/usr/lib64/spa-0.2",
-            "/usr/lib/spa-0.2",
-        ],
-    );
-    pick(
-        "PIPEWIRE_MODULE_DIR",
-        &[
-            "/usr/lib/aarch64-linux-gnu/pipewire-0.3",
-            "/usr/lib/x86_64-linux-gnu/pipewire-0.3",
-            "/usr/lib64/pipewire-0.3",
-            "/usr/lib/pipewire-0.3",
-        ],
-    );
-
-    // Inside a virtual machine, ask the sound server for large buffers.
-    //
-    // Emulated sound hardware underruns against the small buffers a desktop
-    // tunes for, the audio clock jitters with every underrun, and on Linux
-    // mpv paces video by that clock — so a VM's audio buffers are a video
-    // problem. PipeWire upstream ships VM defaults (alsa-vm.conf) for
-    // exactly this and not every distribution carries them; what an
-    // application may do for itself is request a large quantum for its own
-    // stream, which is this environment variable. A user's own setting is
-    // left alone.
     if let Some(vm) = virtualization() {
         // No PIPEWIRE_LATENCY request here any more. Asking for a 2048-sample
         // quantum made playback worse, not better: the audio clock advances

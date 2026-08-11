@@ -141,7 +141,7 @@ jobs:
           # changed. Only the tags and the flags decide whether a staged
           # build can be reused, so only code is hashed.
           FINGERPRINT=$(sed 's/#.*//' scripts/build-mpv.sh \
-            | grep -E '^(FFMPEG_TAG|MPV_TAG|LIBASS_TAG|LIBPLACEBO_TAG|PIPEWIRE_TAG)=|disable-gpl|Dgpl=|enable-vaapi|enable-videotoolbox|Dalsa=|Dpulse=|Dpipewire=|Dcoreaudio=' \
+            | grep -E '^(FFMPEG_TAG|MPV_TAG|LIBASS_TAG|LIBPLACEBO_TAG)=|disable-gpl|Dgpl=|enable-vaapi|enable-videotoolbox|Dalsa=|Dpulse=|Dpipewire=|Dcoreaudio=' \
             | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
           echo "key=$FINGERPRINT" >> "$GITHUB_OUTPUT"
           echo "libmpv cache fingerprint: $FINGERPRINT"

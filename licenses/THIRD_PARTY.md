@@ -36,9 +36,8 @@ Where it lives, per platform:
 The other libraries shipped alongside are what mpv was linked against:
 libass, libplacebo, FreeType, HarfBuzz, FriBidi, Fontconfig, GLib, libpng,
 libjpeg, lcms2, Graphite, Brotli, expat, libiconv, gettext, libunibreak,
-libdovi, zlib, bzip2, shaderc, SPIRV-Cross, the PipeWire client library
-(`libpipewire-0.3`, MIT, Linux only — the daemon and its plugins remain the
-machine's own), and each platform's own compiler runtime. They are permissively or weakly licensed (MIT, ISC, BSD, zlib,
+libdovi, zlib, bzip2, shaderc, SPIRV-Cross, and each platform's own compiler
+runtime. They are permissively or weakly licensed (MIT, ISC, BSD, zlib,
 LGPL-2.1, MPL-2.0, and the FreeType license), each carries its own terms in its
 own source tree, and every one of them is a separate, replaceable file for the
 same reason FFmpeg is. On macOS they sit in `Contents/Frameworks`; on Linux in

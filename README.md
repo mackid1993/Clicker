@@ -285,15 +285,12 @@ Clicker is MIT. `scripts/build-mpv.sh` builds both from pinned tags with
 `--disable-gpl` and `-Dgpl=false`, then reads the licence back out of the
 finished library and refuses to stage anything else.
 
-**Audio is native PipeWire.** Modern desktops route sound through PipeWire,
-and on Linux mpv paces video against the audio clock — so the quality of that
-clock is the smoothness of the picture. The bundled mpv carries mpv's native
-PipeWire output (the client library is built from a pinned tag and travels in
-the bundle; the daemon and plugins are the machine's own), with PulseAudio and
-ALSA outputs behind it for systems that predate PipeWire. `CLICKER_AO=alsa`
-or `CLICKER_AO=null` in the environment overrides the choice, which is mainly
-a diagnostic: `null` silences playback and tells you in ten seconds whether a
-misbehaving sound device is what is ruining the video.
+**Audio goes to the machine's own sound server** through mpv's PulseAudio or
+ALSA outputs — on a PipeWire desktop, via the compatibility layer every other
+application uses. `CLICKER_AO=alsa` or `CLICKER_AO=null` in the environment
+overrides the choice; `null` silences playback and tells you in ten seconds
+whether a misbehaving sound device is what is ruining the video, which is
+worth knowing because on Linux mpv paces video against the audio clock.
 
 **What is deliberately not bundled** is graphics: Mesa, libGL, libwayland,
 libva, libvdpau, the cursor theme. Hardware decoding talks to the machine's

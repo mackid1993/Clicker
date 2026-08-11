@@ -24,11 +24,7 @@ The corresponding source is mpv `v0.41.0`, from
 refuses to package it if it reports GPL.
 
 The libraries mpv itself was linked against ship the same way, beside the
-executable, unmodified, each under its own license. On Linux that includes the
-PipeWire client library (`libpipewire-0.3`), MIT-licensed, built from its
-pinned tag so mpv can speak to the desktop's sound server natively; the
-PipeWire daemon, plugins and session manager are the machine's own and are not
-shipped.
+executable, unmodified, each under its own license.
 
 ## FFmpeg
 
