@@ -115,8 +115,12 @@ cost. Frames drawn is the number that decides it.
   rendering fewer pixels helps a thread that is waiting.
 - **PipeWire 1.0.7 meson**: `-Dspa-plugins=disabled` is fatal. Keep plugins on
   with `-Dauto_features=disabled` if it is ever built again.
-- **VM detection** reads four DMI fields plus the cpuinfo hypervisor flag;
-  Proxmox stamps QEMU, VirtualBox stamps innotek.
+- **A virtual machine is not a special case**, and the code that decided it
+  was is gone. It bought one option, hwdec=auto-copy, and with the render
+  thread working, auto-safe measured identically: sixty frames a second, one
+  lost in fifty. If it is ever wanted again: DMI's four fields plus the
+  cpuinfo hypervisor flag, and Proxmox stamps QEMU while VirtualBox stamps
+  innotek. A Flatpak still gets auto-copy, where the Mesa mismatch is real.
 - **egui's bundled face stops not far past Latin.** On Linux nothing sits in
   front of it, so `→` drew as an empty box. Ask fontconfig for a face
   containing the glyph rather than guessing at distribution font paths.
