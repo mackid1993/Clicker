@@ -1,9 +1,14 @@
 # TPP: Linux playback — stutter, freezes, and the audio clock
 
-Status: **Phase 7 — final verification pending.** Root cause identified via
-research (not theory): the VM guest lacked PipeWire's VM audio profile, so its
-emulated sound device underruns by design, and on Linux mpv paces video by the
-audio clock. Guest fixed + app-side VM support shipped. Awaiting one clean test.
+Status: **Phase 7 — final verification pending.** ROOT CAUSE FOUND IN
+render.h, superseding every earlier theory: this embedding set
+BLOCK_FOR_TARGET_TIME=0 (correct) but never did the documented "in addition" —
+video-timing-offset=0. With the offset at its 50ms default, whenever video is
+timed to audio (Linux), mpv delivers every frame up to 50ms EARLY expecting
+the embedder to hold it; we showed each immediately. Explains: smooth with no
+audio, uneven with sound, standalone mpv fine (it blocks), any-Linux not just
+VMs. Fix shipped in 214e740; PipeWire bundling layer stripped as unneeded in
+9c04c87 (the underruns were a coincident VM symptom, not the cause).
 
 Test bench: David's Parallels VM "Ubuntu 24.04.3 ARM64" (**4 cores**, 3.8G,
 virtio-gpu/virgl, PipeWire). `prlctl exec "Ubuntu 24.04.3 ARM64" '<cmd>'`.
@@ -45,22 +50,26 @@ CI deb before trusting any run's result. HTTP bridge to VM:
       PIPEWIRE_LATENCY=2048/48000 (if unset), mpv audio-buffer=1.0,
       hwdec=auto-copy (same as flatpak), log lines incl. hint when the system
       lacks alsa-vm.conf. `in_vm()` in mpv.rs, false off-Linux.
-- [ ] 7. **VERIFY, then release 1.1.7.** Deb run 31480349575 (sha 2e76af7) has
-      everything except the wider-hypervisor-net commit (next build). Windows
-      31475999301 + macOS 31476001506 built, unplaytested. release.yml passes
-      notarize:true; publishing debs makes setup.sh's fast path live.
+- [ ] 7. **VERIFY, then release 1.1.7.** Test deb: run 31481063348 (timing
+      fix, still has pipewire inside). KEEPER deb: run 31481216365 (lean,
+      sha 9c04c87+) — full mpv rebuild, ~15min. Windows 31475999301 + macOS
+      31476001506 built, unplaytested; rebuild all three for release anyway.
+      release.yml passes notarize:true; published debs light up setup.sh.
 
 ## Next session: do this first
 
-1. Deb from 31480349575 (or newer): install in VM, launch, play. Expect in
-   log: `running under Parallels`, `AO: [pipewire]`, NO underrun lines. If
-   David reports smooth: Phase 7 → cut release. Windows + macOS need one
-   play-test each (builds listed above; both predate the VM-support commits
-   but those are Linux-only — rebuild anyway for the release).
-2. If still bad WITH the guest profile + VM support: David said hold — write
-   the state down, ship what's proven, seek a real-hardware Linux tester.
-   Remaining levers documented, none cheap: CLICKER_RENDER_THREAD=1 on real
-   hardware; PipeWire quantum tuning; virgl is not fixable from userspace.
+1. Latest lean deb (31481216365 or newer): install, play WITH sound. The one
+   question: is video even, no stall, no freeze? video-timing-offset=0 is the
+   render.h-prescribed fix for exactly the recorded symptoms. If smooth →
+   Phase 7: rebuild all three platforms, cut 1.1.7.
+2. If STILL bad: the contract is now honored and the suspects are exhausted
+   in-app — David's hold stands; seek a real-hardware tester. Optional
+   cleanups then: remove /etc/wireplumber/wireplumber.conf.d/alsa-vm.conf
+   from the VM (mine, upstream-default values, harmless), and decide the
+   guest keeps 4 cores.
+3. Final knobs as committed: video-timing-offset=0 (everywhere; inert under
+   display-resample), autosync=30 (all Linux), ao from CLICKER_AO only,
+   hwdec auto-copy in flatpak/VM, render thread behind CLICKER_RENDER_THREAD.
 
 ## Lore (hard-won; keep)
 

@@ -819,7 +819,10 @@ impl Player {
             // autosync to smooth video timing against jittery audio delay
             // measurements instead of trusting each one. 30 is the manual's
             // own suggested value. Blank elsewhere, and blank is skipped.
-            ("autosync", if in_vm() { "30" } else { "" }),
+            (
+                "autosync",
+                if cfg!(target_os = "linux") { "30" } else { "" },
+            ),
             // Which audio output, overridable from the environment.
             //
             // For separating causes, and it earned its place the hard way: on
