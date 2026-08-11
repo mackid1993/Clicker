@@ -20,11 +20,29 @@
 # `cargo check` and not `cargo build`: none of these produce an artifact
 # anyone runs, and check is the same front half of the compiler at a third
 # of the minutes.
+#
+# It now also runs on a push to main, which it did not at first. The argument
+# against was runner minutes, and it was a fair one for every push to every
+# branch — but main is where releases are cut from, work lands there directly
+# on this project, and a minute and a half of three runners is cheap against
+# the alternative, which happened: a day's changes sat on main compiling on
+# one platform out of three, and nothing said otherwise until somebody asked.
+# Branches are still the dispatch's job.
 
 name: Check
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    # Not for changes that cannot affect a compile. A README edit spending
+    # three runners is the waste the manual-only rule was written against.
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - ".github/workflows/check.yml"
 
 permissions:
   contents: read
@@ -66,3 +84,34 @@ jobs:
       # versions than the installer build will.
       - name: cargo check
         run: cargo check --locked
+
+  # The two mpv builders pin their own versions — build-mpv.sh in shell for
+  # macOS and Linux, build-mpv.ps1 in PowerShell for Windows — and nothing has
+  # ever checked that they agree. Unifying them was the obvious fix and the
+  # wrong one: the Linux cache fingerprint greps those tags straight out of
+  # build-mpv.sh, so moving them somewhere else would leave the cache blind to
+  # a version bump and quietly ship a stale player. Verifying the invariant
+  # costs seconds and touches nothing that builds.
+  players:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The two mpv builders must pin the same versions
+        run: |
+          sh_mpv=$(sed -n 's/^MPV_TAG="\(.*\)"/\1/p' scripts/build-mpv.sh)
+          sh_ff=$(sed -n 's/^FFMPEG_TAG="\(.*\)"/\1/p' scripts/build-mpv.sh)
+          ps_mpv=$(sed -n "s/^\$MpvTag = '\(.*\)'/\1/p" scripts/build-mpv.ps1)
+          ps_ff=$(sed -n "s/^\$FFmpegTag = '\(.*\)'/\1/p" scripts/build-mpv.ps1)
+          echo "shell: mpv $sh_mpv, FFmpeg $sh_ff"
+          echo "ps1:   mpv $ps_mpv, FFmpeg $ps_ff"
+          for v in "$sh_mpv" "$sh_ff" "$ps_mpv" "$ps_ff"; do
+            if [ -z "$v" ]; then
+              echo "::error::a version pin could not be read; the builders changed shape" >&2
+              exit 1
+            fi
+          done
+          if [ "$sh_mpv" != "$ps_mpv" ] || [ "$sh_ff" != "$ps_ff" ]; then
+            echo "::error::the mpv builders disagree — Windows would ship a different player" >&2
+            exit 1
+          fi
+          echo "both builders agree"

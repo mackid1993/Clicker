@@ -303,6 +303,16 @@ is a thread whose whole job is to wait. Measured against a 1080p60 channel:
 `CLICKER_RENDER_THREAD=0` — which is the off switch — managed 50fps and
 dropped frames the whole way through.
 
+**Playback has a test that produces a number.** `scripts/smoke-play.sh <file
+or URL>` on macOS and Linux, `scripts/smoke-play.ps1` on Windows: it plays the
+source for a minute, reads the player's own log, and compares the frames that
+reached the screen against the frames the decoder produced. It exits non-zero
+when the renderer falls behind. That comparison is the one a person watching
+cannot make reliably — the failure that costs a night is the one where every
+counter reads healthy and half the frames are missing — and it is what a
+release should turn on rather than an impression formed on whichever machine
+was to hand.
+
 **Three environment variables exist for testing**, and are the reason a
 playback question no longer costs an evening. `CLICKER_PLAY=<file or URL>`
 opens that source at startup, so a machine can be tested from a script with no
