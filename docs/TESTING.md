@@ -100,12 +100,12 @@ exists because the alternative was rebuilding to answer a question.
 | `CLICKER_PLAY=<file or URL>` | Open that source at startup. No server, no sign-in, no hand on the mouse — this is what makes playback drivable from a script. |
 | `CLICKER_MPV_OPTS="profile=fast;hwdec=no"` | mpv's own options, applied last so they win. **Semicolons**, because commas are already inside half of mpv's values. |
 | `CLICKER_AO=null` | Silence the audio output. Ten seconds to learn whether a sound device is what is ruining the picture, which on Linux it can be — video is paced by the audio clock there. |
-| `CLICKER_RENDER_THREAD=0` | Linux: put mpv's rendering back on the interface thread. The off switch for the arrangement described below. |
+| `CLICKER_RENDER_THREAD=1` / `=0` | Force mpv's rendering onto a thread of its own, or back into the interface's paint. A two-way switch on every platform, overriding the default described below — and the way that default was arrived at. |
 | `CLICKER_VIDEO=window` | Hand mpv the window itself, with no offscreen target and no blit. It overdraws the interface; it is a measuring instrument, not a mode. |
 
 ---
 
-## Why Linux renders on its own thread
+## Why Linux renders on its own thread and the others do not
 
 Worth knowing before changing anything under `src/mpv.rs`, because the
 architecture looks like over-engineering until the number is in front of you.
@@ -125,6 +125,14 @@ Same binary, same live 1080p60 channel, back to back:
 | `CLICKER_RENDER_THREAD=0` | 44–53 fps | 221 in 45s | 0.3–1.1ms |
 
 The render call did not get faster. The waiting moved.
+
+The same code runs on all three platforms; what differs is the default. Where
+video is paced against the display — Windows and macOS — the thread is opt-in
+via `CLICKER_RENDER_THREAD=1`, because `display-resample` needs drawing and
+presenting to be one loop it can time against and a worker makes them two. The
+A/V offset that produces is small, visible in the stats card, and will not sit
+still. Linux paces against the audio clock, needs no such feedback, and is
+where the stalling driver is a measured problem, so there the thread is on.
 
 The worker publishes only frames the GPU has finished, by calling `glFinish`
 before handing one over. An earlier version passed a GL fence across the

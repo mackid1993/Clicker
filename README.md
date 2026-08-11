@@ -292,16 +292,131 @@ overrides the choice; `null` silences playback and tells you in ten seconds
 whether a misbehaving sound device is what is ruining the video, which is
 worth knowing because on Linux mpv paces video against the audio clock.
 
-**Video is rendered on a thread of its own** on Linux, into a texture the
-interface then draws. That is not how it works on Windows or macOS, and the
-reason is drivers that make a caller wait: where OpenGL is translated rather
-than native, a render call can hold for most of a frame while doing no work
-at all, and on the interface's own thread that is a window that stops
-answering the mouse and a picture that sheds half its frames. On a worker it
-is a thread whose whole job is to wait. Measured against a 1080p60 channel:
-60fps with one frame dropped in a minute, where the same build with
-`CLICKER_RENDER_THREAD=0` — which is the off switch — managed 50fps and
-dropped frames the whole way through.
+**One player, two settings.** The whole of the playback path is shared code
+on all three platforms — mpv rendering on a worker thread with an OpenGL
+context of its own, publishing frames the GPU has finished into textures the
+interface blits. Four platform conditionals remain in the player, and it is
+worth saying plainly what they are, because "one engine" is a claim that
+should be checkable:
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Video paced against | the display | the display | the audio clock |
+| Render thread by default | off | off | **on** |
+| `autosync` | — | — | 30 |
+| Caption font | Consolas | Menlo | DejaVu Sans Mono |
+| Interface font | Segoe UI | San Francisco | egui's own, with a fontconfig fallback |
+| Window frame | drawn by the app | system, content under the titlebar | system |
+| Notification area | yes | — | — |
+| Menu bar | — | yes | — |
+| Hardware decoding | auto-safe | auto-safe | auto-safe, or auto-copy in a Flatpak |
+
+Everything else is one path: the render worker and its context handoff, the
+double-buffered textures, the sizing, the blit, the deinterlacer, and the
+three picture profiles below. A fault found in any of it is fixed once rather
+than argued about twice.
+
+**The picture profiles are the same three everywhere**, and they choose by
+what the graphics are rather than by which operating system is asking — a Mac,
+a PC and a Linux desktop with real drivers are treated identically, and a
+virtual machine is treated identically whichever of the three it is running.
+Settings has the knob:
+
+| | what it does |
+|---|---|
+| **Automatic** (default) | The good kernels on real graphics; mpv's cheap defaults where the driver names itself `llvmpipe`, `virgl`, `SwiftShader` or Basic Render, because there a better scaler is paid for in dropped frames |
+| **Fast** | mpv's defaults always, for a machine that is dropping frames |
+| **Detailed** | The good kernels regardless, plus debanding, which costs real GPU time |
+
+What the good kernels are, and why: `catmull_rom` upscaling, which is sharp
+without the haloes `spline36` puts on every edge; `mitchell` downscaling with
+`correct-downscaling` and `linear-downscaling`, because a stream shown smaller
+than itself is the common case and mpv's default shrinks by sampling rather
+than filtering; `sigmoid-upscaling` to keep ringing off edges; and dithering,
+which stops being optional the moment anything scales in linear light.
+
+**Nothing sharpens**, and that is deliberate. Broadcast television is
+compressed, so its edges include the compression — mosquito noise around
+captions, block boundaries in dark scenes — and both a sharp kernel and an
+unsharp mask make those crisper along with the picture. A 1080-line source on
+a three-thousand-pixel display is an enlargement, and no filter invents detail
+that was never transmitted.
+
+**Interlaced material is deinterlaced** and progressive material is not:
+`deinterlace=auto` acts only on streams the decoder flags, so the 1080i
+affiliates get it and the 720p and 1080p channels beside them are untouched.
+
+### Where the differences live, in code
+
+Everything platform-specific is behind `src/platform/`, which is 8% of the
+tree. Each file implements the same set; a stub is an honest implementation
+where a platform has nothing to do, and `None` is an honest answer where a
+capability is genuinely absent.
+
+| What differs | Windows | macOS | Linux |
+|---|---|---|---|
+| `gl_share`, `gl_worker_begin`, `gl_worker_end` — a second GL context for the render thread | WGL | CGL, out of OpenGL.framework | EGL |
+| `MPV_LIBRARY`, `mpv_candidates` — finding the player | `mpv-2.dll` | `libmpv.2.dylib`, bundle first | `libmpv.so.2` |
+| `config_home`, `data_home` | `%APPDATA%`, `%LOCALAPPDATA%` | `~/Library/Application Support` for both | XDG |
+| `text_font`, `fallback_font` | Segoe UI Variable | San Francisco | egui's own, plus a face fontconfig names |
+| `icon_font` | Segoe Fluent Icons, from the system | bundled Fluent subset | bundled Fluent subset |
+| `NATIVE_FRAME`, `CAPTION_INSET`, `shape_window` | app draws the frame | system frame, content under the titlebar, 80pt of clearance | system frame |
+| `make_sparse`, `punch_hole` — the live buffer giving disk back | ioctl | `fcntl` | `fallocate` |
+| `local_utc_offset_seconds`, `thread_cpu_ms` | Win32 | POSIX, shared with Linux | POSIX |
+| `HAS_TRAY` | yes | — | — |
+| `install_menu_bar`, `menu_command`, `sync_menu_shortcuts` | — | muda, above the window | — |
+| `apply_chrome`, `restore_window`, `desktop_bounds`, `window_handle` | DWM and Win32 | stubs | stubs |
+| `permission_denied`, `request_local_network`, `LOCAL_NETWORK_HINT` | never refused | the local-network prompt | never refused |
+| `raise_fd_limit` | — | — | raises to the hard limit at startup |
+
+Outside that module there are eight conditionals in shared files, and they are
+all of them:
+
+| Where | What it decides |
+|---|---|
+| `mpv.rs` `PACES_ON_DISPLAY` | the pacing clock, and with it the render-thread default |
+| `mpv.rs` × 2 | the caption font's name — Consolas, Menlo, DejaVu Sans Mono |
+| `mpv.rs` `autosync` | 30 on Linux, mpv's default elsewhere |
+| `main.rs` | calling `raise_fd_limit`, which only Linux has |
+| `theme.rs` | Segoe Fluent Icons are read from the system on Windows |
+| `ui_setup.rs` × 2 | Command against Ctrl in the shortcut editor |
+
+`keys.rs` has twenty-two more, all of them default key bindings, and they want
+a `platform::DEFAULT_BINDINGS` rather than a conditional per action. That is
+the largest remaining piece of platform code outside the seam and the obvious
+next thing to move.
+
+**The render thread** exists because a driver can hold a render call for most
+of a frame while doing no work at all: a translated OpenGL, a remote display,
+a virtualised GPU. On the interface's own thread that is a window that stops
+answering the mouse and a picture shedding half its frames; on a worker it is
+a thread whose whole job is to wait. Measured against a 1080p60 channel on a
+virtualised GPU: 60fps with one frame dropped in a minute, against 50fps and
+frames dropping continuously with `CLICKER_RENDER_THREAD=0`.
+
+It is not the default where the display sets the pace, and that is a
+measurement rather than a preference. `display-resample` — which Windows and
+macOS use, and which was measured there fixing a real fault — needs drawing a
+frame and putting it on screen to be one loop it can time against, and a
+render thread makes them two. Ranked on one Mac: rendering in the paint holds
+A/V at zero; the thread sits one to two milliseconds off; the thread while
+reporting swaps to mpv wanders; the thread with audio pacing is worse again.
+So Linux, which pays against the audio clock and where the stalling driver is
+a real and measured problem, runs the thread; the other two do not.
+
+`CLICKER_RENDER_THREAD=1` turns it on anywhere and `=0` off, which is how the
+above was worked out and how it can be checked on any machine in ten seconds.
+
+**The picture is drawn at the size it is displayed at**, on every platform,
+with no cap at the stream's own resolution. That cap was there on the
+reasoning that rendering above the source only invents pixels the blit could
+invent more cheaply, and it is wrong where it matters: mpv scales from the
+source planes in one pass with the scaler it was configured with, while a blit
+can only stretch a finished picture. On a 3456-pixel-wide display a 1080p
+stream was being drawn at 1920 and stretched, which is a visibly soft picture
+for no gain. Worth knowing on a weak or translated GPU driving a large screen,
+where it is now four times the pixels it used to be — the render figures in
+the log say whether that is affordable.
 
 **Playback has a test that produces a number.** `scripts/smoke-play.sh <file
 or URL>` on macOS and Linux, `scripts/smoke-play.ps1` on Windows: it plays the

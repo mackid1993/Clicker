@@ -22,6 +22,11 @@
 //!     rather than shipping what a platform already has
 //!   * **loading libmpv and OpenGL** — `LoadLibrary` against `dlopen`, and
 //!     each platform's own way of asking a GL context for a function
+//!   * **a second GL context for the render thread** — `gl_share` on the
+//!     interface thread, then `gl_worker_begin` and `gl_worker_end` on the
+//!     worker. Three APIs for one idea, which is why it is here: EGL on
+//!     Linux, WGL on Windows, CGL on macOS. Returning `None` is allowed and
+//!     costs only speed — the player falls back to rendering inside the paint
 //!   * **the live buffer's disk tricks** — sparse files and hole punching are
 //!     ioctls on Windows, `fcntl` on macOS, `fallocate` on Linux
 //!   * **the clock's opinion of local time** — see `local_utc_offset_seconds`

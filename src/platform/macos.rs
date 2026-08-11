@@ -455,6 +455,114 @@ pub fn text_font() -> Option<Vec<u8>> {
     None
 }
 
+// --- a second GL context, for the render thread ------------------------------
+
+/// The interface's CGL context, captured on the interface thread.
+///
+/// A pointer as an integer because this crosses a thread boundary. The pixel
+/// format is not carried: CGL can be asked for it from the context itself,
+/// and asking is one fewer handle to keep alive correctly.
+pub struct GlShare {
+    context: usize,
+}
+
+/// A context of the worker's own, current on the worker's thread.
+pub struct GlWorker {
+    context: usize,
+}
+
+struct Cgl {
+    get_current_context: unsafe extern "C" fn() -> *mut c_void,
+    get_pixel_format: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    create_context:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut *mut c_void) -> i32,
+    set_current_context: unsafe extern "C" fn(*mut c_void) -> i32,
+    destroy_context: unsafe extern "C" fn(*mut c_void) -> i32,
+}
+
+/// CGL comes out of the OpenGL framework, opened by name rather than linked
+/// against — the same arrangement as libmpv and for the same reason, which is
+/// that this program's build should need nothing but a Rust toolchain.
+fn cgl() -> Option<&'static Cgl> {
+    static CGL: std::sync::OnceLock<Option<Cgl>> = std::sync::OnceLock::new();
+    CGL.get_or_init(|| {
+        let lib = super::open_library("/System/Library/Frameworks/OpenGL.framework/OpenGL");
+        if lib.is_null() {
+            return None;
+        }
+        unsafe {
+            macro_rules! sym {
+                ($name:literal) => {{
+                    let p = super::library_symbol(lib, concat!($name, "\0").as_ptr());
+                    if p.is_null() {
+                        return None;
+                    }
+                    std::mem::transmute(p)
+                }};
+            }
+            Some(Cgl {
+                get_current_context: sym!("CGLGetCurrentContext"),
+                get_pixel_format: sym!("CGLGetPixelFormat"),
+                create_context: sym!("CGLCreateContext"),
+                set_current_context: sym!("CGLSetCurrentContext"),
+                destroy_context: sym!("CGLDestroyContext"),
+            })
+        }
+    })
+    .as_ref()
+}
+
+/// Capture the interface's context. Interface thread only, where it is
+/// current.
+pub fn gl_share() -> Option<GlShare> {
+    let cgl = cgl()?;
+    let context = unsafe { (cgl.get_current_context)() };
+    if context.is_null() {
+        return None;
+    }
+    Some(GlShare {
+        context: context as usize,
+    })
+}
+
+/// A sibling of that context, made current on this thread.
+///
+/// The same pixel format as the interface's, read back off the context it
+/// belongs to, and the interface's context as the one to share with — so the
+/// textures made here are the ones it blits. No drawable is attached, which
+/// CGL allows and which is all a renderer that only draws into framebuffers
+/// needs.
+pub fn gl_worker_begin(share: &GlShare) -> Option<GlWorker> {
+    let cgl = cgl()?;
+    unsafe {
+        let source = share.context as *mut c_void;
+        let format = (cgl.get_pixel_format)(source);
+        if format.is_null() {
+            return None;
+        }
+        let mut context: *mut c_void = std::ptr::null_mut();
+        if (cgl.create_context)(format, source, &mut context) != 0 || context.is_null() {
+            return None;
+        }
+        if (cgl.set_current_context)(context) != 0 {
+            (cgl.destroy_context)(context);
+            return None;
+        }
+        Some(GlWorker {
+            context: context as usize,
+        })
+    }
+}
+
+/// Give it back, on the thread that owns it.
+pub fn gl_worker_end(worker: GlWorker) {
+    let Some(cgl) = cgl() else { return };
+    unsafe {
+        (cgl.set_current_context)(std::ptr::null_mut());
+        (cgl.destroy_context)(worker.context as *mut c_void);
+    }
+}
+
 /// Nothing to add: San Francisco is already at the front of the chain and
 /// carries the arrows and dashes an interface reaches for. See the Linux
 /// implementation for what this is for.

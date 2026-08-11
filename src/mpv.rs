@@ -477,6 +477,156 @@ fn in_flatpak() -> bool {
     *INSIDE.get_or_init(|| std::path::Path::new("/.flatpak-info").exists())
 }
 
+/// What the graphics stack calls itself, recorded once at startup.
+///
+/// Set from `log_gl_identity` on the interface thread, before any player
+/// exists, because that is where a GL context is current and the string can
+/// be had at all. Read below, to decide how much scaling quality this machine
+/// can afford.
+static GRAPHICS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Called once, with `GL_RENDERER`.
+pub fn note_graphics(renderer: &str) {
+    let _ = GRAPHICS.set(renderer.to_lowercase());
+}
+
+/// Whether the graphics are real, or translated or emulated somewhere.
+///
+/// Not a guess at speed — a reading of what the driver says it is. llvmpipe,
+/// softpipe and swrast are Mesa rasterising on the processor; virgl is a
+/// guest talking to a host GPU through virtio; SwiftShader is software; and
+/// "Microsoft Basic Render" is Windows with no driver at all. Every one of
+/// them is a machine where a better scaler is paid for in dropped frames.
+///
+/// Unknown counts as real. A renderer nobody here has heard of is far more
+/// likely to be a graphics card than a software rasteriser.
+///
+/// Note what this is not: a platform test. The profiles below are the same
+/// three on Windows, macOS and Linux, and they choose by what the graphics
+/// actually are — a Mac, a PC and a Linux desktop with real drivers all get
+/// the same treatment, and a virtual machine gets the same treatment
+/// whichever of the three it happens to be running.
+fn graphics_are_translated() -> bool {
+    let Some(name) = GRAPHICS.get() else {
+        return false;
+    };
+    ["llvmpipe", "softpipe", "swrast", "virgl", "swiftshader", "basic render"]
+        .iter()
+        .any(|needle| name.contains(needle))
+}
+
+/// What the picture is put through on its way to the screen. Blank means
+/// "leave mpv's default alone", which is what the option loop does with an
+/// empty value.
+struct Picture {
+    scale: &'static str,
+    cscale: &'static str,
+    dscale: &'static str,
+    correct_downscaling: &'static str,
+    linear_downscaling: &'static str,
+    sigmoid_upscaling: &'static str,
+    dither: &'static str,
+    deband: &'static str,
+}
+
+/// The three profiles, identical on all three platforms, and the reasoning.
+///
+/// What this program plays is broadcast and cable television: compressed,
+/// often heavily, frequently interlaced, and almost never the size of the
+/// window it is shown in. Every choice follows from that and from nothing
+/// else — these are not mpv's profiles for film, and they do not vary by
+/// operating system, because the content does not.
+///
+/// **Nothing sharpens.** Not the upscaler, not an unsharp mask. Both raise
+/// contrast at edges, and in compressed television the edges include the
+/// compression: mosquito noise around captions and faces, block boundaries in
+/// dark scenes. Sharpening makes the artefacts crisper and the picture worse,
+/// which is visible the moment it is tried. spline36 upscaling reads as
+/// oversharpened for the same reason, so it is not here either.
+///
+/// **Downscaling is the common case and where the cheap wins are.** A stream
+/// in a window smaller than itself is being shrunk, and mpv's default shrinks
+/// by sampling rather than filtering. `mitchell` with `correct-downscaling`
+/// filters properly and `linear-downscaling` does it in light rather than in
+/// gamma; together they cost little and show on any window smaller than the
+/// source.
+///
+/// **Upscaling cannot be won, only lost less badly.** 1080 lines on a display
+/// three thousand pixels across is an enlargement, and no kernel invents
+/// detail that was never transmitted. `catmull_rom` is sharp without ringing
+/// and `sigmoid-upscaling` keeps haloes off what edges it does produce. That
+/// is all there is; the honest answer to a soft picture on a very large
+/// screen is that the source is 1080.
+///
+/// **Dithering stops being optional once anything else is on.** Scaling in
+/// linear light quantises to eight bits at the end, and without error
+/// diffusion that is banding in exactly the places television has gradients.
+///
+/// **Debanding is what Detailed buys.** The one expensive option worth having
+/// for this material: low-bitrate television arrives with banding already in
+/// it, and it is the only thing here that removes an artefact rather than
+/// avoiding one. It costs real GPU time, which is why it is not the default.
+fn picture_for(scaling: crate::settings::Scaling) -> Picture {
+    use crate::settings::Scaling;
+    const PLAIN: Picture = Picture {
+        scale: "",
+        cscale: "",
+        dscale: "",
+        correct_downscaling: "",
+        linear_downscaling: "",
+        sigmoid_upscaling: "",
+        dither: "",
+        deband: "",
+    };
+    const GOOD: Picture = Picture {
+        scale: "catmull_rom",
+        cscale: "spline36",
+        dscale: "mitchell",
+        correct_downscaling: "yes",
+        linear_downscaling: "yes",
+        sigmoid_upscaling: "yes",
+        dither: "auto",
+        deband: "no",
+    };
+    match scaling {
+        // mpv's defaults and nothing else, for a machine that is dropping
+        // frames — where every option above is a reason it might be.
+        Scaling::Fast => PLAIN,
+        Scaling::Detailed => Picture { deband: "yes", ..GOOD },
+        // Everything cheap on graphics that are real; nothing at all on
+        // graphics that are translated or emulated, where the budget is the
+        // whole problem.
+        Scaling::Automatic => {
+            if graphics_are_translated() {
+                PLAIN
+            } else {
+                GOOD
+            }
+        }
+    }
+}
+
+/// Whether video is paced against the display rather than against the audio
+/// clock. Two things depend on the answer — `video-sync` below, and whether
+/// the interface tells mpv a frame reached the screen — and letting those two
+/// drift apart is a bug you can see and cannot name.
+///
+/// Windows and macOS pace against the display, where `display-resample` was
+/// measured fixing a real fault: a drop counter climbing beside a healthy
+/// decoder on 60fps content. Linux paces against the audio clock, because the
+/// display timing there cannot be trusted — the session may be Wayland, X11,
+/// a virtual GPU or a remote desktop, and nothing says which.
+///
+/// Tried and reverted, in this order, on a Mac: pacing on the audio clock
+/// there instead was worse; feeding display-sync `render_report_swap` from
+/// the render thread was worse still, and unstably so. Display-sync assumes
+/// that drawing a frame and putting it on screen are one loop it can time
+/// against, and a render thread makes them two — mpv drawing at its own pace,
+/// the interface swapping at the compositor's. That is the real reason the
+/// render thread is not the default where the display sets the pace, and it
+/// is written here rather than in a commit nobody will find.
+const PACES_ON_DISPLAY: bool = !cfg!(target_os = "linux");
+
 /// Where mpv is asked to draw its picture.
 ///
 /// `Offscreen` is the arrangement this application is built around: mpv draws
@@ -575,8 +725,14 @@ struct Surface {
     bufs: [(u32, u32); 2], // (fbo, texture)
     /// Which of the two was rendered into most recently — the one to show.
     which: usize,
+    /// What mpv is asked to draw: exactly the rectangle on screen, so the
+    /// blit that follows is one to one and resamples nothing.
     width: i32,
     height: i32,
+    /// How large the texture actually is, which is the width rounded up so a
+    /// window drag does not reallocate on every pixel of it. mpv draws into
+    /// the bottom-left `width` x `height` of it and the rest is never read.
+    alloc: (i32, i32),
     /// Whether mpv has drawn into it yet.
     ///
     /// A framebuffer is black when it is made, and one gets made on the first
@@ -603,13 +759,10 @@ pub struct Player {
     /// shared context could be made. `None` inside means it was tried and
     /// could not be, and the in-paint path below carries on as everywhere
     /// else.
-    #[cfg(target_os = "linux")]
     threaded: std::sync::OnceLock<Option<Arc<worker::Link>>>,
-    #[cfg(target_os = "linux")]
     render_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The interface's own framebuffers wrapping the worker's textures, per
     /// generation. Containers are per-context even when textures are shared.
-    #[cfg(target_os = "linux")]
     ui_fbos: Mutex<(u64, [u32; 2])>,
 }
 
@@ -633,6 +786,7 @@ impl Player {
         join: JoinAt,
         transport: Transport,
         software_decoding: bool,
+        scaling: crate::settings::Scaling,
         repaint: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, String> {
         let api = library()?;
@@ -653,6 +807,8 @@ impl Player {
                 Ok(())
             }
         };
+
+        let picture = picture_for(scaling);
 
         for (name, value) in [
             ("vo", "libmpv"),
@@ -711,6 +867,31 @@ impl Player {
             // The read-ahead this application argued itself into having: mpv
             // caches compressed packets, which is minutes of protection for
             // the memory a couple of seconds of decoded frames would cost.
+            // How the picture is scaled and cleaned up. `picture_for` holds
+            // the whole of the reasoning, and is the same three profiles on
+            // every platform.
+            ("scale", picture.scale),
+            ("cscale", picture.cscale),
+            ("dscale", picture.dscale),
+            ("correct-downscaling", picture.correct_downscaling),
+            ("linear-downscaling", picture.linear_downscaling),
+            ("sigmoid-upscaling", picture.sigmoid_upscaling),
+            ("dither-depth", picture.dither),
+            ("deband", picture.deband),
+            // Deinterlace what is interlaced, and nothing else.
+            //
+            // mpv does not deinterlace by default, and a great deal of
+            // broadcast television is 1080i — every American network affiliate
+            // that is not 720p. Undeinterlaced 1080i does not look soft, it
+            // looks *torn*: comb teeth along every moving edge, which is a
+            // fair description of "blocky", and which every player made for
+            // television handles without being asked.
+            //
+            // `auto` rather than `yes`: it deinterlaces only streams the
+            // decoder flags as interlaced, so the 720p and 1080p channels
+            // beside them are left alone. Forcing it on progressive material
+            // halves the vertical detail for nothing.
+            ("deinterlace", "auto"),
             ("cache", "yes"),
             ("demuxer-max-bytes", "96MiB"),
             ("demuxer-readahead-secs", "60"),
@@ -800,10 +981,10 @@ impl Player {
             // content — and where there is one compositor with honest vsync.
             (
                 "video-sync",
-                if cfg!(target_os = "linux") {
-                    "audio"
-                } else {
+                if PACES_ON_DISPLAY {
                     "display-resample"
+                } else {
+                    "audio"
                 },
             ),
             ("user-agent", &crate::settings::user_agent()),
@@ -974,11 +1155,8 @@ impl Player {
             started: AtomicBool::new(false),
             render_ctx: Mutex::new(Ptr(std::ptr::null_mut())),
             surface: Mutex::new(None),
-            #[cfg(target_os = "linux")]
             threaded: std::sync::OnceLock::new(),
-            #[cfg(target_os = "linux")]
             render_thread: Mutex::new(None),
-            #[cfg(target_os = "linux")]
             ui_fbos: Mutex::new((0, [0, 0])),
             shared,
             thread: Some(thread),
@@ -1022,7 +1200,6 @@ impl Player {
         // reached the threaded path, and the worker then heard "There is
         // already a mpv_render_context set" and fell back — the whole thread
         // built and lost to its own warm-up.
-        #[cfg(target_os = "linux")]
         if self.threaded_active() {
             return true;
         }
@@ -1086,11 +1263,11 @@ impl Player {
     ///
     /// An OpenGL context must be current on the calling thread.
     pub unsafe fn render_to_texture(&self, gl: &GlFns, target: (i32, i32)) -> Option<(u32, i32, i32)> {
+        // Only as a guard: a stream with no size yet has nothing to draw.
         let (video_w, video_h) = self.video_size();
         if video_w == 0 || video_h == 0 {
             return None;
         }
-        let video_w = video_w as i32;
 
         if !self.ensure_renderer(gl) {
             return None;
@@ -1117,26 +1294,48 @@ impl Player {
         // size, because rendering larger than the source only invents pixels
         // more expensively than the blit would.
         //
-        // Rounded up to a multiple of 32 so that dragging a window edge does
-        // not reallocate the framebuffer on every pixel of the drag.
-        // The height comes from the width by the rectangle's own ratio, so
-        // the framebuffer has exactly the aspect of the rectangle it will be
-        // stretched into. Rounding each axis up to 32 independently — which
-        // is what stood here — skewed the aspect by up to two percent, and by
-        // a different amount at every scale step: mpv letterboxed the
-        // mismatch inside the framebuffer, the blit stretched bars and all,
-        // and each step visibly squeezed the picture. Width alone is rounded,
-        // so a drag still does not reallocate per pixel; the height merely
-        // follows it.
+        // Two sizes, and keeping them apart is what stopped the picture being
+        // soft. mpv is asked for exactly the rectangle it will occupy, so the
+        // blit that follows is one to one and resamples nothing; the texture
+        // behind it is allocated with the width rounded up to a multiple of
+        // 32, so dragging a window edge does not reallocate on every pixel of
+        // the drag. mpv draws into the bottom-left corner of that allocation
+        // and the slack is never read.
+        //
+        // These used to be one number, rounded, and the blit then rescaled
+        // 1728 pixels into 1712 — a fractional resample of every frame, for
+        // nothing. Which is subtle enough to live a long time: it does not
+        // look like a fault, it looks like a slightly soft picture.
+        //
+        // Not clamped to the stream's own size, and the argument that it
+        // should be — that rendering above the source only invents pixels the
+        // blit could invent more cheaply — is wrong in the case that matters.
+        // On a high-DPI display the rectangle is nearly twice the stream's
+        // width, so the cap meant mpv drew 1920 pixels and the blit stretched
+        // them to 3200. Those are not the same operation: mpv scales from the
+        // source planes, doing chroma reconstruction and scaling in one pass
+        // with the scaler it was configured with, while the blit is a bilinear
+        // stretch of a finished picture. The second is visibly softer, which
+        // is what "a bit blurry, is there a reason" turned out to be.
+        //
+        // The height follows the width by the rectangle's own ratio rather
+        // than being rounded itself. Rounding each axis independently — which
+        // is what stood here once — skewed the aspect by up to two percent
+        // and by a different amount at every scale step: mpv letterboxed the
+        // mismatch inside the framebuffer, and the blit stretched the bars
+        // along with the picture.
         let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-        let width = round32(target.0).min(video_w);
+        let width = target.0.max(2);
         let height = (((width as i64 * target.1 as i64) / target.0.max(1) as i64) as i32
             & !1)
             .max(2);
+        let alloc = (round32(width), round32(height));
         let mut surface = self.surface.lock().unwrap();
+        // Reallocated when the drawn size no longer fits the texture, or when
+        // it has shrunk far enough that holding the larger one is waste.
         let stale = surface
             .as_ref()
-            .map(|s| s.width != width || s.height != height)
+            .map(|s| s.alloc != alloc)
             .unwrap_or(true);
         if stale {
             if let Some(old) = surface.take() {
@@ -1156,8 +1355,8 @@ impl Player {
                     GL_TEXTURE_2D,
                     0,
                     GL_RGBA8,
-                    width,
-                    height,
+                    alloc.0,
+                    alloc.1,
                     0,
                     GL_RGBA,
                     GL_UNSIGNED_BYTE,
@@ -1199,9 +1398,18 @@ impl Player {
                 which: 0,
                 width,
                 height,
+                alloc,
                 painted: false,
             });
         }
+        if let Some(live) = surface.as_mut() {
+            if live.width != width || live.height != height {
+                live.width = width;
+                live.height = height;
+                live.painted = false;
+            }
+        }
+
         // Copied out rather than borrowed: `painted` is set further down, and
         // holding a reference to the surface until then would borrow it for
         // the whole function.
@@ -1597,7 +1805,6 @@ impl Player {
         // shared textures, and this thread only waits on a GPU-side fence and
         // blits — so however long the driver holds the renderer hostage, it
         // is holding a thread nobody is typing at.
-        #[cfg(target_os = "linux")]
         if let Some(done) = self.threaded_present(gl, rect) {
             return done;
         }
@@ -1805,7 +2012,6 @@ impl Player {
         // The interface's wrappers around the worker's textures. The worker's
         // own objects — its renderer included — are freed by the worker, on
         // the context that owns them, when Drop joins it.
-        #[cfg(target_os = "linux")]
         {
             let mut cache = self.ui_fbos.lock().unwrap();
             for fbo in cache.1 {
@@ -1820,18 +2026,36 @@ impl Player {
     /// Whether the render thread owns (or is about to own) the renderer.
     /// Spawns it on first ask, which needs the interface's context current —
     /// true at every call site, all of which sit inside a paint.
-    #[cfg(target_os = "linux")]
     fn threaded_active(&self) -> bool {
-        // On by default. It was parked once, over white flashes that turned
-        // out to be the cross-context fence handoff — on the driver this
-        // thread exists for, fences are the broken primitive — and the
-        // handoff no longer uses them: the worker publishes only frames the
-        // GPU has finished. CLICKER_RENDER_THREAD=0 is the off switch if a
-        // machine ever needs the in-paint path back.
-        if std::env::var("CLICKER_RENDER_THREAD")
-            .map(|v| v == "0")
-            .unwrap_or(false)
-        {
+        // One code path, two defaults, and the difference is measured rather
+        // than assumed.
+        //
+        // The thread exists because a driver can hold a render call for most
+        // of a frame while doing no work — a translated OpenGL, a remote
+        // display — and on the interface's own thread that is a window that
+        // stops answering and a picture shedding half its frames. Where that
+        // happens it is worth a great deal: on a virtualised GPU it turned
+        // 50fps with frames dropping continuously into a steady 60 with one
+        // lost a minute.
+        //
+        // Where it does not happen it costs something instead. Rendering and
+        // presenting become two loops, and display-sync — which Windows and
+        // macOS use, and which was measured fixing a real fault there — needs
+        // them to be one. On a Mac the offset it produced was visible in the
+        // stats card and would not sit still. So the thread is the default
+        // where video is paced by the audio clock, and opt-in elsewhere.
+        //
+        // The code is one path on every platform regardless, which is the
+        // point: a bug found here is fixed once, and either default can be
+        // tried on any machine in ten seconds.
+        let default_on = !PACES_ON_DISPLAY;
+        let asked = std::env::var("CLICKER_RENDER_THREAD");
+        let on = match asked.as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => default_on,
+        };
+        if !on {
             return false;
         }
         match self.threaded.get_or_init(|| worker::spawn(self)) {
@@ -1842,7 +2066,6 @@ impl Player {
 
     /// Present by way of the render thread. `None` means there is no thread —
     /// it was tried and could not be had — and the in-paint path should run.
-    #[cfg(target_os = "linux")]
     unsafe fn threaded_present(&self, gl: &GlFns, rect: [i32; 4]) -> Option<bool> {
         if !self.threaded_active() {
             // The worker cleaned up entirely before dying, so falling back to
@@ -1921,13 +2144,13 @@ impl Player {
             (gl.enable)(GL_SCISSOR_TEST);
         }
 
-        // No report_swap here, deliberately — two reasons. It exists to feed
-        // display-resample's refresh estimate, and Linux paces against the
-        // audio clock instead. And it takes mpv's internal render lock, which
-        // is the lock the worker holds while rendering: the one call that
-        // made the interface wait for the worker was this one, and waiting on
-        // the worker is the entire thing this thread arrangement exists to
-        // end.
+        // No report_swap here. It exists to feed display-sync's estimate of
+        // the refresh, and this path is only the default where video is paced
+        // against the audio clock instead — see PACES_ON_DISPLAY, which
+        // records what happened when that was not true. It also takes mpv's
+        // internal render lock, which the worker holds while rendering, so
+        // the interface would be waiting on the worker to hand over a number
+        // nothing reads.
         self.note_present((sw, sh));
         Some(true)
     }
@@ -2069,7 +2292,6 @@ impl Drop for Player {
         // The render thread next, and before the handle: the worker owns the
         // render context, and mpv forbids destroying a handle while one
         // exists. Joining it is what frees it, on the context that made it.
-        #[cfg(target_os = "linux")]
         if let Some(Some(link)) = self.threaded.get() {
             link.stop.store(true, Ordering::SeqCst);
             link.wake.notify_all();
@@ -2202,69 +2424,31 @@ fn event_loop(api: &'static Api, ctx: Ptr, shared: Arc<Shared>, resume_at: f64) 
     }
 }
 
-/// The render thread: mpv on its own OpenGL context, Linux only.
+/// The render thread: mpv on an OpenGL context of its own, on every platform.
 ///
 /// eframe owns the window's context and never hands out the native handle,
-/// which is why mpv originally rented space inside egui's paint. But EGL will
-/// name the *current* context if asked during a paint, and that handle is
-/// enough to create a shared sibling. The worker renders into textures both
-/// contexts can see; the interface waits on a GPU fence and blits. However
-/// long the driver stalls the renderer — and through virtio it was measured
+/// which is why mpv originally rented space inside egui's paint. But every
+/// graphics API here will name the *current* context if asked during a paint,
+/// and that handle is enough to create a shared sibling: EGL on Linux, WGL on
+/// Windows, CGL on macOS, each behind `platform::gl_share`. The worker renders
+/// into textures both contexts can see and publishes only frames the GPU has
+/// finished; the interface blits one and synchronizes with nothing. However
+/// long the driver stalls the renderer — through virtio it was measured
 /// stalling it for most of every frame — it stalls a thread nobody is typing
 /// at.
 ///
-/// Everything here fails toward the in-paint path: no EGL, no current
-/// context, no shared context, no renderer — each is a log line and a clean
-/// fallback, never a broken player.
-#[cfg(target_os = "linux")]
+/// This began as a Linux fix and is now how the picture is drawn everywhere,
+/// deliberately. Two rendering paths meant a bug found on one platform had to
+/// be reasoned about twice and could be fixed on the wrong one; and the
+/// separate context is a wall as well as a thread, because the interface
+/// cannot leave state behind in a context it has no handle to — which is the
+/// mechanism behind the worst playback bug this program has shipped.
+///
+/// Everything here fails toward the in-paint path: no shareable context, no
+/// sibling, no renderer — each is a log line and a clean fallback, never a
+/// broken player. `CLICKER_RENDER_THREAD=0` forces that path.
 mod worker {
     use super::*;
-
-    const EGL_OPENGL_API: u32 = 0x30A2;
-    const EGL_NONE: i32 = 0x3038;
-    const EGL_CONTEXT_MAJOR_VERSION: i32 = 0x3098;
-    const EGL_CONTEXT_MINOR_VERSION: i32 = 0x30FB;
-
-    struct Egl {
-        get_current_display: unsafe extern "C" fn() -> *mut c_void,
-        get_current_context: unsafe extern "C" fn() -> *mut c_void,
-        bind_api: unsafe extern "C" fn(u32) -> u32,
-        create_context:
-            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void,
-        make_current:
-            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32,
-        destroy_context: unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32,
-        release_thread: unsafe extern "C" fn() -> u32,
-    }
-
-    impl Egl {
-        fn load() -> Option<Egl> {
-            let lib = crate::platform::open_library("libEGL.so.1");
-            if lib.is_null() {
-                return None;
-            }
-            unsafe {
-                macro_rules! sym {
-                    ($name:literal) => {{
-                        let p = crate::platform::library_symbol(lib, concat!($name, "\0").as_ptr());
-                        if p.is_null() {
-                            return None;
-                        }
-                        std::mem::transmute(p)
-                    }};
-                }
-                Some(Egl {
-                    get_current_display: sym!("eglGetCurrentDisplay"),
-                    get_current_context: sym!("eglGetCurrentContext"),
-                    bind_api: sym!("eglBindAPI"),
-                    create_context: sym!("eglCreateContext"),
-                    make_current: sym!("eglMakeCurrent"),
-                    destroy_context: sym!("eglDestroyContext"),
-                    release_thread: sym!("eglReleaseThread"),
-                })
-            }
-        }
-    }
 
     /// What the two threads share.
     pub struct Link {
@@ -2288,8 +2472,11 @@ mod worker {
     pub struct Frames {
         pub tex: [u32; 2],
         pub front: usize,
+        /// What mpv is asked to draw: the rectangle on screen exactly.
         pub width: i32,
         pub height: i32,
+        /// How large the textures are, which is the drawn size rounded up.
+        pub alloc: (i32, i32),
         pub want: (i32, i32),
         pub generation: u64,
         pub painted: bool,
@@ -2298,14 +2485,18 @@ mod worker {
     /// Capture the paint thread's context and start the worker. Called once,
     /// from a paint, where that context is current.
     pub fn spawn(player: &Player) -> Option<Arc<Link>> {
-        let egl = Egl::load()?;
-        let (display, share) = unsafe {
-            ((egl.get_current_display)(), (egl.get_current_context)())
-        };
-        if display.is_null() || share.is_null() {
-            crate::log::line("[mpv] no EGL context is current; rendering stays on the paint thread");
+        // Captured here, on the interface's own thread, because that is the
+        // only place its context is current — and on two of the three
+        // platforms the question can only be asked from the thread that owns
+        // the answer. What comes back is opaque: a display and a context on
+        // EGL, a device context and a rendering context on Windows, a CGL
+        // context on macOS. See `platform::gl_share`.
+        let Some(share) = crate::platform::gl_share() else {
+            crate::log::line(
+                "[mpv] no shareable graphics context; rendering stays on the paint thread",
+            );
             return None;
-        }
+        };
 
         let link = Arc::new(Link {
             state: Mutex::new(Frames {
@@ -2313,6 +2504,7 @@ mod worker {
                 front: 0,
                 width: 0,
                 height: 0,
+                alloc: (0, 0),
                 want: (0, 0),
                 generation: 0,
                 painted: false,
@@ -2328,11 +2520,10 @@ mod worker {
         let mpv = player.ctx;
         let shared = player.shared.clone();
         let thread_link = link.clone();
-        let (display, share) = (display as usize, share as usize);
         let handle = std::thread::Builder::new()
             .name("clicker-render".into())
             .spawn(move || {
-                run(egl, display, share, api, mpv, shared, thread_link.clone());
+                run(share, api, mpv, shared, thread_link.clone());
                 thread_link.dead.store(true, Ordering::SeqCst);
             })
             .ok()?;
@@ -2349,44 +2540,30 @@ mod worker {
     }
 
     fn run(
-        egl: Egl,
-        display: usize,
-        share: usize,
+        share: crate::platform::GlShare,
         api: &'static Api,
         mpv: Ptr,
         shared: Arc<Shared>,
         link: Arc<Link>,
     ) {
-        let display = display as *mut c_void;
-        let share = share as *mut c_void;
         unsafe {
-            (egl.bind_api)(EGL_OPENGL_API);
-            // A sibling of the interface's context: same share group, so
-            // textures made here are visible there. No config and no surface,
-            // which Mesa allows and which is all a renderer that only ever
-            // draws into framebuffers needs.
-            let attribs = [
-                EGL_CONTEXT_MAJOR_VERSION, 3,
-                EGL_CONTEXT_MINOR_VERSION, 0,
-                EGL_NONE,
-            ];
-            let ctx = (egl.create_context)(display, std::ptr::null_mut(), share, attribs.as_ptr());
-            if ctx.is_null() {
-                crate::log::line("[mpv] could not create a shared context; rendering stays on the paint thread");
+            // A sibling of the interface's context, made current on this
+            // thread: the same share group, so the textures drawn here are the
+            // ones the interface blits, and no drawable of its own, which is
+            // all a renderer that only ever draws into framebuffers needs. How
+            // that is spelled is the platform's business, not this file's.
+            let Some(worker_ctx) = crate::platform::gl_worker_begin(&share) else {
+                crate::log::line(
+                    "[mpv] could not create a shared context; rendering stays on the paint thread",
+                );
                 return;
-            }
-            if (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), ctx) == 0 {
-                crate::log::line("[mpv] could not make the shared context current; rendering stays on the paint thread");
-                (egl.destroy_context)(display, ctx);
-                return;
-            }
+            };
 
             let gl = match GlFns::load() {
                 Ok(gl) => gl,
                 Err(e) => {
                     crate::log::line(&format!("[mpv] {e}; rendering stays on the paint thread"));
-                    (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
-                    (egl.destroy_context)(display, ctx);
+                    crate::platform::gl_worker_end(worker_ctx);
                     return;
                 }
             };
@@ -2407,8 +2584,7 @@ mod worker {
             if rc < 0 {
                 let why = CStr::from_ptr((api.error_string)(rc)).to_string_lossy();
                 crate::log::line(&format!("[mpv] renderer refused the shared context: {why}"));
-                (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
-                (egl.destroy_context)(display, ctx);
+                crate::platform::gl_worker_end(worker_ctx);
                 return;
             }
             *link.render_ctx.lock().unwrap() = Ptr(created);
@@ -2449,13 +2625,19 @@ mod worker {
                 // drag does not reallocate per pixel, the height following by
                 // the rectangle's exact ratio, the whole thing clamped to the
                 // stream.
+                // The same two sizes as the in-paint path, and for the same
+                // reason: mpv draws exactly the rectangle it will occupy so
+                // the interface's blit resamples nothing, while the texture
+                // under it is rounded up so a window drag does not reallocate
+                // on every pixel. See `render_to_texture`.
                 let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-                let width = round32(want.0).min(vw);
+                let width = want.0.max(2);
                 let height = ((((width as i64 * want.1 as i64) / want.0.max(1) as i64) as i32) & !1).max(2);
+                let alloc = (round32(width), round32(height));
 
                 let stale = {
                     let st = link.state.lock().unwrap();
-                    st.width != width || st.height != height || st.tex[0] == 0
+                    st.alloc != alloc || st.tex[0] == 0
                 };
                 if stale {
                     for fbo in fbos {
@@ -2470,7 +2652,7 @@ mod worker {
                         let mut tex = 0u32;
                         gl.gen_textures(1, &mut tex);
                         gl.bind_texture(GL_TEXTURE_2D, tex);
-                        gl.tex_image_2d(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, std::ptr::null());
+                        gl.tex_image_2d(GL_TEXTURE_2D, 0, GL_RGBA8, alloc.0, alloc.1, 0, GL_RGBA, GL_UNSIGNED_BYTE, std::ptr::null());
                         gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                         gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                         gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -2498,8 +2680,17 @@ mod worker {
                     st.front = 0;
                     st.width = width;
                     st.height = height;
+                    st.alloc = alloc;
                     st.generation += 1;
                     st.painted = false;
+                }
+
+                {
+                    let mut st = link.state.lock().unwrap();
+                    if st.width != width || st.height != height {
+                        st.width = width;
+                        st.height = height;
+                    }
                 }
 
                 if (api.render_update)(created) & MPV_RENDER_UPDATE_FRAME == 0 {
@@ -2593,9 +2784,7 @@ mod worker {
             for tex in texs {
                 if tex != 0 { gl.delete_textures(1, &tex); }
             }
-            (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
-            (egl.destroy_context)(display, ctx);
-            (egl.release_thread)();
+            crate::platform::gl_worker_end(worker_ctx);
         }
     }
 }

@@ -184,6 +184,133 @@ pub fn icon_font() -> Option<Vec<u8>> {
     Some(include_bytes!("../../assets/FluentIcons-Clicker.ttf").to_vec())
 }
 
+// --- a second GL context, for the render thread ------------------------------
+
+/// The interface's EGL context, captured on the interface thread.
+///
+/// Pointers as integers because this crosses a thread boundary, and a raw
+/// pointer is not `Send` for reasons that do not apply to a handle the driver
+/// hands back and expects to see again.
+pub struct GlShare {
+    display: usize,
+    context: usize,
+}
+
+/// A context of the worker's own, current on the worker's thread.
+pub struct GlWorker {
+    display: usize,
+    context: usize,
+}
+
+const EGL_OPENGL_API: u32 = 0x30A2;
+const EGL_NONE: i32 = 0x3038;
+const EGL_CONTEXT_MAJOR_VERSION: i32 = 0x3098;
+const EGL_CONTEXT_MINOR_VERSION: i32 = 0x30FB;
+
+struct Egl {
+    get_current_display: unsafe extern "C" fn() -> *mut c_void,
+    get_current_context: unsafe extern "C" fn() -> *mut c_void,
+    bind_api: unsafe extern "C" fn(u32) -> u32,
+    create_context:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void,
+    make_current:
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32,
+    destroy_context: unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32,
+    release_thread: unsafe extern "C" fn() -> u32,
+}
+
+fn egl() -> Option<&'static Egl> {
+    static EGL: std::sync::OnceLock<Option<Egl>> = std::sync::OnceLock::new();
+    EGL.get_or_init(|| {
+        let lib = super::open_library("libEGL.so.1");
+        if lib.is_null() {
+            return None;
+        }
+        unsafe {
+            macro_rules! sym {
+                ($name:literal) => {{
+                    let p = super::library_symbol(lib, concat!($name, "\0").as_ptr());
+                    if p.is_null() {
+                        return None;
+                    }
+                    std::mem::transmute(p)
+                }};
+            }
+            Some(Egl {
+                get_current_display: sym!("eglGetCurrentDisplay"),
+                get_current_context: sym!("eglGetCurrentContext"),
+                bind_api: sym!("eglBindAPI"),
+                create_context: sym!("eglCreateContext"),
+                make_current: sym!("eglMakeCurrent"),
+                destroy_context: sym!("eglDestroyContext"),
+                release_thread: sym!("eglReleaseThread"),
+            })
+        }
+    })
+    .as_ref()
+}
+
+/// Capture the interface's context. Interface thread only, where it is
+/// current. `None` where the session is not EGL at all — an X11 session on
+/// GLX is the case — and the caller falls back to rendering in the paint.
+pub fn gl_share() -> Option<GlShare> {
+    let egl = egl()?;
+    let (display, context) = unsafe { ((egl.get_current_display)(), (egl.get_current_context)()) };
+    if display.is_null() || context.is_null() {
+        return None;
+    }
+    Some(GlShare {
+        display: display as usize,
+        context: context as usize,
+    })
+}
+
+/// A sibling of that context, made current on this thread.
+///
+/// No config and no surface, which Mesa allows and which is all a renderer
+/// that only ever draws into framebuffers needs. Same share group, so the
+/// textures made here are the ones the interface blits.
+pub fn gl_worker_begin(share: &GlShare) -> Option<GlWorker> {
+    let egl = egl()?;
+    let display = share.display as *mut c_void;
+    unsafe {
+        (egl.bind_api)(EGL_OPENGL_API);
+        let attribs = [
+            EGL_CONTEXT_MAJOR_VERSION, 3,
+            EGL_CONTEXT_MINOR_VERSION, 0,
+            EGL_NONE,
+        ];
+        let ctx = (egl.create_context)(
+            display,
+            std::ptr::null_mut(),
+            share.context as *mut c_void,
+            attribs.as_ptr(),
+        );
+        if ctx.is_null() {
+            return None;
+        }
+        if (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), ctx) == 0 {
+            (egl.destroy_context)(display, ctx);
+            return None;
+        }
+        Some(GlWorker {
+            display: share.display,
+            context: ctx as usize,
+        })
+    }
+}
+
+/// Give it back, on the thread that owns it.
+pub fn gl_worker_end(worker: GlWorker) {
+    let Some(egl) = egl() else { return };
+    unsafe {
+        let display = worker.display as *mut c_void;
+        (egl.make_current)(display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        (egl.destroy_context)(display, worker.context as *mut c_void);
+        (egl.release_thread)();
+    }
+}
+
 // --- the live buffer's disk tricks -------------------------------------------
 
 /// Nothing to do: every Linux filesystem this will meet — ext4, btrfs, xfs —
