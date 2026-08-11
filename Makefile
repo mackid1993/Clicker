@@ -70,6 +70,14 @@ run: build
 # libva and libvdpau are deliberately headers-only and never bundled: hardware
 # decoding talks to the machine's own driver, so the machine's own libva has to
 # be the one that loads. Same reason Mesa and libwayland are left alone.
+#
+# libass and libplacebo are asked for separately, with `|| true`, because they
+# are the two build-mpv.sh will compile itself when the distribution's copy is
+# too old — mpv 0.41 wants libass 0.17 and libplacebo 7.349. Installing the
+# development packages lets pkg-config find a new enough one and skip that
+# build entirely, which on a current distribution removes the whole autotools
+# path. Where they are absent or too old, nothing is lost: the source build
+# runs as before.
 deps:
 	@set -e; \
 	if command -v apt-get >/dev/null; then \
@@ -81,6 +89,7 @@ deps:
 	    libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
 	    libgl1-mesa-dev libfreetype6-dev libfribidi-dev libharfbuzz-dev \
 	    libfontconfig1-dev libunibreak-dev libva-dev libvdpau-dev; \
+	  sudo apt-get install -y libass-dev libplacebo-dev || true; \
 	  meson --version 2>/dev/null | grep -qE '^0\.6[3-9]|^[1-9]' || sudo pip3 install --upgrade meson; \
 	elif command -v dnf >/dev/null; then \
 	  echo "==> dnf"; \
@@ -89,12 +98,14 @@ deps:
 	    gtk3-devel libxdo-devel libappindicator-gtk3-devel \
 	    mesa-libGL-devel freetype-devel fribidi-devel harfbuzz-devel \
 	    fontconfig-devel libunibreak-devel libva-devel libvdpau-devel; \
+	  sudo dnf install -y libass-devel libplacebo-devel || true; \
 	elif command -v pacman >/dev/null; then \
 	  echo "==> pacman"; \
 	  sudo pacman -S --needed --noconfirm base-devel git curl pkgconf \
 	    meson ninja nasm patchelf autoconf automake libtool \
 	    gtk3 xdotool libayatana-appindicator \
 	    mesa freetype2 fribidi harfbuzz fontconfig libunibreak libva libvdpau; \
+	  sudo pacman -S --needed --noconfirm libass libplacebo || true; \
 	elif command -v zypper >/dev/null; then \
 	  echo "==> zypper"; \
 	  sudo zypper install -y -t pattern devel_basis; \
@@ -103,6 +114,7 @@ deps:
 	    gtk3-devel xdotool-devel libayatana-appindicator3-devel \
 	    Mesa-libGL-devel freetype2-devel fribidi-devel harfbuzz-devel \
 	    fontconfig-devel libunibreak-devel libva-devel libvdpau-devel; \
+	  sudo zypper install -y libass-devel libplacebo-devel || true; \
 	else \
 	  echo "No package manager I recognise. Install the equivalents of:" >&2; \
 	  echo "  a C toolchain, git, curl, pkg-config, meson (>= 0.63), ninja," >&2; \

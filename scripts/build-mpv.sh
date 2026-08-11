@@ -79,13 +79,34 @@ have_new_enough() {
   pkg-config --exists --print-errors "$1 >= $2" 2>/dev/null
 }
 
+# A source tree from an attempt that died halfway is not a source tree.
+#
+# The first run of this on a machine without autoconf stopped inside
+# libass's autogen.sh, leaving a directory that looked built enough to skip
+# cloning and was missing the files automake needs — so the retry failed
+# differently, with `required file './ltmain.sh' not found`, and looked like a
+# missing package rather than a poisoned checkout. Anything already here is
+# put back the way it was cloned before it is used again.
+pristine() {
+  local dir="$1"
+  [[ -d "$dir/.git" ]] || return 0
+  git -C "$dir" reset --hard --quiet
+  git -C "$dir" clean -xfdq
+}
+
 if ! have_new_enough libass 0.17.0; then
   if [[ ! -f "$DEPS/lib/libass.$LIBEXT" ]]; then
     echo "==> building libass $LIBASS_TAG"
     [[ -d "$THIRD/libass-src" ]] || git clone --depth 1 --branch "$LIBASS_TAG" \
       https://github.com/libass/libass.git "$THIRD/libass-src"
+    pristine "$THIRD/libass-src"
     (
       cd "$THIRD/libass-src"
+      # libtoolize before autogen.sh rather than relying on autoreconf to
+      # infer it. It usually does; when it does not, automake stops on a
+      # missing ltmain.sh, which reads as a broken machine rather than a
+      # step that was skipped.
+      libtoolize --copy --force >/dev/null 2>&1 || true
       ./autogen.sh
       ./configure --prefix="$DEPS" --disable-static
       make -j"$JOBS" && make install
