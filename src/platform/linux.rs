@@ -390,10 +390,10 @@ pub const MPV_LIBRARY: &str = "libmpv.so.2";
 
 /// Where libmpv might be, and deliberately nowhere else.
 ///
-/// A `bin`/`lib` split first — which is a Flatpak, and was the AppImage
-/// before it — then beside the binary, which is where `make install` and the
-/// .deb both put them, then the repository's staged build for anyone running
-/// this out of `cargo`.
+/// A `bin`/`lib` split first, for a distribution that lays itself out that
+/// way; then beside the binary, which is where `make install` and the .deb
+/// both put them; then the repository's staged build, for anyone running this
+/// out of `cargo`.
 /// What is *not* here is the system loader's search path: a distribution's
 /// FFmpeg is frequently built with GPL components, and this application ships
 /// under MIT with an LGPL player. The only libmpv it loads is one built by

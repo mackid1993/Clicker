@@ -309,7 +309,7 @@ should be checkable:
 | Window frame | drawn by the app | system, content under the titlebar | system |
 | Notification area | yes | — | — |
 | Menu bar | — | yes | — |
-| Hardware decoding | auto-safe | auto-safe | auto-safe, or auto-copy in a Flatpak |
+| Hardware decoding | auto-safe | auto-safe | auto-safe |
 
 Everything else is one path: the render worker and its context handoff, the
 double-buffered textures, the sizing, the blit, the deinterlacer, and the

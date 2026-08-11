@@ -468,15 +468,6 @@ struct Shared {
     repaint: Box<dyn Fn() + Send + Sync>,
 }
 
-/// Whether this is the Flatpak build, running inside its sandbox.
-///
-/// The file is what Flatpak itself puts there for exactly this question, and
-/// asking it costs one stat, once.
-fn in_flatpak() -> bool {
-    static INSIDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *INSIDE.get_or_init(|| std::path::Path::new("/.flatpak-info").exists())
-}
-
 /// What the graphics stack calls itself, recorded once at startup.
 ///
 /// Set from `log_gl_identity` on the interface thread, before any player
@@ -822,35 +813,24 @@ impl Player {
             // for that before any graphics context exists, and never exports
             // the vendor symbols that ask for the discrete chip. See
             // `prefer_integrated_gpu`.
-            // "auto-safe" everywhere but a Flatpak, where it is "auto-copy".
             //
-            // auto-safe lets mpv keep decoded frames in driver memory and
-            // hand this application the hardware surface. That needs the
-            // decoder's driver and the GL context's driver to be the same
-            // Mesa — true on a normal Linux desktop, and routinely false
-            // inside a sandbox, where the runtime ships one Mesa and the host
-            // has another. What that produces is a stream that opens, reports
-            // no error, and then stalls or tears: exactly "live TV craps
-            // out", and only on the packaged build.
+            // "auto-safe" rather than "auto-copy": it lets mpv keep decoded
+            // frames in driver memory and hand this application the hardware
+            // surface, which needs the decoder's driver and the GL context's
+            // driver to be the same one. That holds on every machine this
+            // ships to — one driver stack on Windows, one on macOS, and the
+            // desktop's own Mesa on Linux, because the graphics are
+            // deliberately not bundled.
             //
-            // auto-copy still decodes on the chip and copies the frame back
-            // to normal memory, which costs a little bandwidth and works
-            // whatever the two drivers are. Windows and macOS are untouched:
-            // there is one driver stack on each and auto-safe is right there.
+            // It held once for a sandboxed build, where the runtime shipped
+            // one Mesa and the host had another, and auto-copy was the answer
+            // there. That build no longer exists, and the test for it went
+            // with it: a stat for /.flatpak-info on a machine that can never
+            // be inside one is not caution, it is a claim about a package
+            // nobody ships.
             (
                 "hwdec",
-                if software_decoding {
-                    "no"
-                } else if in_flatpak() {
-                    // A sandbox's decode stack and its display stack are not
-                    // the matched pair a desktop has, and full hardware
-                    // decode trusts that match. auto-copy decodes on whatever
-                    // the chip offers and copies the frame back to memory it
-                    // owns, which survives the mismatch.
-                    "auto-copy"
-                } else {
-                    "auto-safe"
-                },
+                if software_decoding { "no" } else { "auto-safe" },
             ),
             // No `hwdec-codecs` here, deliberately, and it is worth writing
             // down why the obvious hazard is already handled. `auto-safe`

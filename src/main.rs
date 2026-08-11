@@ -336,7 +336,7 @@ fn main() -> eframe::Result<()> {
     // application's name, nothing matches io.github.mackid1993.Clicker.desktop,
     // and GNOME shows the grey fallback in the dock and in Alt-Tab.
     //
-    // The same string is the AppImage's desktop file, the Flatpak's app id and
+    // The same string is the .deb's desktop file, the icon it installs and
     // the .app's CFBundleIdentifier, deliberately.
     viewport = viewport.with_app_id("io.github.mackid1993.Clicker");
 
