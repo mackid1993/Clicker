@@ -337,10 +337,17 @@ fn library() -> Result<&'static Api, String> {
                     refusals.push(why);
                 }
             }
-            let detail = refusals
-                .last()
-                .map(|why| format!(": {why}"))
-                .unwrap_or_default();
+            // Every one of them, not the last. The last candidate is the
+            // development path, and reporting only that named a directory
+            // nobody had shipped while the real failure — a bundled library
+            // whose own dependency had moved on a newer distribution — sat
+            // silently in the first refusal. Two of these are one line each;
+            // this only ever appears when playback is already broken.
+            let detail = if refusals.is_empty() {
+                String::new()
+            } else {
+                format!(":\n{}", refusals.join("\n"))
+            };
             Err(format!(
                 "{} could not be loaded{detail}",
                 crate::platform::MPV_LIBRARY

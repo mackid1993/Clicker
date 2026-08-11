@@ -288,6 +288,19 @@ fn main() -> eframe::Result<()> {
     if let Some(icon) = app_icon() {
         viewport = viewport.with_icon(icon);
     }
+    // The name the desktop knows this window by, which on Wayland is the only
+    // way it can know it at all.
+    //
+    // `with_icon` above hands the toolkit pixels, and X11 takes them. Wayland
+    // has no protocol for a window to carry its own icon: the compositor
+    // matches the surface's app_id against installed .desktop files and uses
+    // the icon it finds there. Without this the app_id defaults to the
+    // application's name, nothing matches io.github.mackid1993.Clicker.desktop,
+    // and GNOME shows the grey fallback in the dock and in Alt-Tab.
+    //
+    // The same string is the AppImage's desktop file, the Flatpak's app id and
+    // the .app's CFBundleIdentifier, deliberately.
+    viewport = viewport.with_app_id("io.github.mackid1993.Clicker");
 
     // Reopen where it was left, at the size it was left, maximized if it was
     // maximized. The position is only honored while it still lands on a

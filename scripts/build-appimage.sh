@@ -58,6 +58,35 @@ if [[ -f "$STAGE/libmpv.so.2" ]]; then
   mkdir -p "$APPDIR/usr/lib"
   cp -a "$STAGE"/*.so* "$APPDIR/usr/lib/"
 
+  # What libass needs that a machine cannot be assumed to have.
+  #
+  # libunibreak is the one that proved this necessary. 22.04 ships
+  # libunibreak.so.1 and 24.04 ships libunibreak.so.5, so libass — built here,
+  # against the older soname — found nothing to load on a newer desktop, and
+  # libmpv failed to open because of it. The application reported that as
+  # libmpv being missing, which sent us looking for a file that was sitting
+  # right there.
+  #
+  # Only the uncommon ones travel. freetype, fontconfig, harfbuzz, expat,
+  # png and zlib are on every desktop with sonames that have not moved in a
+  # decade, and fontconfig in particular reads the machine's own font
+  # configuration — bundling that is how an application ends up with no fonts.
+  for lib in "$APPDIR/usr/lib/"*.so*; do
+    [[ -f "$lib" && ! -L "$lib" ]] || continue
+    ldd "$lib" 2>/dev/null | awk '{print $1, $3}'
+  done | sort -u | while read -r soname resolved; do
+    case "$soname" in
+      libunibreak.so.*|libfribidi.so.*|libgraphite2.so.*) ;;
+      *) continue ;;
+    esac
+    [[ -f "${resolved:-}" ]] || continue
+    base="$(basename "$resolved")"
+    [[ -f "$APPDIR/usr/lib/$base" ]] && continue
+    cp -L "$resolved" "$APPDIR/usr/lib/$base"
+    chmod u+w "$APPDIR/usr/lib/$base"
+    echo "    carrying $base"
+  done
+
   # Teach each library to look beside itself.
   #
   # libmpv links libavcodec and the rest, and was built with an rpath naming
@@ -111,6 +140,32 @@ cat > "$APPDIR/AppRun" <<'APPRUN'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="${HERE}/usr/bin:${PATH}"
+
+# Tell the desktop what this window is, so it can find the icon.
+#
+# Wayland has no protocol for a window to carry its own icon. The compositor
+# matches the surface's app_id — which the application sets to
+# io.github.mackid1993.Clicker — against installed .desktop files, and uses
+# the icon named there. No desktop file, no icon: GNOME shows the grey
+# fallback in the dock and in Alt-Tab however good the artwork in the bundle
+# is. An AppImage installs nothing by itself, so this puts the two files
+# where the desktop looks, once, pointing Exec at wherever this AppImage
+# happens to live.
+#
+# Written only when absent, so moving or deleting the AppImage leaves at most
+# a stale menu entry, and never on a system where AppImageLauncher or
+# appimaged has already done the same job properly.
+APP_ID=io.github.mackid1993.Clicker
+DESKTOP="${XDG_DATA_HOME:-$HOME/.local/share}/applications/${APP_ID}.desktop"
+ICON="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps/${APP_ID}.png"
+if [ ! -e "$DESKTOP" ] && [ -w "$(dirname "$(dirname "$DESKTOP")")" ] 2>/dev/null; then
+  mkdir -p "$(dirname "$DESKTOP")" "$(dirname "$ICON")" 2>/dev/null
+  cp "${HERE}/${APP_ID}.png" "$ICON" 2>/dev/null
+  sed "s|^Exec=.*|Exec=$(readlink -f "${APPIMAGE:-$0}")|" \
+    "${HERE}/${APP_ID}.desktop" > "$DESKTOP" 2>/dev/null
+  command -v update-desktop-database >/dev/null \
+    && update-desktop-database "$(dirname "$DESKTOP")" 2>/dev/null
+fi
 # Deliberately no LD_LIBRARY_PATH.
 #
 # libmpv is found by the application itself, which looks in usr/lib beside
