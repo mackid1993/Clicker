@@ -341,25 +341,56 @@ done
 # thing to diagnose than a build that failed. So the finished library is asked
 # what outputs it has, and a staging with nothing but `null` is refused.
 echo "==> audio"
-case "$(uname -s)" in
-  Darwin) WANTED="coreaudio|avfoundation" ;;
-  *)      WANTED="pulse|alsa|pipewire" ;;
-esac
 
-MPV_LIB=$(ls "$STAGE"/libmpv.* 2>/dev/null | head -1)
-OUTPUTS=$(grep -a -oE "^($WANTED)$" "$MPV_LIB" 2>/dev/null | sort -u | tr '\n' ' ')
-# Some platforms keep the names unanchored in the string table.
-[[ -n "${OUTPUTS// /}" ]] || OUTPUTS=$(strings "$MPV_LIB" 2>/dev/null \
-  | grep -xE "$WANTED" | sort -u | tr '\n' ' ')
-
-if [[ -z "${OUTPUTS// /}" ]]; then
-  echo "this libmpv has no audio output compiled in — it would play video and" >&2
-  echo "nothing else. Install the development headers and build again:" >&2
-  echo "  Linux:  libasound2-dev libpulse-dev libpipewire-0.3-dev" >&2
-  echo "  macOS:  CoreAudio comes with the system; check the meson log" >&2
+MPV_LIB=""
+for candidate in "$STAGE"/libmpv.*; do
+  if [[ -f "$candidate" && ! -L "$candidate" ]]; then
+    MPV_LIB="$candidate"
+    break
+  fi
+done
+if [[ -z "$MPV_LIB" ]]; then
+  echo "no staged libmpv to check" >&2
   exit 1
 fi
-echo "    audio outputs: $OUTPUTS"
+
+# What it links, rather than what strings can be found in it.
+#
+# The first version of this check scanned the string table with an anchored
+# grep, which on a binary means "a line consisting only of pulse", and lines
+# are not a thing binaries have. It never matched, so it always fell through
+# to a `[[ test ]] || VAR=$(pipeline)` fallback — and under `set -e` a failed
+# test on the left with a grep that finds nothing on the right makes the whole
+# list fail, which ended the script with no message at all. An audio check
+# that exits 1 in silence is worse than no audio check.
+#
+# The libraries an audio output needs are linked, so ask the loader. There is
+# nothing to interpret: no libasound, no libpulse and no libpipewire means no
+# way to make a sound.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  OUTPUTS=$(otool -L "$MPV_LIB" 2>/dev/null \
+    | grep -oE 'CoreAudio|AudioToolbox|AudioUnit' | sort -u | tr '\n' ' ' || true)
+  MISSING="CoreAudio, which comes with the system — check the meson log for
+  why -Dcoreaudio was not satisfied"
+else
+  OUTPUTS=$(ldd "$MPV_LIB" 2>/dev/null \
+    | grep -oE 'libasound|libpulse|libpipewire' | sort -u | tr '\n' ' ' || true)
+  MISSING="libasound2-dev, libpulse-dev and libpipewire-0.3-dev"
+fi
+
+if [[ -z "${OUTPUTS// /}" ]]; then
+  echo >&2
+  echo "This libmpv has no audio output compiled in. It would play video and" >&2
+  echo "nothing else — silently, with nothing anywhere saying why." >&2
+  echo >&2
+  echo "mpv builds every audio output only if its headers were present. Install:" >&2
+  echo "  $MISSING" >&2
+  echo >&2
+  echo "then delete what was already built and build again:" >&2
+  echo "  rm -rf third_party/mpv third_party/mpv-src/build third_party/mpv-deps/lib/libmpv.*" >&2
+  exit 1
+fi
+echo "    audio: $OUTPUTS"
 
 ls -1 "$STAGE"
 echo
