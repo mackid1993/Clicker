@@ -70,7 +70,8 @@ session rather than another all-nighter:
 - `CLICKER_PLAY=<file or URL>` — open that source at startup, no server, no
   hand on the mouse. A live channel is
   `http://<dvr>:8089/devices/ANY/channels/<n>/stream.mpg`.
-- `CLICKER_MPV_OPTS="profile=fast,hwdec=no"` — mpv's own options, no rebuild.
+- `CLICKER_MPV_OPTS="profile=fast;hwdec=no"` — mpv's own options, no rebuild.
+  Semicolons, because mpv's own values contain commas.
 - `CLICKER_VIDEO=window` — mpv draws into the window itself, no offscreen
   target and no blit. It overdraws the interface and is a measuring
   instrument, not a mode.
@@ -86,6 +87,17 @@ cost. Frames drawn is the number that decides it.
       `None` on both, and the compile is proven by `check.yml`.
 - [ ] Playtest Windows and macOS once before release. Neither has been run
       since the port's later commits.
+
+## Open: white triangles in the guide, on first launch only
+
+Reported on the shipped .deb: the guide tore with white triangles on the very
+first launch, and was clean after a video had played. Transient, self-curing,
+and not the video path — nothing draws video on the guide, and the worker is
+not spawned until something plays. The shape of it says egui's font atlas is
+being drawn from before the first upload of it has landed, which a driver
+translating OpenGL is exactly where you would expect to see. Not reproduced
+from a script yet; the next step is to launch cold, capture the first second,
+and see whether an empty atlas is what is on screen.
 
 ## Known and deliberately not fixed here
 

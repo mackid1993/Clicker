@@ -882,13 +882,16 @@ impl Player {
 
         // Anything else, from the environment, applied last so it wins.
         //
-        // `CLICKER_MPV_OPTS="profile=fast,hwdec=no"` — mpv's own option names,
-        // comma separated. This exists because the alternative is what this
+        // `CLICKER_MPV_OPTS="profile=fast;hwdec=no"` — mpv's option names,
+        // semicolon separated, because a comma is already inside half of
+        // mpv's own values (`hwdec-codecs=h264,vc1` and every filter chain)
+        // and a separator that cuts those in half is a trap. This exists
+        // because the alternative is what this
         // port kept doing: rebuild, reinstall and replay a channel to learn
         // what one option does. Every knob mpv has is now a restart away, and
         // what gets hard-coded above is only ever what a run like that proved.
         if let Ok(extra) = std::env::var("CLICKER_MPV_OPTS") {
-            for option in extra.split(',').filter(|s| !s.trim().is_empty()) {
+            for option in extra.split(';').filter(|s| !s.trim().is_empty()) {
                 let (name, value) = option.split_once('=').unwrap_or((option, "yes"));
                 let (name, value) = (name.trim(), value.trim());
                 let (Ok(n), Ok(v)) = (CString::new(name), CString::new(value)) else {

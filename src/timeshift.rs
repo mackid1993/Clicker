@@ -25,7 +25,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 /// How much is released at a time once the window is full.
 ///

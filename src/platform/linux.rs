@@ -153,10 +153,24 @@ pub fn fallback_font() -> Option<Vec<u8>> {
     );
 
     for path in candidates {
-        if let Ok(bytes) = std::fs::read(&path) {
-            crate::log::line(&format!("[clicker] fallback font: {path}"));
-            return Some(bytes);
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        // Checked before it is handed on, because the thing that parses it
+        // panics rather than declines: epaint's loader unwraps, and this is
+        // the only place in the program where bytes chosen by another program
+        // reach a parser. fontconfig can legitimately answer with a bitmap
+        // font, a Type 1, or a collection, and ab_glyph reads none of those.
+        // A window that never opens is a far worse outcome than a box where
+        // an arrow should be, so anything that is not a plain sfnt is passed
+        // over for the next candidate.
+        let magic = bytes.get(..4).unwrap_or_default();
+        if !matches!(magic, [0x00, 0x01, 0x00, 0x00] | b"OTTO" | b"true") {
+            crate::log::line(&format!(
+                "[clicker] not a font this can read, passing over it: {path}"
+            ));
+            continue;
         }
+        crate::log::line(&format!("[clicker] fallback font: {path}"));
+        return Some(bytes);
     }
     crate::log::line("[clicker] no fallback font: some glyphs will draw as boxes");
     None

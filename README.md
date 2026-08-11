@@ -306,7 +306,7 @@ dropped frames the whole way through.
 **Three environment variables exist for testing**, and are the reason a
 playback question no longer costs an evening. `CLICKER_PLAY=<file or URL>`
 opens that source at startup, so a machine can be tested from a script with no
-server and no hand on the mouse. `CLICKER_MPV_OPTS="profile=fast,hwdec=no"`
+server and no hand on the mouse. `CLICKER_MPV_OPTS="profile=fast;hwdec=no"`
 passes mpv's own options straight through, so a knob can be tried without a
 rebuild. `CLICKER_VIDEO=window` hands mpv the whole window instead of an
 offscreen target — it overdraws the interface, and it is how the cost of the
