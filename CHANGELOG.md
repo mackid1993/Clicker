@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.7
+## 1.2.0
 
 **Clicker runs on macOS and Linux.** One codebase, one interface — the same
 Fluent surface everywhere — over a new `platform` module that holds the

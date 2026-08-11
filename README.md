@@ -36,7 +36,7 @@ interface. One codebase and one interface on all three: Windows 10 1809 and
 up, macOS 12 and up on both Apple silicon and Intel, and Linux on x86-64 and
 arm64.
 
-> **Status: 1.1.7.** It plays live TV and recordings, schedules, downloads and
+> **Status: 1.2.0.** It plays live TV and recordings, schedules, downloads and
 > seeks. It has been run on the machines it was written on and not much else,
 > so expect the occasional rough edge. Windows is the platform with the most
 > hours on it; macOS and Linux are newer.
