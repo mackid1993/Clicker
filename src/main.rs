@@ -226,10 +226,14 @@ fn prefer_integrated_gpu() {
 }
 
 fn main() -> eframe::Result<()> {
-    // Before anything loads libraries: the bundled PipeWire client needs to
-    // know where this machine keeps its plugins.
     #[cfg(target_os = "linux")]
-    platform::audio_environment();
+    {
+        platform::audio_environment();
+        // Before anything opens sockets or files: the graphics driver on some
+        // systems leaks a descriptor per frame, and the default ceiling of
+        // 1024 turns that into a one-minute death. See raise_fd_limit.
+        platform::raise_fd_limit();
+    }
 
     install_panic_log();
     // Buffers left by a process that did not live to clean up after itself.

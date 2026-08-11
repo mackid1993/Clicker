@@ -127,6 +127,43 @@ pub fn make_sparse(_file: &tokio::fs::File) {}
 
 extern "C" {
     fn fallocate(fd: c_int, mode: c_int, offset: i64, len: i64) -> c_int;
+    fn getrlimit(resource: c_int, rlim: *mut Rlimit) -> c_int;
+    fn setrlimit(resource: c_int, rlim: *const Rlimit) -> c_int;
+}
+
+#[repr(C)]
+struct Rlimit {
+    cur: u64,
+    max: u64,
+}
+
+const RLIMIT_NOFILE: c_int = 7;
+
+/// Raise the file-descriptor ceiling to the hard limit.
+///
+/// Measured with 1024 of 1024 descriptors open one minute into playback, 958
+/// of them `anon_inode:sync_file` — GPU fence descriptors the virtio graphics
+/// driver exports every frame and never closes. The leak is the driver's, but
+/// the death is ours: at the ceiling, sockets, images and the audio device
+/// all fail at once and the application appears to have a stroke. Chromium
+/// raises this limit at startup for the same class of reason; the hard limit
+/// on a systemd desktop is around a million, which turns a one-minute cliff
+/// into a horizon nobody meets.
+pub fn raise_fd_limit() {
+    unsafe {
+        let mut limit = Rlimit { cur: 0, max: 0 };
+        if getrlimit(RLIMIT_NOFILE, &mut limit) != 0 || limit.cur >= limit.max {
+            return;
+        }
+        let was = limit.cur;
+        limit.cur = limit.max;
+        if setrlimit(RLIMIT_NOFILE, &limit) == 0 {
+            crate::log::line(&format!(
+                "[clicker] file descriptor limit raised {was} -> {}",
+                limit.max
+            ));
+        }
+    }
 }
 
 const FALLOC_FL_KEEP_SIZE: c_int = 0x01;
