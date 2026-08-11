@@ -703,11 +703,10 @@ pub fn settings_screen(
                 ui,
                 "Keyboard",
                 if cfg!(target_os = "macos") {
-                    "The whole application can be driven without a mouse. Click a key \
-                     to change it, then press the one you want. Anything bound with \
-                     Command, Control, Shift or Option also appears in the menu bar; \
-                     a plain key does not, because the menu would then swallow it \
-                     while you were typing."
+                    "The whole application can be driven without a mouse. Click a \
+                     shortcut to change it, then press the one you want. These are \
+                     the same shortcuts the menu bar shows, and changing one here \
+                     changes it there."
                 } else {
                     "The whole application can be driven without a mouse. Click a key \
                      to change it, then press the one you want."
@@ -752,6 +751,11 @@ pub fn settings_screen(
                             Some(crate::keys::Binding {
                                 key: *key,
                                 command: modifiers.command,
+                                // Only on a Mac is Control its own modifier;
+                                // elsewhere egui reports it as command too,
+                                // and recording both would make a binding
+                                // that can never be matched.
+                                ctrl: cfg!(target_os = "macos") && modifiers.ctrl,
                                 shift: modifiers.shift,
                                 alt: modifiers.alt,
                             })
@@ -790,24 +794,6 @@ pub fn settings_screen(
                             .size(12.0)
                             .color(Fluent::TEXT_SECONDARY),
                     );
-
-                    // The few shortcuts the menu bar owns outright and this
-                    // page cannot change: Settings on Command-comma, full
-                    // screen on Control-Command-F. Every other menu item now
-                    // takes its accelerator from the binding on this row, so
-                    // there is nothing extra to print for those.
-                    if let Some(from_menu) = crate::platform::menu_shortcut(settings, entry.id) {
-                        ui.label(
-                            egui::RichText::new(from_menu)
-                                .size(11.5)
-                                .color(Fluent::TEXT_TERTIARY),
-                        )
-                        .on_hover_text(
-                            "What the menu bar shows for this. Bind a combination \
-                             with Command, Control, Shift or Option and the menu \
-                             follows it.",
-                        );
-                    }
 
                     // Said rather than refused. Somebody swapping two keys over
                     // passes through a clash on the way, and refusing the first

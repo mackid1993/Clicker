@@ -33,39 +33,93 @@ const fn action(id: &'static str, label: &'static str, default: &'static str) ->
 }
 
 pub const ACTIONS: &[Action] = &[
+    // Two sets of defaults, because two desktops disagree about what a
+    // shortcut looks like.
+    //
+    // On Windows and Linux a bare letter is normal in a media application and
+    // there is no menu bar to contradict it. On a Mac there is, and it puts
+    // views on Command-1 upward — so the default *is* that combination, and
+    // the menu bar shows the same shortcut this page does. One action, one
+    // shortcut, printed identically in both places; anything else means the
+    // program disagreeing with its own menu about how to reach the guide.
+    #[cfg(not(target_os = "macos"))]
     action("home", "Home", "H"),
+    #[cfg(not(target_os = "macos"))]
     action("guide", "Guide", "G"),
+    #[cfg(not(target_os = "macos"))]
     action("library", "Library", "L"),
+    #[cfg(not(target_os = "macos"))]
     action("recordings", "Recordings", "R"),
+    #[cfg(not(target_os = "macos"))]
     action("downloads", "Downloads", "D"),
+    #[cfg(not(target_os = "macos"))]
     action("settings", "Settings", "S"),
+    #[cfg(not(target_os = "macos"))]
     action("rail", "Show or hide the rail's labels", "Tab"),
+    #[cfg(target_os = "macos")]
+    action("home", "Home", "Cmd+1"),
+    #[cfg(target_os = "macos")]
+    action("guide", "Guide", "Cmd+2"),
+    #[cfg(target_os = "macos")]
+    action("library", "Library", "Cmd+3"),
+    #[cfg(target_os = "macos")]
+    action("recordings", "Recordings", "Cmd+4"),
+    #[cfg(target_os = "macos")]
+    action("downloads", "Downloads", "Cmd+5"),
+    #[cfg(target_os = "macos")]
+    action("settings", "Settings", "Cmd+Comma"),
+    #[cfg(target_os = "macos")]
+    action("rail", "Show or hide the rail's labels", "Ctrl+Cmd+S"),
+
+    // Space, everywhere. The one shortcut with no menu accelerator: a menu
+    // that owned Space would swallow it inside every text field, so the
+    // application reads this key itself and stands aside while typing.
     action("play", "Play or pause", "Space"),
+
+    #[cfg(not(target_os = "macos"))]
     action("back", "Skip back", "ArrowLeft"),
+    #[cfg(not(target_os = "macos"))]
     action("forward", "Skip forward", "ArrowRight"),
+    #[cfg(not(target_os = "macos"))]
     action("volume_up", "Volume up", "ArrowUp"),
+    #[cfg(not(target_os = "macos"))]
     action("volume_down", "Volume down", "ArrowDown"),
+    #[cfg(not(target_os = "macos"))]
     action("mute", "Mute", "M"),
-    // F11 on Windows and Linux, F on a Mac. The function keys there belong to
-    // the system — F11 shows the desktop — and every Mac video player uses F
-    // for this anyway. The menu bar's Control-Command-F stands beside it.
+    #[cfg(target_os = "macos")]
+    action("back", "Skip back", "Cmd+ArrowLeft"),
+    #[cfg(target_os = "macos")]
+    action("forward", "Skip forward", "Cmd+ArrowRight"),
+    #[cfg(target_os = "macos")]
+    action("volume_up", "Volume up", "Cmd+ArrowUp"),
+    #[cfg(target_os = "macos")]
+    action("volume_down", "Volume down", "Cmd+ArrowDown"),
+    #[cfg(target_os = "macos")]
+    action("mute", "Mute", "Shift+Cmd+M"),
+
+    // F11 on Windows and Linux; Control-Command-F on a Mac, which is what
+    // the system's own View menu does in every application there.
     #[cfg(not(target_os = "macos"))]
     action("fullscreen", "Full screen", "F11"),
     #[cfg(target_os = "macos")]
-    action("fullscreen", "Full screen", "F"),
+    action("fullscreen", "Full screen", "Ctrl+Cmd+F"),
+
+    #[cfg(not(target_os = "macos"))]
     action("stop", "Stop playback", "Backspace"),
+    #[cfg(target_os = "macos")]
+    action("stop", "Stop playback", "Cmd+Period"),
+
     // Page Up and Page Down on a desktop keyboard; brackets on a Mac, where
-    // a laptop has no such keys and reaching them means holding fn and an
-    // arrow. The brackets are also what the menu bar puts these on, so the
-    // two agree.
+    // a laptop has neither key without holding fn.
     #[cfg(not(target_os = "macos"))]
     action("channel_up", "Previous channel", "PageUp"),
     #[cfg(not(target_os = "macos"))]
     action("channel_down", "Next channel", "PageDown"),
     #[cfg(target_os = "macos")]
-    action("channel_up", "Previous channel", "["),
+    action("channel_up", "Previous channel", "Cmd+OpenBracket"),
     #[cfg(target_os = "macos")]
-    action("channel_down", "Next channel", "]"),
+    action("channel_down", "Next channel", "Cmd+CloseBracket"),
+
     // Last, because it is the one that governs the others, and because a
     // reader arriving at it having read the rest understands immediately why
     // it has to keep working when they are all off.
@@ -77,6 +131,7 @@ pub const ACTIONS: &[Action] = &[
     #[cfg(target_os = "macos")]
     action("toggle", "Turn shortcuts off or on", "\\"),
 ];
+
 
 /// The action that enables and disables the rest.
 ///
@@ -99,17 +154,22 @@ pub struct Binding {
     /// because it is one idea — "the modifier this desktop uses for
     /// shortcuts" — and egui already reports it that way.
     pub command: bool,
+    /// The literal Control key. Separate from `command` because on a Mac they
+    /// are two different keys and Control-Command-F is a real shortcut; on
+    /// Windows and Linux "Ctrl" *is* the command modifier, so a binding
+    /// written with it there parses into `command` instead.
+    pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
 }
 
 impl Binding {
     pub fn bare(key: egui::Key) -> Self {
-        Self { key, command: false, shift: false, alt: false }
+        Self { key, command: false, ctrl: false, shift: false, alt: false }
     }
 
     pub fn has_modifier(self) -> bool {
-        self.command || self.shift || self.alt
+        self.command || self.ctrl || self.shift || self.alt
     }
 
     /// How it is written into the settings file: `Cmd+Shift+G`, or `G`.
@@ -120,6 +180,9 @@ impl Binding {
         let mut out = String::new();
         if self.command {
             out.push_str("Cmd+");
+        }
+        if self.ctrl {
+            out.push_str("Ctrl+");
         }
         if self.shift {
             out.push_str("Shift+");
@@ -135,12 +198,23 @@ impl Binding {
     /// bare key names every settings file written before modifiers existed
     /// contains.
     pub fn from_setting(text: &str) -> Option<Self> {
-        let mut binding = Self { key: egui::Key::Space, command: false, shift: false, alt: false };
+        let mut binding =
+            Self { key: egui::Key::Space, command: false, ctrl: false, shift: false, alt: false };
         let mut named = None;
         for part in text.split('+') {
             match part.trim().to_ascii_lowercase().as_str() {
                 "" => continue,
-                "cmd" | "command" | "ctrl" | "control" | "super" | "win" => binding.command = true,
+                "cmd" | "command" | "super" | "win" => binding.command = true,
+                // Control is its own key on a Mac and the command modifier
+                // everywhere else, which is exactly how the two desktops
+                // think of it.
+                "ctrl" | "control" => {
+                    if cfg!(target_os = "macos") {
+                        binding.ctrl = true;
+                    } else {
+                        binding.command = true;
+                    }
+                }
                 "shift" => binding.shift = true,
                 "alt" | "option" | "opt" => binding.alt = true,
                 _ => named = Some(part.trim().to_string()),
@@ -153,11 +227,13 @@ impl Binding {
     /// How it reads on screen: `⌘⇧G` on a Mac, `Ctrl+Shift+G` elsewhere,
     /// because those are the two things people's eyes are trained on.
     pub fn display(self) -> String {
-        let key = self.key.name();
+        // Apple's own order for the glyphs is ⌃⌥⇧⌘, and a Mac user reads a
+        // shortcut wrong if they are in any other one.
+        let key = key_label(self.key);
         if cfg!(target_os = "macos") {
             let mut out = String::new();
-            if self.command {
-                out.push('\u{2318}');
+            if self.ctrl {
+                out.push('\u{2303}');
             }
             if self.alt {
                 out.push('\u{2325}');
@@ -165,7 +241,10 @@ impl Binding {
             if self.shift {
                 out.push('\u{21e7}');
             }
-            out.push_str(key);
+            if self.command {
+                out.push('\u{2318}');
+            }
+            out.push_str(&key);
             out
         } else {
             let mut out = String::new();
@@ -178,9 +257,21 @@ impl Binding {
             if self.shift {
                 out.push_str("Shift+");
             }
-            out.push_str(key);
+            out.push_str(&key);
             out
         }
+    }
+}
+
+/// A key as it should be printed: the arrows as arrows, everything else as
+/// egui prints it. `ArrowLeft` beside a ⌘ reads as a word rather than a key.
+fn key_label(key: egui::Key) -> String {
+    match key {
+        egui::Key::ArrowLeft => "\u{2190}".to_string(),
+        egui::Key::ArrowRight => "\u{2192}".to_string(),
+        egui::Key::ArrowUp => "\u{2191}".to_string(),
+        egui::Key::ArrowDown => "\u{2193}".to_string(),
+        other => other.symbol_or_name().to_string(),
     }
 }
 
@@ -210,7 +301,7 @@ pub fn refusal(binding: Binding) -> Option<&'static str> {
     if !binding.command {
         return None;
     }
-    let plain_command = binding.command && !binding.shift && !binding.alt;
+    let plain_command = binding.command && !binding.shift && !binding.alt && !binding.ctrl;
     if !plain_command {
         return None;
     }
@@ -224,7 +315,6 @@ pub fn refusal(binding: Binding) -> Option<&'static str> {
         Key::C | Key::V | Key::X | Key::A | Key::Z => {
             Some("copy, paste and friends need this")
         }
-        Key::Comma => Some("this is Settings, and already in the menu"),
         _ => None,
     }
 }
@@ -276,6 +366,10 @@ pub fn pressed(ctx: &egui::Context, settings: &Settings, id: &str) -> bool {
             && i.modifiers.command == binding.command
             && i.modifiers.shift == binding.shift
             && i.modifiers.alt == binding.alt
+            // On a Mac `ctrl` is a key of its own; elsewhere egui reports it
+            // as the command modifier too, and comparing it again would make
+            // every Control binding impossible to press.
+            && (!cfg!(target_os = "macos") || i.modifiers.ctrl == binding.ctrl)
     })
 }
 

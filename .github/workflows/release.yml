@@ -69,6 +69,9 @@ jobs:
     uses: ./.github/workflows/macos.yml
     with:
       version: ${{ inputs.version }}
+      # The one place notarization is worth waiting for: a release is the
+      # only build other people's Macs will ever open.
+      notarize: true
     secrets: inherit
 
   linux:

@@ -3,9 +3,16 @@
 # Clicker - an unofficial, native client for Channels DVR
 # Copyright (c) 2026 David Brustein
 #
-# Builds, signs, notarizes and staples Clicker.app on Apple silicon, and
-# uploads the zip as an artifact. It publishes nothing: the Release workflow
-# is what gathers this and the other platforms into one draft release.
+# Builds and signs Clicker.app on Apple silicon and uploads the zip as an
+# artifact. It publishes nothing: the Release workflow is what gathers this
+# and the other platforms into one draft release.
+#
+# Notarizing is off unless asked for, and the Release workflow is what asks.
+# A build run by hand is for trying something; making it wait on Apple's
+# queue — forty seconds on a good night, an hour on a bad one — spends time
+# to prove nothing about a build nobody else will open. The signature and
+# the hardened runtime are identical either way, so a bug that only shows up
+# in a signed app still shows up here.
 #
 # Manual only, like every workflow here.
 #
@@ -34,11 +41,23 @@ on:
         description: "Version to stamp the build with, e.g. 1.1.7"
         required: true
         type: string
+      notarize:
+        description: "Notarize (slow — Apple's queue). Off for a build to try."
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       version:
         required: true
         type: string
+      notarize:
+        # The Release workflow passes true. A build somebody runs by hand to
+        # get something to try does not need Apple's opinion, and Apple's
+        # queue has taken an hour on a bad night.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -150,8 +169,13 @@ jobs:
 
       # The script finds the imported identity and the stored profile on its
       # own; CI builds and desk builds go through the identical path.
-      - name: Build, sign, notarize
-        run: ./scripts/build-macos.sh
+      - name: Build and sign
+        run: |
+          if [ "${{ inputs.notarize }}" = "true" ]; then
+            ./scripts/build-macos.sh
+          else
+            ./scripts/build-macos.sh --no-notarize
+          fi
 
       - name: Upload the app
         uses: actions/upload-artifact@v4

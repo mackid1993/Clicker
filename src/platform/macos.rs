@@ -52,83 +52,15 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// What the menu bar shows for an action when nothing has been rebound.
-///
-/// The Mac conventions, so the menu is furnished the moment it opens: views
-/// on Command-1 upward, Settings on Command-comma, playback where a video
-/// player puts it. A binding made with a modifier replaces the one here; a
-/// bare key does not, for the reason in [`sync_menu_shortcuts`].
-///
-/// Written as the glyphs a Mac displays, and read back by [`accelerator`] to
-/// build the real thing — one table rather than a list of key codes beside a
-/// list of labels, which is how a menu ends up promising ⌘4 and doing ⌘5.
-const DEFAULTS: &[(&str, &str)] = &[
-    ("home", "\u{2318}1"),
-    ("guide", "\u{2318}2"),
-    ("library", "\u{2318}3"),
-    ("recordings", "\u{2318}4"),
-    ("downloads", "\u{2318}5"),
-    ("settings", "\u{2318},"),
-    ("refresh", "\u{2318}R"),
-    ("back", "\u{2318}\u{2190}"),
-    ("forward", "\u{2318}\u{2192}"),
-    ("volume_up", "\u{2318}\u{2191}"),
-    ("volume_down", "\u{2318}\u{2193}"),
-    ("mute", "\u{21e7}\u{2318}M"),
-    ("channel_up", "\u{2318}["),
-    ("channel_down", "\u{2318}]"),
-    ("stop", "\u{2318}."),
-    ("rail", "\u{2303}\u{2318}S"),
-    // The system's own item, in the View menu, which macOS puts in every
-    // application and labels itself. Listed so the settings page can show it;
-    // see `system_owned`.
-    ("fullscreen", "\u{2303}\u{2318}F"),
-];
-
-/// Shortcuts the system owns, which a rebinding here cannot move.
-///
-/// Full screen is macOS's own menu item, Control-Command-F in every
-/// application ever shipped. The program's own full-screen key is rebindable
-/// and works; the *menu's* is not ours to change, so the settings page must
-/// keep saying Control-Command-F however the key beside it is bound. Saying
-/// anything else would be describing a menu that does not exist.
-fn system_owned(id: &str) -> bool {
-    id == "fullscreen"
-}
-
-fn default_shortcut(id: &str) -> Option<&'static str> {
-    DEFAULTS
-        .iter()
-        .find(|(action, _)| *action == id)
-        .map(|(_, keys)| *keys)
-}
-
-/// Turn a printed shortcut back into an accelerator.
-fn accelerator(printed: &str) -> Option<muda::accelerator::Accelerator> {
-    use muda::accelerator::{Accelerator, Code, Modifiers};
-
-    let mut modifiers = Modifiers::empty();
-    let mut last = None;
-    for character in printed.chars() {
-        match character {
-            '\u{2318}' => modifiers |= Modifiers::META,
-            '\u{21e7}' => modifiers |= Modifiers::SHIFT,
-            '\u{2303}' => modifiers |= Modifiers::CONTROL,
-            '\u{2325}' => modifiers |= Modifiers::ALT,
-            other => last = Some(other),
-        }
+/// Refresh has no key of its own — it is not in `keys::ACTIONS` at all — so
+/// its accelerator is written here. Command-R is refresh in everything that
+/// fetches anything.
+fn fixed(id: &str) -> Option<(muda::accelerator::Modifiers, muda::accelerator::Code)> {
+    use muda::accelerator::{Code, Modifiers};
+    match id {
+        "refresh" => Some((Modifiers::META, Code::KeyR)),
+        _ => None,
     }
-    let code = match last? {
-        '1' => Code::Digit1, '2' => Code::Digit2, '3' => Code::Digit3,
-        '4' => Code::Digit4, '5' => Code::Digit5,
-        ',' => Code::Comma, '.' => Code::Period,
-        '[' => Code::BracketLeft, ']' => Code::BracketRight,
-        '\u{2190}' => Code::ArrowLeft, '\u{2192}' => Code::ArrowRight,
-        '\u{2191}' => Code::ArrowUp, '\u{2193}' => Code::ArrowDown,
-        'F' => Code::KeyF, 'M' => Code::KeyM, 'R' => Code::KeyR, 'S' => Code::KeyS,
-        _ => return None,
-    };
-    Some(Accelerator::new(Some(modifiers), code))
 }
 
 /// egui's name for a key, as muda's code for the same key.
@@ -173,57 +105,47 @@ fn code_for(key: eframe::egui::Key) -> Option<muda::accelerator::Code> {
     })
 }
 
-/// What the menu bar will show for an action: the rebound combination if
-/// there is one, the Mac convention otherwise.
+/// Put every menu item's accelerator on the binding that action actually
+/// has, and keep it there.
 ///
-/// The settings page prints this beside the key, so the page and the menu
-/// cannot describe different keyboards.
-pub fn menu_shortcut(settings: &crate::settings::Settings, id: &str) -> Option<String> {
-    if system_owned(id) {
-        return default_shortcut(id).map(str::to_string);
-    }
-    if let Some(binding) = crate::keys::binding(settings, id) {
-        if binding.has_modifier() && code_for(binding.key).is_some() {
-            return Some(binding.display());
-        }
-    }
-    default_shortcut(id).map(str::to_string)
-}
-
-/// Put each menu item's accelerator in step with what the settings page says.
+/// This is the whole arrangement in one function: the settings page owns the
+/// shortcut, the menu prints it, and there is no second table to disagree
+/// with. Called once the menu exists and again on every settings save.
 ///
-/// Called once the menu exists and again on every settings save, so the menu
-/// bar shows the shortcut that will actually happen rather than the one it
-/// was built with.
-///
-/// **A bare key never becomes an accelerator.** A menu accelerator belongs to
-/// the system, which fires it before any window sees the keystroke; put a
-/// plain G on the Guide item and typing "Golf" into the search box changes
-/// screen twice. So a bare binding leaves the menu on its own convention —
-/// Command-2 stays beside Guide — and the bare G keeps working because the
-/// application reads it itself and stands aside while something is typed.
+/// **A bare key gets no accelerator.** A menu accelerator belongs to the
+/// system, which fires it before any window sees the keystroke; a plain G on
+/// the Guide item would change screen while somebody typed "Golf" into the
+/// search box. Bare bindings still work — the application reads them itself
+/// and stands aside while something is being typed into — the menu simply
+/// does not claim them, which is why Play or Pause shows no shortcut beside
+/// it and Space nonetheless pauses.
 pub fn sync_menu_shortcuts(settings: &crate::settings::Settings) {
     use muda::accelerator::{Accelerator, Modifiers};
 
     ITEMS.with_borrow(|items| {
         for (id, item) in items.iter() {
-            let from_binding = crate::keys::binding(settings, id)
-                .filter(|binding| binding.has_modifier())
-                .and_then(|binding| {
-                    let mut modifiers = Modifiers::empty();
-                    if binding.command {
-                        modifiers |= Modifiers::META;
-                    }
-                    if binding.shift {
-                        modifiers |= Modifiers::SHIFT;
-                    }
-                    if binding.alt {
-                        modifiers |= Modifiers::ALT;
-                    }
-                    Some(Accelerator::new(Some(modifiers), code_for(binding.key)?))
-                });
-            let accelerator =
-                from_binding.or_else(|| default_shortcut(id).and_then(accelerator));
+            let accelerator = if let Some((modifiers, code)) = fixed(id) {
+                Some(Accelerator::new(Some(modifiers), code))
+            } else {
+                crate::keys::binding(settings, id)
+                    .filter(|binding| binding.has_modifier())
+                    .and_then(|binding| {
+                        let mut modifiers = Modifiers::empty();
+                        if binding.command {
+                            modifiers |= Modifiers::META;
+                        }
+                        if binding.ctrl {
+                            modifiers |= Modifiers::CONTROL;
+                        }
+                        if binding.shift {
+                            modifiers |= Modifiers::SHIFT;
+                        }
+                        if binding.alt {
+                            modifiers |= Modifiers::ALT;
+                        }
+                        Some(Accelerator::new(Some(modifiers), code_for(binding.key)?))
+                    })
+            };
             let _ = item.set_accelerator(accelerator);
         }
     });
@@ -359,9 +281,11 @@ pub fn install_menu_bar() {
         &PredefinedMenuItem::separator(),
         &rail,
         &PredefinedMenuItem::separator(),
-        // Control-Command-F, from the system, and the same item every other
-        // Mac application has.
-        &PredefinedMenuItem::fullscreen(None),
+        // Ours, not the system's `fullscreen` item. Apple's is hard-wired to
+        // Control-Command-F, and this program lets that shortcut be changed —
+        // a menu item promising a key the settings page has moved is exactly
+        // the disagreement this whole arrangement exists to prevent.
+        &item("fullscreen", "Full Screen", &mut registry),
     ]);
 
     let window = Submenu::new("Window", true);
