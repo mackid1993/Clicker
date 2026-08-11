@@ -148,6 +148,10 @@ pub struct Settings {
     /// composited, and the trip back is the expensive part.
     #[serde(default)]
     pub software_decoding: bool,
+    /// How much work the graphics chip is allowed to spend on scaling the
+    /// picture. See `Scaling`.
+    #[serde(default)]
+    pub scaling: Scaling,
     /// Whether keyboard shortcuts do anything at all.
     ///
     /// On by default, and turned off by its own shortcut, which keeps working
@@ -278,6 +282,7 @@ impl Default for Settings {
             buffer_dir: String::new(),
             cache_dir: String::new(),
             software_decoding: false,
+            scaling: Scaling::default(),
             shortcuts_enabled: true,
             shortcut_keys: Default::default(),
             window: None,
@@ -336,6 +341,29 @@ pub fn writable(dir: &std::path::Path) -> Result<()> {
         .with_context(|| format!("writing to {}", dir.display()))?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
+}
+
+/// How the picture is resized to the window it is shown in.
+///
+/// It is nearly always being resized: a 1080p stream into a window that is
+/// not 1080p, or into a high-DPI display that is half as many points and
+/// twice as many pixels. Which kernel does that is the difference between a
+/// picture that looks like the source and one that looks soft — and, pushed
+/// too far, one that looks sharpened.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Scaling {
+    /// Good scaling where the graphics can afford it, and mpv's cheap
+    /// defaults where they cannot — decided by what the driver calls itself,
+    /// once, at startup. Right for almost everybody, which is why it is the
+    /// default and why the other two say what they cost.
+    #[default]
+    Automatic,
+    /// mpv's own defaults: bilinear everywhere. The cheapest thing that
+    /// works, and visibly soft on a screen larger than the stream.
+    Fast,
+    /// Good kernels regardless of what the graphics are. Sharp on a machine
+    /// that can afford it; dropped frames on one that cannot.
+    Detailed,
 }
 
 impl Settings {

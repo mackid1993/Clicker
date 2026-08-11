@@ -477,6 +477,49 @@ fn in_flatpak() -> bool {
     *INSIDE.get_or_init(|| std::path::Path::new("/.flatpak-info").exists())
 }
 
+/// What the graphics stack calls itself, recorded once at startup.
+///
+/// Set from `log_gl_identity` on the interface thread, before any player
+/// exists, because that is where a GL context is current and the string can
+/// be had at all. Read below, to decide how much scaling quality this machine
+/// can afford.
+static GRAPHICS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Called once, with `GL_RENDERER`.
+pub fn note_graphics(renderer: &str) {
+    let _ = GRAPHICS.set(renderer.to_lowercase());
+}
+
+/// Whether the graphics are real, or translated or emulated somewhere.
+///
+/// Not a guess at speed — a reading of what the driver says it is. llvmpipe,
+/// softpipe and swrast are Mesa rasterising on the processor; virgl is a
+/// guest talking to a host GPU through virtio; SwiftShader is software; and
+/// "Microsoft Basic Render" is Windows with no driver at all. Every one of
+/// them is a machine where a better scaler is paid for in dropped frames.
+///
+/// Unknown counts as real. A renderer nobody here has heard of is far more
+/// likely to be a graphics card than a software rasteriser.
+/// Whether to spend on scaling quality, given what was asked for and what
+/// the graphics turned out to be.
+fn scale_well(scaling: crate::settings::Scaling) -> bool {
+    use crate::settings::Scaling;
+    match scaling {
+        Scaling::Fast => false,
+        Scaling::Detailed => true,
+        Scaling::Automatic => !graphics_are_translated(),
+    }
+}
+
+fn graphics_are_translated() -> bool {
+    let Some(name) = GRAPHICS.get() else {
+        return false;
+    };
+    ["llvmpipe", "softpipe", "swrast", "virgl", "swiftshader", "basic render"]
+        .iter()
+        .any(|needle| name.contains(needle))
+}
+
 /// Whether video is paced against the display rather than against the audio
 /// clock. Two things depend on the answer — `video-sync` below, and whether
 /// the interface tells mpv a frame reached the screen — and letting those two
@@ -657,6 +700,7 @@ impl Player {
         join: JoinAt,
         transport: Transport,
         software_decoding: bool,
+        scaling: crate::settings::Scaling,
         repaint: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, String> {
         let api = library()?;
@@ -735,6 +779,63 @@ impl Player {
             // The read-ahead this application argued itself into having: mpv
             // caches compressed packets, which is minutes of protection for
             // the memory a couple of seconds of decoded frames would cost.
+            // How the picture is scaled, which is the difference between a
+            // player that looks like a player and one that looks soft.
+            //
+            // mpv's defaults are deliberately cheap: bilinear for everything,
+            // no correct-downscaling, no linear light. That is the right
+            // default for mpv, which runs on anything, and the wrong one here,
+            // where the picture is nearly always being resized — a 1080p
+            // stream into a window that is not 1080p, or into a high-DPI
+            // display that is half as many points and twice as many pixels.
+            // Bilinear resizing of a whole frame, sixty times a second, is
+            // exactly what "blocky compared to the official client" looks
+            // like.
+            //
+            // These are mpv's own high-quality choices, minus the expensive
+            // ones and minus the ringing. mpv's own high-quality profile
+            // upscales with spline36, which is sharp and rings: on a
+            // high-DPI display, where every frame is being enlarged, that
+            // reads as oversharpened rather than as detail. catmull_rom is
+            // the sharp kernel that does not ring, which is the right trade
+            // for a picture nobody asked to have sharpened. Chroma keeps
+            // spline36, where ringing has nowhere to show.
+            //
+            // mitchell downscales without the aliasing; correct-downscaling
+            // makes the downscale actually filter rather than sample, which
+            // matters most because shrinking is the common case; linear
+            // downscaling does it in light rather than in gamma; sigmoid
+            // upscaling keeps the ringing off edges. Debanding is not here:
+            // it is the expensive one and it addresses a fault this source
+            // material does not have.
+            //
+            // Whether to spend it at all is the Scaling setting, which
+            // defaults to asking the driver what it is: a machine whose
+            // graphics are translated or emulated has the budget as its whole
+            // problem, and there mpv's cheap defaults stand. Somebody who
+            // disagrees with that reading can say so in Settings, and
+            // `CLICKER_MPV_OPTS` overrides either way without a restart of
+            // the argument.
+            ("scale", if scale_well(scaling) { "catmull_rom" } else { "" }),
+            ("cscale", if scale_well(scaling) { "spline36" } else { "" }),
+            ("dscale", if scale_well(scaling) { "mitchell" } else { "" }),
+            ("correct-downscaling", if scale_well(scaling) { "yes" } else { "" }),
+            ("linear-downscaling", if scale_well(scaling) { "yes" } else { "" }),
+            ("sigmoid-upscaling", if scale_well(scaling) { "yes" } else { "" }),
+            // Deinterlace what is interlaced, and nothing else.
+            //
+            // mpv does not deinterlace by default, and a great deal of
+            // broadcast television is 1080i — every American network affiliate
+            // that is not 720p. Undeinterlaced 1080i does not look soft, it
+            // looks *torn*: comb teeth along every moving edge, which is a
+            // fair description of "blocky", and which every player made for
+            // television handles without being asked.
+            //
+            // `auto` rather than `yes`: it deinterlaces only streams the
+            // decoder flags as interlaced, so the 720p and 1080p channels
+            // beside them are left alone. Forcing it on progressive material
+            // halves the vertical detail for nothing.
+            ("deinterlace", "auto"),
             ("cache", "yes"),
             ("demuxer-max-bytes", "96MiB"),
             ("demuxer-readahead-secs", "60"),

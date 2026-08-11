@@ -235,12 +235,17 @@ fn log_gl_identity(cc: &eframe::CreationContext<'_>) {
         return;
     };
     unsafe {
+        let renderer = gl.get_parameter_string(eframe::glow::RENDERER);
         log::logline!(
             "[clicker] GL {} · {} · {}",
             gl.get_parameter_string(eframe::glow::VENDOR),
-            gl.get_parameter_string(eframe::glow::RENDERER),
+            renderer,
             gl.get_parameter_string(eframe::glow::VERSION),
         );
+        // Kept, not just printed: the player asks what the graphics are
+        // before it chooses how much scaling quality to pay for, and this is
+        // the only moment the question can be asked.
+        mpv::note_graphics(&renderer);
     }
 }
 
@@ -2960,6 +2965,7 @@ impl App {
         // Read here rather than on the thread: the settings belong to the
         // interface and the thread must not reach back into them.
         let software_decoding = self.settings.software_decoding;
+        let scaling = self.settings.scaling;
         std::thread::spawn(move || {
             // A live buffer is created empty and the tuner takes several
             // seconds to produce its first byte, so opening straight away only
@@ -2995,6 +3001,7 @@ impl App {
                 join,
                 transport,
                 software_decoding,
+                scaling,
                 move || frame_repaint.request_repaint(),
             )
             .map(Arc::new);

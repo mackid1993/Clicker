@@ -591,6 +591,57 @@ pub fn settings_screen(
                 }
             });
 
+            control_row(ui, |ui| {
+                use crate::settings::Scaling;
+                ui.label(
+                    egui::RichText::new("Picture scaling")
+                        .size(12.0)
+                        .color(Fluent::TEXT_SECONDARY),
+                );
+                let name = |s: Scaling| match s {
+                    Scaling::Automatic => "Automatic",
+                    Scaling::Fast => "Fast",
+                    Scaling::Detailed => "Detailed",
+                };
+                egui::ComboBox::from_id_salt("scaling")
+                    .selected_text(name(settings.scaling))
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        for choice in [Scaling::Automatic, Scaling::Fast, Scaling::Detailed] {
+                            if ui
+                                .selectable_label(settings.scaling == choice, name(choice))
+                                .on_hover_text(match choice {
+                                    Scaling::Automatic => {
+                                        "Detailed where the graphics can afford it, Fast \
+                                         where they cannot — decided by what the driver \
+                                         says it is."
+                                    }
+                                    Scaling::Fast => {
+                                        "The cheapest scaling there is. Visibly soft on a \
+                                         screen larger than the stream, and the right \
+                                         choice on a machine that is dropping frames."
+                                    }
+                                    Scaling::Detailed => {
+                                        "Better kernels whatever the graphics are. Sharper \
+                                         on a machine that can afford it; dropped frames on \
+                                         one that cannot."
+                                    }
+                                })
+                                .clicked()
+                            {
+                                settings.scaling = choice;
+                                action = SetupAction::Save;
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "The picture is nearly always being resized — a 1080p stream into \
+                         a window that is not 1080p. This is how much work the graphics \
+                         chip may spend doing it. Takes effect on the next thing played.",
+                    );
+            });
+
             // ── Where things are kept ──────────────────────────────────
             //
             // Both default to under the user's profile, on whichever disk the
