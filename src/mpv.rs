@@ -477,6 +477,18 @@ fn in_flatpak() -> bool {
     *INSIDE.get_or_init(|| std::path::Path::new("/.flatpak-info").exists())
 }
 
+/// Whether video is paced against the display rather than against the audio
+/// clock, which is one decision with two consequences: it chooses `video-sync`
+/// below, and it decides whether mpv has to be told that a frame reached the
+/// screen. Getting those two out of step is a bug you can see and not name —
+/// see `threaded_present`.
+///
+/// Linux pays against the audio clock because the display timing there cannot
+/// be trusted: the session may be Wayland, X11, a virtual GPU or a remote
+/// desktop, and nothing says which. Windows and macOS each have one compositor
+/// with honest vsync.
+const PACES_ON_DISPLAY: bool = !cfg!(target_os = "linux");
+
 /// Where mpv is asked to draw its picture.
 ///
 /// `Offscreen` is the arrangement this application is built around: mpv draws
@@ -575,8 +587,14 @@ struct Surface {
     bufs: [(u32, u32); 2], // (fbo, texture)
     /// Which of the two was rendered into most recently — the one to show.
     which: usize,
+    /// What mpv is asked to draw: exactly the rectangle on screen, so the
+    /// blit that follows is one to one and resamples nothing.
     width: i32,
     height: i32,
+    /// How large the texture actually is, which is the width rounded up so a
+    /// window drag does not reallocate on every pixel of it. mpv draws into
+    /// the bottom-left `width` x `height` of it and the rest is never read.
+    alloc: (i32, i32),
     /// Whether mpv has drawn into it yet.
     ///
     /// A framebuffer is black when it is made, and one gets made on the first
@@ -797,10 +815,10 @@ impl Player {
             // content — and where there is one compositor with honest vsync.
             (
                 "video-sync",
-                if cfg!(target_os = "linux") {
-                    "audio"
-                } else {
+                if PACES_ON_DISPLAY {
                     "display-resample"
+                } else {
+                    "audio"
                 },
             ),
             ("user-agent", &crate::settings::user_agent()),
@@ -1110,26 +1128,41 @@ impl Player {
         // size, because rendering larger than the source only invents pixels
         // more expensively than the blit would.
         //
-        // Rounded up to a multiple of 32 so that dragging a window edge does
-        // not reallocate the framebuffer on every pixel of the drag.
-        // The height comes from the width by the rectangle's own ratio, so
-        // the framebuffer has exactly the aspect of the rectangle it will be
-        // stretched into. Rounding each axis up to 32 independently — which
-        // is what stood here — skewed the aspect by up to two percent, and by
-        // a different amount at every scale step: mpv letterboxed the
-        // mismatch inside the framebuffer, the blit stretched bars and all,
-        // and each step visibly squeezed the picture. Width alone is rounded,
-        // so a drag still does not reallocate per pixel; the height merely
-        // follows it.
+        // Two sizes, and keeping them apart is what stopped the picture being
+        // soft. mpv is asked for exactly the rectangle it will occupy, so the
+        // blit that follows is one to one and resamples nothing; the texture
+        // behind it is allocated with the width rounded up to a multiple of
+        // 32, so dragging a window edge does not reallocate on every pixel of
+        // the drag. mpv draws into the bottom-left corner of that allocation
+        // and the slack is never read.
+        //
+        // These used to be one number, rounded, and the blit then rescaled
+        // 1728 pixels into 1712 — a fractional resample of every frame, for
+        // nothing. Which is subtle enough to live a long time: it does not
+        // look like a fault, it looks like a slightly soft picture.
+        //
+        // Clamped to the stream's own size, because rendering larger than the
+        // source only invents pixels more expensively than the blit would,
+        // and both are bilinear anyway.
+        //
+        // The height follows the width by the rectangle's own ratio rather
+        // than being rounded itself. Rounding each axis independently — which
+        // is what stood here once — skewed the aspect by up to two percent
+        // and by a different amount at every scale step: mpv letterboxed the
+        // mismatch inside the framebuffer, and the blit stretched the bars
+        // along with the picture.
         let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-        let width = round32(target.0).min(video_w);
+        let width = target.0.min(video_w).max(2);
         let height = (((width as i64 * target.1 as i64) / target.0.max(1) as i64) as i32
             & !1)
             .max(2);
+        let alloc = (round32(width), round32(height));
         let mut surface = self.surface.lock().unwrap();
+        // Reallocated when the drawn size no longer fits the texture, or when
+        // it has shrunk far enough that holding the larger one is waste.
         let stale = surface
             .as_ref()
-            .map(|s| s.width != width || s.height != height)
+            .map(|s| s.alloc != alloc)
             .unwrap_or(true);
         if stale {
             if let Some(old) = surface.take() {
@@ -1149,8 +1182,8 @@ impl Player {
                     GL_TEXTURE_2D,
                     0,
                     GL_RGBA8,
-                    width,
-                    height,
+                    alloc.0,
+                    alloc.1,
                     0,
                     GL_RGBA,
                     GL_UNSIGNED_BYTE,
@@ -1192,9 +1225,18 @@ impl Player {
                 which: 0,
                 width,
                 height,
+                alloc,
                 painted: false,
             });
         }
+        if let Some(live) = surface.as_mut() {
+            if live.width != width || live.height != height {
+                live.width = width;
+                live.height = height;
+                live.painted = false;
+            }
+        }
+
         // Copied out rather than borrowed: `painted` is set further down, and
         // holding a reference to the surface until then would borrow it for
         // the whole function.
@@ -1914,13 +1956,32 @@ impl Player {
             (gl.enable)(GL_SCISSOR_TEST);
         }
 
-        // No report_swap here, deliberately — two reasons. It exists to feed
-        // display-resample's refresh estimate, and Linux paces against the
-        // audio clock instead. And it takes mpv's internal render lock, which
-        // is the lock the worker holds while rendering: the one call that
-        // made the interface wait for the worker was this one, and waiting on
-        // the worker is the entire thing this thread arrangement exists to
-        // end.
+        // Tell mpv the frame reached the screen, where that is a thing it is
+        // waiting to hear.
+        //
+        // This was left out when the worker was Linux-only, and the reasoning
+        // held exactly as far as Linux: display-resample is what consumes it,
+        // Linux paces against the audio clock, so nothing was listening. On
+        // the platforms that do pace against the display it is half of the
+        // arrangement, and leaving it out cost a steady one to two
+        // milliseconds of A/V offset — small enough to shrug at and, on a
+        // build where it had always read zero, exactly the kind of change
+        // worth chasing down rather than explaining away.
+        //
+        // The other half of the original reasoning still stands and is why
+        // this is not simply called everywhere: it takes mpv's internal render
+        // lock, which the worker holds while rendering, so the interface can
+        // wait on the worker here. That was a freeze when the worker slept
+        // inside that lock waiting for a frame's display time; it no longer
+        // does, and what remains is the length of one render — but it is a
+        // cost with no benefit on a platform that ignores the result, so it
+        // is not paid there.
+        if PACES_ON_DISPLAY {
+            let render_ctx = *link.render_ctx.lock().unwrap();
+            if !render_ctx.0.is_null() {
+                (self.api.render_report_swap)(render_ctx.0);
+            }
+        }
         self.note_present((sw, sh));
         Some(true)
     }
@@ -2242,8 +2303,11 @@ mod worker {
     pub struct Frames {
         pub tex: [u32; 2],
         pub front: usize,
+        /// What mpv is asked to draw: the rectangle on screen exactly.
         pub width: i32,
         pub height: i32,
+        /// How large the textures are, which is the drawn size rounded up.
+        pub alloc: (i32, i32),
         pub want: (i32, i32),
         pub generation: u64,
         pub painted: bool,
@@ -2271,6 +2335,7 @@ mod worker {
                 front: 0,
                 width: 0,
                 height: 0,
+                alloc: (0, 0),
                 want: (0, 0),
                 generation: 0,
                 painted: false,
@@ -2391,13 +2456,19 @@ mod worker {
                 // drag does not reallocate per pixel, the height following by
                 // the rectangle's exact ratio, the whole thing clamped to the
                 // stream.
+                // The same two sizes as the in-paint path, and for the same
+                // reason: mpv draws exactly the rectangle it will occupy so
+                // the interface's blit resamples nothing, while the texture
+                // under it is rounded up so a window drag does not reallocate
+                // on every pixel. See `render_to_texture`.
                 let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-                let width = round32(want.0).min(vw);
+                let width = want.0.min(vw).max(2);
                 let height = ((((width as i64 * want.1 as i64) / want.0.max(1) as i64) as i32) & !1).max(2);
+                let alloc = (round32(width), round32(height));
 
                 let stale = {
                     let st = link.state.lock().unwrap();
-                    st.width != width || st.height != height || st.tex[0] == 0
+                    st.alloc != alloc || st.tex[0] == 0
                 };
                 if stale {
                     for fbo in fbos {
@@ -2412,7 +2483,7 @@ mod worker {
                         let mut tex = 0u32;
                         gl.gen_textures(1, &mut tex);
                         gl.bind_texture(GL_TEXTURE_2D, tex);
-                        gl.tex_image_2d(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, std::ptr::null());
+                        gl.tex_image_2d(GL_TEXTURE_2D, 0, GL_RGBA8, alloc.0, alloc.1, 0, GL_RGBA, GL_UNSIGNED_BYTE, std::ptr::null());
                         gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                         gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                         gl.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -2440,8 +2511,17 @@ mod worker {
                     st.front = 0;
                     st.width = width;
                     st.height = height;
+                    st.alloc = alloc;
                     st.generation += 1;
                     st.painted = false;
+                }
+
+                {
+                    let mut st = link.state.lock().unwrap();
+                    if st.width != width || st.height != height {
+                        st.width = width;
+                        st.height = height;
+                    }
                 }
 
                 if (api.render_update)(created) & MPV_RENDER_UPDATE_FRAME == 0 {
