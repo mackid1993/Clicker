@@ -168,12 +168,8 @@ pub fn guide(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
 
-    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
-    // TEMPORARY TEST HOOK — remove before committing.
-    if let Some(offset) = crate::test_scroll_offset() {
-        area = area.vertical_scroll_offset(offset % ((rows.len() as f32 * ROW_H) - body.height()).max(1.0));
-    }
-    area
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
         .show_rows(&mut scroll_area, ROW_H, rows.len(), |ui, range| {
             // egui inserts item spacing between anything allocated in a
             // top-down layout, and `show_rows` has already reserved exactly

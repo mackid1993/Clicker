@@ -219,102 +219,6 @@ fn now_unix() -> i64 {
 /// initialization and cannot be changed afterwards. The two vendor symbols are
 /// the opposite lever, exported by applications that want the discrete GPU;
 /// they are deliberately left unset.
-/// TEMPORARY TEST HOOK — remove before committing.
-static TEST_SCROLL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// TEMPORARY TEST HOOK — remove before committing.
-pub fn test_scroll_offset() -> Option<f32> {
-    let n = TEST_SCROLL.load(std::sync::atomic::Ordering::Relaxed);
-    (n > 0).then(|| n as f32 * 9.0)
-}
-
-/// TEMPORARY TEST HOOK — remove before committing.
-///
-/// `CLICKER_SHOTS=n` dumps the first n painted frames, read back out of the
-/// default framebuffer with glReadPixels, into /tmp/clicker-shots. This is
-/// what the application actually drew, as opposed to what a screen grab of a
-/// virtual machine catches halfway through a compositor update.
-fn frame_shots(ctx: &egui::Context) {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static WANTED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    static FRAME: AtomicU32 = AtomicU32::new(0);
-
-    // Watch the font atlas: every growth is a full re-upload of an
-    // 8192-wide texture in the middle of a frame that then samples it.
-    {
-        static LAST: AtomicU32 = AtomicU32::new(0);
-        let size = ctx.fonts(|f| f.font_image_size());
-        if LAST.swap(size[1] as u32, Ordering::Relaxed) != size[1] as u32 {
-            log::logline!(
-                "[clicker] font atlas now {}x{} (frame {})",
-                size[0],
-                size[1],
-                FRAME.load(Ordering::Relaxed)
-            );
-        }
-    }
-
-    let wanted = *WANTED.get_or_init(|| {
-        std::env::var("CLICKER_SHOTS")
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0)
-    });
-    if wanted == 0 {
-        return;
-    }
-    // Wait out the load before recording: the first seconds are a spinner.
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let started = START.get_or_init(std::time::Instant::now);
-    let after: f64 = std::env::var("CLICKER_SHOT_AFTER")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0.0);
-    if started.elapsed().as_secs_f64() < after {
-        return;
-    }
-
-    let images: Vec<std::sync::Arc<egui::ColorImage>> = ctx.input(|i| {
-        i.events
-            .iter()
-            .filter_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-            .collect()
-    });
-    for image in images {
-        let n = FRAME.load(Ordering::Relaxed);
-        let dir = std::path::Path::new("/tmp/clicker-shots");
-        let _ = std::fs::create_dir_all(dir);
-        let raw: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
-        let _ = image::save_buffer(
-            dir.join(format!("f{n:04}.png")),
-            &raw,
-            image.width() as u32,
-            image.height() as u32,
-            image::ExtendedColorType::Rgba8,
-        );
-        log::logline!("[clicker] frame {n} written");
-    }
-
-    // Only every n-th frame, so the frames in between run pipelined: a
-    // glReadPixels is a full GPU sync, and a sync every frame would hide
-    // exactly the kind of upload-versus-draw race being looked for.
-    static EVERY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let every = *EVERY.get_or_init(|| {
-        std::env::var("CLICKER_SHOT_EVERY")
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .filter(|n| *n > 0)
-            .unwrap_or(1)
-    });
-    let n = FRAME.fetch_add(1, Ordering::Relaxed);
-    if n < wanted && n % every == 0 {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
-    }
-}
-
 /// Write down which OpenGL implementation the window actually came up on.
 ///
 /// Diagnostic only. "It looks like broken acceleration" and "a texture was not
@@ -1422,43 +1326,6 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // TEMPORARY TEST HOOK — remove before committing.
-        frame_shots(ctx);
-        {
-            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n % 120 == 0 {
-                let (count, bytes) = self.images.resident();
-                log::logline!(
-                    "[clicker] frame {n}: {count} textures, {} MB resident",
-                    bytes / (1024 * 1024)
-                );
-            }
-        }
-        if let Ok(mode) = std::env::var("CLICKER_PAN") {
-            if mode.contains('x') {
-                self.guide_state.scroll_minutes += 4.0;
-                if self.guide_state.scroll_minutes > 1400.0 {
-                    self.guide_state.scroll_minutes = 0.0;
-                }
-            }
-            if mode.contains('y') {
-                TEST_SCROLL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            if mode.contains('r') {
-                // The other reading of "movement": the window itself.
-                let n = TEST_SCROLL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let wobble = ((n % 120) as f32 - 60.0).abs() * 4.0;
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-                    900.0 + wobble,
-                    600.0 + wobble * 0.6,
-                )));
-            }
-            if mode.contains('m') {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-            }
-            ctx.request_repaint();
-        }
         self.open_from_environment();
         self.pump_tray(ctx);
         self.pump_menu();
@@ -3048,14 +2915,6 @@ impl App {
             return;
         }
         self.environment_opened = true;
-        // TEMPORARY TEST HOOK — remove before committing.
-        if let Ok(name) = std::env::var("CLICKER_SCREEN") {
-            self.screen = match name.trim() {
-                "guide" => ui::Screen::Guide,
-                "library" => ui::Screen::Library,
-                _ => self.screen,
-            };
-        }
         let Some(uri) = std::env::var("CLICKER_PLAY")
             .ok()
             .map(|s| s.trim().to_string())
