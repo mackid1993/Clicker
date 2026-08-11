@@ -891,21 +891,43 @@ impl Player {
     /// # Safety
     ///
     /// An OpenGL context must be current on the calling thread.
-    pub unsafe fn render_to_texture(&self, gl: &GlFns) -> Option<(u32, i32, i32)> {
-        let (width, height) = self.video_size();
-        if width == 0 || height == 0 {
+    pub unsafe fn render_to_texture(&self, gl: &GlFns, target: (i32, i32)) -> Option<(u32, i32, i32)> {
+        let (video_w, video_h) = self.video_size();
+        if video_w == 0 || video_h == 0 {
             return None;
         }
-        let (width, height) = (width as i32, height as i32);
+        let (video_w, video_h) = (video_w as i32, video_h as i32);
 
         if !self.ensure_renderer(gl) {
             return None;
         }
         let render_ctx = self.render_ctx.lock().unwrap();
 
-        // A framebuffer at the stream's own size. Not the window's: mpv draws
-        // the picture to fill whatever it is given, and the interface scales
-        // the texture afterwards, which the GPU does for nothing.
+        // A framebuffer the size of the picture on screen, not the size of the
+        // stream.
+        //
+        // It used to be the stream's size on the reasoning that "the interface
+        // scales the texture afterwards, which the GPU does for nothing". That
+        // is true of a graphics card and false of everything else. Rendering
+        // 1080p60 into a 1920x1080 target and then blitting it down to a
+        // smaller window is two full-frame operations per frame — mpv shades
+        // two megapixels, then the blit resamples two megapixels — where mpv
+        // playing the same stream in its own window does one, at the size of
+        // the window. Through a translated OpenGL, which is what a virtual
+        // machine or a remote display gives you, that difference is the whole
+        // budget.
+        //
+        // mpv is built to render into whatever target it is handed and fits
+        // the picture to it, so asking for the size it will actually be seen
+        // at costs nothing and saves the rest. Clamped to the stream's own
+        // size, because rendering larger than the source only invents pixels
+        // more expensively than the blit would.
+        //
+        // Rounded up to a multiple of 32 so that dragging a window edge does
+        // not reallocate the framebuffer on every pixel of the drag.
+        let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
+        let width = round32(target.0).min(video_w);
+        let height = round32(target.1).min(video_h);
         let mut surface = self.surface.lock().unwrap();
         let stale = surface
             .as_ref()
@@ -1351,7 +1373,14 @@ impl Player {
     ///
     /// An OpenGL context must be current on the calling thread.
     pub unsafe fn present(&self, gl: &GlFns, rect: [i32; 4]) -> bool {
-        if self.render_to_texture(gl).is_none() {
+        // The rect first, because the renderer now sizes its target to it.
+        let [x, bottom, w, h] = rect;
+        if w <= 0 || h <= 0 {
+            return false;
+        }
+        let top = bottom + h;
+
+        if self.render_to_texture(gl, (w, h)).is_none() {
             return false;
         }
         let Some(source) = self
@@ -1364,12 +1393,6 @@ impl Player {
             return false;
         };
         let (fbo, sw, sh) = source;
-
-        let [x, bottom, w, h] = rect;
-        if w <= 0 || h <= 0 {
-            return false;
-        }
-        let top = bottom + h;
 
         let target = gl.draw_framebuffer();
         // egui leaves the scissor set to the clip rectangle of whatever it drew
