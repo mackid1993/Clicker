@@ -315,6 +315,22 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport,
+        // Vsync off on Linux, and only there.
+        //
+        // Through virtio the swap fence is a round trip to the host, and the
+        // driver throttles command submission against it: with vsync on, the
+        // paint thread was measured spending 13 to 19ms of every frame parked
+        // in DRM_IOCTL_VIRTGPU_WAIT at two hundredths of a core — the driver
+        // holding our submissions hostage to a fence the host is slow to
+        // signal. Double-buffering the video texture did not move it, because
+        // it was never the texture: it is the swap itself.
+        //
+        // On Wayland there is no tearing to fear — the compositor always
+        // presents whole frames — and the repaint below is paced by hand
+        // while video plays, so turning vsync off does not become a spin.
+        // Windows and macOS keep vsync: one compositor each, honest fences,
+        // and measured render costs of a millisecond or two.
+        vsync: cfg!(not(target_os = "linux")),
         ..Default::default()
     };
 
@@ -1208,7 +1224,16 @@ impl App {
         // when it arrives. Vsync caps this, so it is the display's rate and
         // not a spin.
         if !self.paused {
-            ctx.request_repaint();
+            if cfg!(target_os = "linux") {
+                // Paced by the clock rather than the swap, because vsync is
+                // off here (see NativeOptions) and an unpaced request would
+                // spin. 15ms asks slightly faster than 60Hz so a late wake
+                // still lands inside the frame; mpv times the actual
+                // presentation regardless.
+                ctx.request_repaint_after(std::time::Duration::from_millis(15));
+            } else {
+                ctx.request_repaint();
+            }
         }
 
         // The entrance fade, painted over the picture rather than tinted into
