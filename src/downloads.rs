@@ -157,11 +157,6 @@ impl Downloads {
         self.inner.states.lock().unwrap().get(id).cloned()
     }
 
-    /// How many downloads are currently running.
-    pub fn active(&self) -> usize {
-        self.inner.active()
-    }
-
     /// Everything known about: running, then waiting, then paused, then
     /// finished.
     pub fn entries(&self) -> Vec<(String, Status)> {
@@ -181,10 +176,6 @@ impl Downloads {
         }
         all.sort_by(|a, b| rank(&a.1).cmp(&rank(&b.1)).then_with(|| a.0.cmp(&b.0)));
         all
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.inner.states.lock().unwrap().is_empty()
     }
 
     /// Stop a transfer but keep what has arrived.

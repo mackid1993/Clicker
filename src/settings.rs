@@ -339,20 +339,6 @@ pub fn writable(dir: &std::path::Path) -> Result<()> {
 }
 
 impl Settings {
-    pub fn is_favorite_collection(&self, slug: &str) -> bool {
-        self.favorite_collections.iter().any(|s| s == slug)
-    }
-
-    pub fn toggle_favorite_collection(&mut self, slug: &str) {
-        if let Some(index) = self.favorite_collections.iter().position(|s| s == slug) {
-            self.favorite_collections.remove(index);
-        } else {
-            self.favorite_collections.push(slug.to_string());
-        }
-    }
-}
-
-impl Settings {
     /// Whether onboarding still needs to run.
     pub fn configured(&self) -> bool {
         self.active_server().is_some()

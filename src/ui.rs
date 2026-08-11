@@ -254,13 +254,6 @@ pub enum Action {
     Delete(Recording),
 }
 
-/// How many of the unfinished recordings the hero is drawn from.
-///
-/// Not the whole list. Something abandoned four months ago is not what anyone
-/// opened the application to carry on with, and putting it under the largest
-/// image on the screen makes the home screen look stale rather than varied.
-const HERO_POOL: usize = 5;
-
 /// The home screen.
 ///
 /// `launch` varies the hero. See where it is used.

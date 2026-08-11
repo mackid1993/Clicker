@@ -172,10 +172,6 @@ pub struct Binding {
 }
 
 impl Binding {
-    pub fn bare(key: egui::Key) -> Self {
-        Self { key, command: false, ctrl: false, shift: false, alt: false }
-    }
-
     pub fn has_modifier(self) -> bool {
         self.command || self.ctrl || self.shift || self.alt
     }
@@ -373,14 +369,6 @@ pub fn binding(settings: &Settings, id: &str) -> Option<Binding> {
 
 pub fn default_for(id: &str) -> Option<&'static str> {
     ACTIONS.iter().find(|a| a.id == id).map(|a| a.default)
-}
-
-pub fn label_for(id: &str) -> &str {
-    ACTIONS
-        .iter()
-        .find(|a| a.id == id)
-        .map(|a| a.label)
-        .unwrap_or(id)
 }
 
 /// How a binding reads on the settings page.

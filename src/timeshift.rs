@@ -188,26 +188,6 @@ impl Timeshift {
         &self.path
     }
 
-    pub fn bytes(&self) -> u64 {
-        self.written.load(Ordering::SeqCst)
-    }
-
-    /// Block until there is enough on disk to open, or give up.
-    ///
-    /// Opening an empty file gets nothing but "invalid data": the demuxer
-    /// needs enough of a transport stream to find its programs and probe the
-    /// codecs. This is the one place the caller has to wait, and it happens on
-    /// the open thread rather than the interface's.
-    pub fn wait_for(&self, bytes: u64, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if self.bytes() >= bytes {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        self.bytes() >= bytes
-    }
 }
 
 // Marking the buffer sparse and punching ranges out of it live in `platform`:
