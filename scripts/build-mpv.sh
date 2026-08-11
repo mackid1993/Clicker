@@ -167,17 +167,17 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
       pristine "$THIRD/pipewire-src"
       (
         cd "$THIRD/pipewire-src"
-        # auto_features=disabled is the whole trick: every optional feature
-        # off at once, without naming one. Naming them individually tripped a
-        # meson bug in pipewire's module tree — a module left enabled while
-        # spa-plugins was disabled references a variable only the disabled
-        # half defines ("audioconvert_dep"), and setup dies on it. With
-        # nothing auto-enabled that module is never evaluated, and what
-        # remains is exactly what is wanted: libpipewire, its headers, and
-        # nothing else.
+        # auto_features=disabled turns off everything optional in one
+        # stroke. spa-plugins stays ON, deliberately: pipewire's module tree
+        # references a variable the plugin half defines ("audioconvert_dep")
+        # from code that is built unconditionally, so disabling the plugins
+        # kills the configure outright — tried twice, failed identically.
+        # With every external feature off, the plugins that remain are the
+        # dependency-free ones; they cost seconds to compile and are simply
+        # not staged. Only libpipewire and its headers travel.
         meson setup build --prefix="$DEPS" --libdir=lib \
           -Dauto_features=disabled \
-          -Dsession-managers=[] -Dspa-plugins=disabled \
+          -Dsession-managers=[] \
           -Dexamples=disabled -Dtests=disabled \
           -Dgstreamer=disabled -Dsystemd=disabled \
           -Dpipewire-alsa=disabled -Dpipewire-jack=disabled -Djack=disabled \
