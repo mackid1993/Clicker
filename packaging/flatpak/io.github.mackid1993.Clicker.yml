@@ -79,10 +79,25 @@ build-options:
 modules:
   # Subtitles. mpv will not configure without it, and the runtime does not
   # carry it.
+  # Subtitles. mpv will not configure without it, and the runtime does not
+  # carry it.
+  #
+  # libass decides what it can do by what it finds at configure time, and
+  # says nothing about what it could not find. Without FriBidi it has no
+  # bidirectional algorithm, and text that needs reordering — anything with
+  # a right-to-left run in it, which includes plenty of ordinary captions —
+  # comes out reversed on screen. Without HarfBuzz it cannot shape. Neither
+  # failure is an error at build time; both are visible only as wrong text.
+  #
+  # The runtime carries both, so the check below is not about installing
+  # them: it is about refusing to ship a libass that quietly did without.
   - name: libass
     buildsystem: autotools
     config-opts:
       - --disable-static
+    post-install:
+      - test -n "$(ldd /app/lib/libass.so.9 | grep fribidi)" || (echo "libass built with no FriBidi: subtitles would render reversed" >&2; exit 1)
+      - test -n "$(ldd /app/lib/libass.so.9 | grep harfbuzz)" || (echo "libass built with no HarfBuzz: subtitles would not shape" >&2; exit 1)
     sources:
       - type: git
         url: https://github.com/libass/libass.git
