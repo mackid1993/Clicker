@@ -155,6 +155,21 @@ $remaps = @(
     "--remap-path-prefix=$env:USERPROFILE\.cargo=/cargo"
     "--remap-path-prefix=$Root=/clicker"
     "--remap-path-prefix=$env:USERPROFILE=/home"
+    # The C runtime goes inside the binary rather than being expected on the
+    # machine. Rust's MSVC target links VCRUNTIME140.dll by default, which
+    # arrives with the Visual C++ redistributable rather than with Windows,
+    # and a static import that is not there fails in the loader before any of
+    # this program runs: "The application was unable to start correctly
+    # (0xc000007b)", with nothing to say which file was missing.
+    #
+    # x64 machines mostly have the redistributable because something else
+    # installed it years ago. A fresh Windows on Arm install mostly does not,
+    # and that is where this was found. Carrying it removes the guess on both.
+    #
+    # Safe here because nothing crosses a CRT boundary: libmpv is loaded at
+    # runtime through a C ABI of pointers and its own allocator, so no CRT
+    # object is ever passed between the two.
+    '-C target-feature=+crt-static'
 )
 $env:RUSTFLAGS = ($remaps -join ' ')
 
