@@ -18,3 +18,4 @@
 /third_party/mpv-deps*
 /third_party/ffmpeg-mingw-src*
 packaging/flatpak/generated-sources.json
+/_todo
