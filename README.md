@@ -32,9 +32,9 @@ Live TV, recordings and a guide, in a single Rust binary.
 A native client for [Channels DVR](https://getchannels.com/).
 
 Live TV, recordings and a guide, in a single Rust binary with a Fluent
-interface. One codebase and one interface on all three: Windows 10 1809 and
-up, macOS 12 and up on both Apple silicon and Intel, and Linux on x86-64 and
-arm64.
+interface. One codebase and one interface on all three: Windows 10 1809 and up
+on x86-64 and arm64, macOS 12 and up on both Apple silicon and Intel, and Linux
+on x86-64 and arm64.
 
 > **Status: 1.2.0.** It plays live TV and recordings, schedules, downloads and
 > seeks. It has been run on the machines it was written on and not much else,
@@ -46,7 +46,7 @@ Downloads are on the
 
 | Platform | What to get |
 |---|---|
-| **Windows** | `Clicker-Setup-<version>.exe` — 10 1809 and up |
+| **Windows** | `Clicker-Setup-<version>.exe` — 10 1809 and up. On an Arm PC take `-arm64.exe`; the plain one installs and runs there too, emulated |
 | **macOS** | `Clicker-macOS-<version>-universal.zip` — one app, Apple silicon and Intel, signed and notarized |
 | **Linux** | `clicker_<version>_amd64.deb` / `_arm64.deb`, or one line: <br>`curl -fsSL https://raw.githubusercontent.com/mackid1993/Clicker/main/setup.sh \| bash` |
 

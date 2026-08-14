@@ -38,20 +38,36 @@ $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
 $Msys = 'C:\msys64'
 
-# The mingw packages libmpv needs. libass and libplacebo are not optional in
-# mpv: both are plain dependencies in its meson.build with no way to turn them
-# off. Both are license-compatible, ISC and LGPLv2.1+ respectively.
+# Which MSYS2 environment this machine builds in. The same choice
+# scripts\build-mpv.ps1 makes, and made the same way, so the packages installed
+# here are the ones it will go looking for.
+$Arch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') {
+    'arm64'
+} else {
+    'x64'
+}
+
+# The packages libmpv needs. libass and libplacebo are not optional in mpv:
+# both are plain dependencies in its meson.build with no way to turn them off.
+# Both are license-compatible, ISC and LGPLv2.1+ respectively.
+#
+# nasm assembles FFmpeg's x86 SIMD and has no place in an aarch64 build, where
+# clang assembles the NEON paths itself. make and diffutils are MSYS packages
+# rather than toolchain ones, so they are unprefixed on both.
+$MingwPrefix   = if ($Arch -eq 'arm64') { 'clangarm64' } else { 'mingw64' }
+$PackagePrefix = if ($Arch -eq 'arm64') { 'mingw-w64-clang-aarch64' } else { 'mingw-w64-x86_64' }
+$Compiler      = if ($Arch -eq 'arm64') { 'clang' } else { 'gcc' }
+
 $MingwPackages = @(
-    'mingw-w64-x86_64-gcc'
-    'mingw-w64-x86_64-meson'
-    'mingw-w64-x86_64-ninja'
-    'mingw-w64-x86_64-pkgconf'
-    'mingw-w64-x86_64-libass'
-    'mingw-w64-x86_64-libplacebo'
+    "$PackagePrefix-$Compiler"
+    "$PackagePrefix-meson"
+    "$PackagePrefix-ninja"
+    "$PackagePrefix-pkgconf"
+    "$PackagePrefix-libass"
+    "$PackagePrefix-libplacebo"
     'make'
     'diffutils'
-    'nasm'
-)
+) + $(if ($Arch -eq 'arm64') { @() } else { @('nasm') })
 
 function Say($text, $color = 'Gray') { Write-Host "  $text" -ForegroundColor $color }
 function Ok($text)   { Write-Host "  [ok]   $text" -ForegroundColor Green }
@@ -137,12 +153,12 @@ $hasMsys = Need 'MSYS2 (for libmpv)' (Test-Path $msysBash) 'MSYS2.MSYS2' 'mpv ca
 # same lie as reporting Visual Studio without a C++ compiler.
 $mingwReady = $false
 if ($hasMsys) {
-    $probe = & $msysBash -lc 'ls /mingw64/bin/gcc.exe /mingw64/bin/meson /mingw64/bin/ninja.exe /mingw64/lib/pkgconfig/libass.pc /mingw64/lib/pkgconfig/libplacebo.pc 2>&1'
+    $probe = & $msysBash -lc "ls /$MingwPrefix/bin/$Compiler.exe /$MingwPrefix/bin/meson /$MingwPrefix/bin/ninja.exe /$MingwPrefix/lib/pkgconfig/libass.pc /$MingwPrefix/lib/pkgconfig/libplacebo.pc 2>&1"
     $mingwReady = ($LASTEXITCODE -eq 0)
     if ($mingwReady) {
-        Ok 'mingw toolchain  (gcc, meson, ninja, libass, libplacebo)'
+        Ok "$MingwPrefix toolchain  ($Compiler, meson, ninja, libass, libplacebo)"
     } else {
-        Miss 'mingw packages  ->  bootstrap.ps1 -Install will add them'
+        Miss "$MingwPrefix packages  ->  bootstrap.ps1 -Install will add them"
     }
 }
 
@@ -172,7 +188,7 @@ if ($missing.Count -gt 0 -or ($hasMsys -and -not $mingwReady)) {
     # where MSYS2 was already installed; a run that just installed it exits
     # below and picks these up on the next pass, when its shell is in place.
     if ($hasMsys -and -not $mingwReady) {
-        Write-Host '  installing mingw packages (gcc, meson, ninja, libass, libplacebo)' -ForegroundColor Cyan
+        Write-Host "  installing $MingwPrefix packages ($Compiler, meson, ninja, libass, libplacebo)" -ForegroundColor Cyan
         & $msysBash -lc "pacman-key --init >/dev/null 2>&1; pacman -Sy --noconfirm >/dev/null 2>&1; pacman -S --needed --noconfirm $($MingwPackages -join ' ')"
         if ($LASTEXITCODE -ne 0) { Bad 'pacman failed; run it by hand in the MSYS2 shell'; exit 1 }
     }

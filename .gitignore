@@ -11,8 +11,10 @@
 # FFmpeg above. `scripts\build-mpv.ps1` reproduces both from a pinned tag.
 /third_party/mpv-src
 /third_party/mpv
-/third_party/mpv-deps
-# mpv needs FFmpeg built by gcc, and the tree above is patched for MSVC, so
-# the two cannot share one checkout.
-/third_party/ffmpeg-mingw-src
+# One set of built dependencies per architecture, and one FFmpeg checkout per
+# architecture with them. mpv needs FFmpeg built by gcc or clang, and the tree
+# above is patched for MSVC, so the two cannot share one checkout; FFmpeg
+# builds in-tree, so x64 and arm64 cannot share one either.
+/third_party/mpv-deps*
+/third_party/ffmpeg-mingw-src*
 packaging/flatpak/generated-sources.json

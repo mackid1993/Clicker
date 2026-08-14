@@ -37,7 +37,7 @@ on:
         default: ""
         type: string
       windows:
-        description: "Build the Windows installer"
+        description: "Build the Windows installers (x64 and arm64)"
         required: false
         default: true
         type: boolean

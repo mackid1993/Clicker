@@ -24,10 +24,45 @@
 #endif
 #define AppPublisher   "David Brustein"
 
+; Which processor the staged build is for. build.ps1 reads this out of the PE
+; header of the executable it just compiled rather than being told, so it
+; cannot disagree with what is in the [Files] section below.
+#ifndef AppArch
+  #define AppArch      "x64"
+#endif
+
+; The arm64 installer is the one that says so in its name. x64 keeps the plain
+; filename it has always had: it is what almost everybody downloads, it is
+; what the README and every existing link point at, and renaming it to make a
+; matched pair would break all of that to no one's benefit.
+;
+; x64compatible rather than x64 is also deliberate and stays that way. It
+; matches ARM64 machines too, so somebody on one who takes the obvious
+; download gets a working emulated install instead of "this app can't run on
+; your PC". The arm64 build is an upgrade for those users, not a rescue.
+; Spelled out rather than "arm64 or else", because "or else" meant a typo in
+; the value compiled a perfectly good x64 installer under whatever name was
+; asked for. There are two architectures and anything that is not one of them
+; is a mistake, so it stops here rather than shipping.
+#if AppArch == "arm64"
+  #define ArchSuffix   "-arm64"
+  #define ArchAllowed  "arm64"
+#elif AppArch == "x64"
+  #define ArchSuffix   ""
+  #define ArchAllowed  "x64compatible"
+#else
+  #error AppArch must be x64 or arm64
+#endif
+
 [Setup]
 ; Clicker's own identity, and it must never change: this GUID is what Windows
 ; matches an upgrade against, and a new one turns every future version into a
 ; second entry in Add or Remove Programs beside the first.
+;
+; Shared by both architectures on purpose. An ARM user who has been running
+; the emulated x64 build and moves to the native one is upgrading Clicker, not
+; installing a second copy of it, and both land in the same directory with the
+; same settings behind them.
 AppId={{3F9A6C41-8E27-4B5D-A0F3-6D14C97B2E85}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -37,7 +72,7 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableDirPage=no
-OutputBaseFilename={#AppName}-Setup-{#AppVersion}
+OutputBaseFilename={#AppName}-Setup-{#AppVersion}{#ArchSuffix}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -45,8 +80,8 @@ WizardStyle=modern
 ; Per-user, so no elevation prompt.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#ArchAllowed}
+ArchitecturesInstallIn64BitMode={#ArchAllowed}
 ; Windows 10 1809 and up, Windows 11 included. The floor is that release
 ; because it is the one that added the dark-mode window attribute, below which
 ; a light system border is drawn around an application that is entirely dark.

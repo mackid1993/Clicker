@@ -69,6 +69,32 @@ function Fail($message) {
     exit 1
 }
 
+# The processor a PE file was built for, read out of its header: 'x64',
+# 'arm64', or the raw value for anything else. Offset 0x3C holds the offset of
+# the PE signature, and the machine field is the two bytes after it.
+#
+# This is how the build learns its own architecture. Nothing passes it in,
+# because anything that passed it in could be wrong: cargo builds for the
+# machine it is running on, and the answer is already sitting in the file it
+# produced.
+function Get-PeMachine($path) {
+    $stream = [IO.File]::OpenRead($path)
+    try {
+        $buffer = [byte[]]::new(4)
+        $stream.Position = 0x3C
+        if ($stream.Read($buffer, 0, 4) -ne 4) { return 'unreadable' }
+        $stream.Position = [BitConverter]::ToInt32($buffer, 0) + 4
+        if ($stream.Read($buffer, 0, 2) -ne 2) { return 'unreadable' }
+    } finally {
+        $stream.Dispose()
+    }
+    switch ([BitConverter]::ToUInt16($buffer, 0)) {
+        0x8664  { 'x64' }
+        0xAA64  { 'arm64' }
+        default { '0x{0:X4}' -f $_ }
+    }
+}
+
 # --- version ------------------------------------------------------------------
 #
 # Accepts `--ver 0.0.1`, `--version 0.0.1`, and the `=` forms, on top of the
@@ -197,6 +223,38 @@ if (Test-Path $licenses) {
 Copy-Item $mpvDlls.FullName $Stage -Force
 Write-Host ("      libmpv and its libraries staged: {0} files" -f $mpvDlls.Count) -ForegroundColor DarkGray
 
+# Everything in the stage is for the same processor as the executable beside
+# it, read out of the PE headers rather than taken on trust from the script
+# that produced them.
+#
+# Nothing earlier can catch this. libmpv is loaded by name at runtime, so the
+# compile never sees it; third_party\mpv holds one architecture at a time with
+# nothing in the path saying which; and the license check below is happy
+# either way, because an x64 libmpv is just as LGPL as an arm64 one. The
+# result would install, launch, find no player it can load, and play nothing.
+$AppArch = Get-PeMachine $exe
+if ($AppArch -notin @('x64', 'arm64')) {
+    Fail "clicker.exe reports an unrecognized machine type ($AppArch)."
+}
+
+$wrongArch = @(Get-ChildItem (Join-Path $Stage '*.dll') |
+    Where-Object { (Get-PeMachine $_.FullName) -ne $AppArch })
+if ($wrongArch) {
+    $names = ($wrongArch | ForEach-Object {
+        '{0} ({1})' -f $_.Name, (Get-PeMachine $_.FullName)
+    }) -join "`n  "
+    Fail @"
+REFUSING TO PACKAGE: clicker.exe is $AppArch and these are not.
+
+  $names
+
+third_party\mpv holds a libmpv built for another processor. Rebuild it:
+
+  scripts\build-mpv.ps1 -Arch $AppArch
+"@
+}
+Write-Host "      architecture verified: $AppArch throughout" -ForegroundColor DarkGray
+
 # Licenses are read out of the binaries that are actually being shipped, not
 # taken on trust from the build scripts that produced them. Clicker is MIT and
 # its media components are LGPL; a GPL library in the stage would silently
@@ -249,7 +307,7 @@ if ($Target -eq 'Stage') {
 }
 
 # ------------------------------------------------------------------ [3/3] ----
-Write-Host '[3/3] Building the installer' -ForegroundColor Cyan
+Write-Host "[3/3] Building the $AppArch installer" -ForegroundColor Cyan
 
 $iscc = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -264,7 +322,7 @@ The staged application is in dist\Clicker and can be run from there.
 "@
 }
 
-& $iscc /Qp "/O$OutDir" "/DAppVersion=$Version" (Join-Path $Root 'installer\clicker.iss')
+& $iscc /Qp "/O$OutDir" "/DAppVersion=$Version" "/DAppArch=$AppArch" (Join-Path $Root 'installer\clicker.iss')
 if ($LASTEXITCODE -ne 0) { Fail 'The installer failed to build.' }
 
 Write-Host ''

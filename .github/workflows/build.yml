@@ -3,10 +3,18 @@
 # Clicker - an unofficial client for Channels DVR Server
 # Copyright (c) 2026 David Brustein
 #
-# Builds an installer on demand. Manual only: there is no push or pull_request
-# trigger, deliberately. A release is a thing somebody decides to cut, and a
-# workflow that fires on every commit spends runner minutes proving what the
-# local build already proved.
+# Builds the Windows installers on demand, one per architecture. Manual only:
+# there is no push or pull_request trigger, deliberately. A release is a thing
+# somebody decides to cut, and a workflow that fires on every commit spends
+# runner minutes proving what the local build already proved.
+#
+# Two of everything, each compiled natively on a machine of its own
+# architecture. Nothing cross-compiles and nothing is emulated except the
+# shell: on the arm64 leg MSYS2's runtime has no aarch64 port, so bash, pacman
+# and FFmpeg's configure run under x64 emulation while the clang they drive is
+# native and its output is native. The application itself is plain
+# aarch64-pc-windows-msvc from the runner's own rustc, and not one line of
+# Rust knows which of the two it is.
 #
 # The version typed in is handed to build.ps1 exactly as it is locally, which
 # stamps it into Cargo.toml, the binary's version resource, and the installer,
@@ -18,11 +26,15 @@
 # tags the first time — half an hour of runner time that produces the same
 # bytes until somebody moves a tag or a flag — and the staged result is cached
 # after that, keyed on the script where the tags and flags live.
+#
+# Budget more than that for the first arm64 run. The compiling is native and
+# no slower, but FFmpeg's configure is thousands of small shell processes and
+# every one of them is an emulated x64 one. It is a cold cache, once.
 
 name: Build Windows
 
 on:
-  # Two doors, one job. Dispatch builds an installer to download and try;
+  # Two doors, one matrix. Dispatch builds both installers to download and try;
   # workflow_call is how the Release workflow asks for the same thing as part
   # of assembling a version. Neither fires on a push, deliberately: a release
   # is a thing somebody decides to cut.
@@ -43,7 +55,26 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # One job per architecture. fail-fast is off because a broken arm64 leg is
+    # not a reason to throw away a finished x64 installer, and the Release
+    # workflow refuses to assemble a release out of a partial build anyway.
+    #
+    # The suffix is carried in the matrix rather than worked out later: it is
+    # part of the filename installer\clicker.iss produces, and the two have to
+    # agree or the upload finds nothing.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+            suffix: ""
+          # Free on public repositories, which this is. Four vCPUs, same as
+          # the x64 image.
+          - runner: windows-11-arm
+            arch: arm64
+            suffix: "-arm64"
+    runs-on: ${{ matrix.runner }}
     # Read is all a build needs now that it publishes nothing. Only the
     # Release workflow writes to the repository.
     permissions:
@@ -71,21 +102,32 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          # runner.arch, because runner.os is "Windows" on both machines and a
+          # key without it would have the two legs sharing one cache of
+          # compiled objects for different processors.
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-release-
 
       # The staged libmpv, cached whole. The key hashes build-mpv.ps1 because
       # that is where the pinned tags and the licensing flags live, so moving
       # either rebuilds from source and everything else reuses the last build.
       # No restore-keys, deliberately: a stage built from different tags is
       # exactly the wrong thing to fall back to silently.
+      #
+      # The architecture is in the key for a sharper version of that reason.
+      # third_party/mpv holds one architecture at a time and nothing in the
+      # path says which, so without it the second leg to run would restore the
+      # first one's DLLs and package them beside a binary that cannot load
+      # them. build.ps1 reads the machine type out of every file before
+      # packaging and would refuse, but a cache key that cannot collide is
+      # better than a check that catches it.
       - name: Cache libmpv
         id: mpv
         uses: actions/cache@v4
         with:
           path: third_party/mpv
-          key: ${{ runner.os }}-mpv-${{ hashFiles('scripts/build-mpv.ps1') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-mpv-${{ hashFiles('scripts/build-mpv.ps1') }}
 
       # Before the half-hour libmpv build, not after it. Through the
       # environment rather than spliced into the script: the input is typed by
@@ -107,8 +149,8 @@ jobs:
       # not reliably on a runner, and checks Visual Studio, which is. MSYS2
       # ships on the windows images at C:\msys64; looked for rather than
       # assumed, because a runner image is not a contract.
-      - name: Install the mingw toolchain
-        if: steps.mpv.outputs.cache-hit != 'true'
+      - name: Install the MINGW64 toolchain
+        if: matrix.arch == 'x64' && steps.mpv.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           if (-not (Test-Path 'C:\msys64\usr\bin\bash.exe')) {
@@ -139,14 +181,66 @@ jobs:
           }
           if (-not $ok) { throw 'pacman failed three times; the MSYS2 mirrors are down' }
 
+      # The arm64 image ships neither MSYS2 nor pacman — both are on its own
+      # published list of tools that are not available for it — and there is
+      # no aarch64 port of the MSYS2 runtime to install in their place. What
+      # goes on here is the ordinary x64 MSYS2 running under emulation,
+      # driving a native aarch64 clang out of the CLANGARM64 environment.
+      #
+      # The MSYS2 project's own action rather than the choco and pacman dance
+      # above, and that is a departure worth naming. Getting a bare install to
+      # see the clangarm64 repository is MSYS2's business rather than
+      # something this workflow should be guessing at, and the x64 path above
+      # is left untouched because it works and a release depends on it. One
+      # image has an MSYS2 and the other does not, so the two legs differ
+      # exactly where the images do.
+      - name: Install the CLANGARM64 toolchain
+        id: msys2
+        if: matrix.arch == 'arm64' && steps.mpv.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          # On by default; named anyway, because this step only runs on a
+          # libmpv cache miss and that is exactly when the twenty minutes it
+          # saves are worth having.
+          cache: true
+          # The same set the x64 leg installs, in the clang namespace, minus
+          # nasm: it assembles FFmpeg's x86 SIMD and has no counterpart here,
+          # because clang assembles the NEON paths with the integrated
+          # assembler it already has. make and diffutils are MSYS packages
+          # rather than toolchain ones and are unprefixed on both.
+          install: >-
+            make
+            diffutils
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-meson
+            mingw-w64-clang-aarch64-ninja
+            mingw-w64-clang-aarch64-pkgconf
+            mingw-w64-clang-aarch64-libass
+            mingw-w64-clang-aarch64-libplacebo
+
       # FFmpeg and mpv from their pinned tags, LGPL only, staged into
       # third_party\mpv where the cache step above picks them up on the way
       # out. The script verifies the license out of the binaries it built, and
       # build.ps1 checks again before packaging.
+      #
+      # -Arch is passed rather than left to the script's own default. The
+      # default reads the machine it is running on and would be right both
+      # times, but this is the one place where what gets built and what the
+      # cache above is keyed on have to be the same word.
       - name: Build libmpv
         if: steps.mpv.outputs.cache-hit != 'true'
         shell: pwsh
-        run: ./scripts/build-mpv.ps1
+        env:
+          # Empty on the x64 leg, where MSYS2 is at the path the script
+          # already defaults to. On arm64 the action decides where it goes and
+          # reports it, so the location is taken from the action rather than
+          # assumed.
+          MSYS_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $msys = if ($env:MSYS_LOCATION) { $env:MSYS_LOCATION } else { 'C:\msys64' }
+          ./scripts/build-mpv.ps1 -Arch ${{ matrix.arch }} -Msys $msys
 
       # Inno Setup ships on the windows runner images, and build.ps1 looks for
       # it in the two Program Files directories, which is where choco puts it
@@ -167,8 +261,11 @@ jobs:
 
       # The same three stages as locally: compile, stage with the runtime,
       # package. build.ps1 owns the version stamping, the path remapping that
-      # keeps the runner's directory layout out of the binary, and the check
-      # that refuses to package a GPL component.
+      # keeps the runner's directory layout out of the binary, the check that
+      # refuses to package a GPL component, and the one that refuses to
+      # package libraries built for another processor. Nothing tells it which
+      # architecture this is: it reads that out of the executable cargo just
+      # produced and names the installer accordingly.
       - name: Build
         shell: pwsh
         run: ./build.ps1 -Version $env:VERSION
@@ -181,7 +278,7 @@ jobs:
       - name: Upload the installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
-          path: dist/Clicker-Setup-${{ env.VERSION }}.exe
+          name: windows-installer-${{ matrix.arch }}
+          path: dist/Clicker-Setup-${{ env.VERSION }}${{ matrix.suffix }}.exe
           if-no-files-found: error
           retention-days: 30

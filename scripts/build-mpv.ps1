@@ -30,6 +30,22 @@
     beside libmpv rather than being folded into it, which is what LGPL-2.1
     section 6 asks for.
 
+    Two architectures, one script. x64 builds under MINGW64 with gcc, arm64
+    under CLANGARM64 with clang, and everything between those two facts is the
+    same source at the same tags with the same licensing flags. MSYS2 has no
+    aarch64 port of its own runtime, so on an ARM machine bash, pacman and
+    configure all run under x64 emulation while the compiler they drive is
+    native and its output is native. Slow to configure, correct to ship.
+
+.PARAMETER Arch
+    x64    the MINGW64 environment, gcc, FFmpeg --arch=x86_64
+    arm64  the CLANGARM64 environment, clang, FFmpeg --arch=aarch64
+
+    Defaults to the architecture of the machine it is run on. There is no
+    cross-compiling here: an aarch64 clang cannot run on an x64 host at all,
+    and while an ARM machine can build the x64 stage under emulation, it has
+    no reason to.
+
 .PARAMETER Clean
     Throw away both build trees and start over.
 
@@ -38,11 +54,20 @@
 
 .EXAMPLE
     scripts\build-mpv.ps1
+    scripts\build-mpv.ps1 -Arch arm64
     scripts\build-mpv.ps1 -Reconfigure
 #>
 
 [CmdletBinding()]
 param(
+    [ValidateSet('x64', 'arm64')]
+    [string]$Arch = $(
+        if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') {
+            'arm64'
+        } else {
+            'x64'
+        }
+    ),
     [switch]$Clean,
     [switch]$Reconfigure,
     [string]$Msys = 'C:\msys64'
@@ -51,14 +76,53 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Root      = Split-Path -Parent $PSScriptRoot
-# Its own FFmpeg checkout, deliberately. third_party\ffmpeg-src is configured
-# for MSVC and carries two patches for MSVC response files; configuring the
-# same tree for gcc leaves it in a state where the next build-ffmpeg.ps1 run
-# skips reconfiguring and builds the application against a mingw config.
-$FFmpegSrc = Join-Path $Root 'third_party\ffmpeg-mingw-src'
+# Its own FFmpeg checkout, deliberately, and one per architecture. The first
+# reason is the toolchain: third_party\ffmpeg-src is configured for MSVC and
+# carries two patches for MSVC response files, and configuring the same tree
+# for gcc leaves it in a state where the next build-ffmpeg.ps1 run skips
+# reconfiguring and builds the application against a mingw config.
+#
+# The second is the same trap one level down. FFmpeg builds in-tree, so an x64
+# and an arm64 build cannot share a checkout: the second one would find the
+# first one's config.mak, decide it had nothing to configure, and link objects
+# of the wrong machine type. mpv builds out of tree, so it needs only its own
+# build directory and the source is shared.
+$FFmpegSrc = Join-Path $Root "third_party\ffmpeg-mingw-src-$Arch"
 $MpvSrc    = Join-Path $Root 'third_party\mpv-src'
-$Deps      = Join-Path $Root 'third_party\mpv-deps'
+$MpvBuild  = Join-Path $MpvSrc "build-$Arch"
+$Deps      = Join-Path $Root "third_party\mpv-deps-$Arch"
+# The stage is not per-architecture: build.ps1 packages whatever is in here,
+# and it re-reads the machine type of every file before it does, so a stage
+# left over from the other architecture is refused rather than shipped.
 $Stage     = Join-Path $Root 'third_party\mpv'
+
+# Everything that differs between the two, in one place. MSYS2 names its
+# environments by the toolchain rather than the target, so CLANGARM64 is both
+# "aarch64" and "clang" at once: a different prefix on disk, a different
+# package namespace, and a different compiler behind the same package names.
+$Toolchain = @{
+    x64 = @{
+        MSystem = 'MINGW64'
+        Prefix  = 'mingw64'
+        Package = 'mingw-w64-x86_64'
+        CC      = 'gcc'
+        CXX     = 'g++'
+        FFArch  = 'x86_64'
+        # nasm assembles FFmpeg's x86 SIMD. There is nothing to install in its
+        # place for aarch64: clang assembles FFmpeg's NEON with the integrated
+        # assembler it already has.
+        Extra   = @('nasm')
+    }
+    arm64 = @{
+        MSystem = 'CLANGARM64'
+        Prefix  = 'clangarm64'
+        Package = 'mingw-w64-clang-aarch64'
+        CC      = 'clang'
+        CXX     = 'clang++'
+        FFArch  = 'aarch64'
+        Extra   = @()
+    }
+}[$Arch]
 
 $FFmpegTag = 'n7.1.1'
 
@@ -96,23 +160,31 @@ function Unix($path) {
     '/' + $full.Substring(0, 1).ToLower() + $full.Substring(2).Replace('\', '/')
 }
 
-# Everything runs in the mingw64 environment, not the MSYS one: the difference
-# is which gcc is on PATH, and the MSYS gcc produces binaries that depend on
-# msys-2.0.dll, which is both a Cygwin runtime and GPL.
+# Everything runs in the target's own environment, never the MSYS one: the
+# difference is which compiler is on PATH, and the MSYS compiler produces
+# binaries that depend on msys-2.0.dll, which is both a Cygwin runtime and GPL.
+#
+# CC and CXX are exported rather than left to be detected. FFmpeg is told its
+# compiler on the configure line, but meson takes it from the environment, and
+# on CLANGARM64 there is no `cc` and no `gcc` unless the virtual package
+# happens to be installed. Naming it here means neither build has to guess.
 function Invoke-Bash($command) {
-    & $Bash -lc "export MSYSTEM=MINGW64; export PATH=/mingw64/bin:`$PATH; set -e; $command"
+    $prelude = "export MSYSTEM=$($Toolchain.MSystem); " +
+               "export PATH=/$($Toolchain.Prefix)/bin:`$PATH; " +
+               "export CC=$($Toolchain.CC); export CXX=$($Toolchain.CXX); set -e; "
+    & $Bash -lc "$prelude$command"
     if ($LASTEXITCODE -ne 0) { Fail "Failed: $command" }
 }
 
 if (-not (Test-Path (Join-Path $FFmpegSrc 'configure'))) {
-    Step "fetching FFmpeg $FFmpegTag for mingw"
+    Step "fetching FFmpeg $FFmpegTag for $Arch"
     git clone --depth 1 --branch $FFmpegTag https://github.com/FFmpeg/FFmpeg.git $FFmpegSrc
     if ($LASTEXITCODE -ne 0) { Fail 'Could not clone FFmpeg.' }
 }
 
 if ($Clean) {
     Step 'cleaning'
-    Remove-Item -Recurse -Force $Deps, $Stage, (Join-Path $MpvSrc 'build') -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $Deps, $Stage, $MpvBuild -ErrorAction SilentlyContinue
     Invoke-Bash "cd '$(Unix $FFmpegSrc)' && make distclean >/dev/null 2>&1 || true"
 }
 
@@ -150,11 +222,15 @@ if ((git -C $MpvSrc config core.autocrlf) -ne 'false') {
 # to `make install` instead, where it is not recorded.
 $FFmpegBuilt = Join-Path $Deps 'clicker\lib\pkgconfig\libavcodec.pc'
 if ($Reconfigure -or -not (Test-Path $FFmpegBuilt)) {
-    Step 'configuring FFmpeg for mingw (LGPL, decode only)'
+    Step "configuring FFmpeg for $Arch (LGPL, decode only)"
     $options = @(
         '--prefix=/clicker'
         '--target-os=mingw32'
-        '--arch=x86_64'
+        "--arch=$($Toolchain.FFArch)"
+        # Named rather than left to the default, which is gcc. On CLANGARM64
+        # there may be no gcc at all, and a configure that falls back to one
+        # that does exist would build for the wrong machine.
+        "--cc=$($Toolchain.CC)"
         '--enable-shared'
         '--disable-static'
         # The license position of this entire application rests on these two.
@@ -189,12 +265,12 @@ if ($Reconfigure -or -not (Test-Path $FFmpegBuilt)) {
 # is no flag to turn them off. Both are license-compatible: libass is ISC and
 # libplacebo is LGPLv2.1+. They come from MSYS2 packages along with freetype,
 # fribidi and harfbuzz, and they ship as DLLs beside libmpv.
-$MpvBuild = Join-Path $MpvSrc 'build'
+$BuildName = Split-Path -Leaf $MpvBuild
 if ($Reconfigure -or -not (Test-Path (Join-Path $MpvBuild 'build.ninja'))) {
-    Step "configuring mpv $MpvTag (LGPL, libmpv only)"
+    Step "configuring mpv $MpvTag for $Arch (LGPL, libmpv only)"
     $pkg = Unix (Join-Path $Deps 'clicker\lib\pkgconfig')
     $setup = @(
-        'meson setup build'
+        "meson setup $BuildName"
         '--buildtype=release'
         '-Dgpl=false'
         '-Dlibmpv=true'
@@ -207,18 +283,25 @@ if ($Reconfigure -or -not (Test-Path (Join-Path $MpvBuild 'build.ninja'))) {
     ) -join ' '
     # PKG_CONFIG_PATH is prepended, not replaced: mpv needs to find our FFmpeg
     # first and libass and libplacebo from the MSYS2 packages after it.
-    Invoke-Bash "cd '$(Unix $MpvSrc)' && export PKG_CONFIG_PATH='${pkg}:/mingw64/lib/pkgconfig' && rm -rf build && $setup"
+    $sys = "/$($Toolchain.Prefix)/lib/pkgconfig"
+    Invoke-Bash "cd '$(Unix $MpvSrc)' && export PKG_CONFIG_PATH='${pkg}:${sys}' && rm -rf $BuildName && $setup"
 }
 
-Step 'building mpv'
-Invoke-Bash "cd '$(Unix $MpvSrc)' && ninja -C build"
+Step "building mpv for $Arch"
+Invoke-Bash "cd '$(Unix $MpvSrc)' && ninja -C $BuildName"
 
 # -------------------------------------------------------------------- stage ---
-Step 'staging into third_party\mpv'
+Step "staging $Arch into third_party\mpv"
+# Emptied first, not merged into. The stage is shared between the two
+# architectures, and the runtime libraries are not the same set on both: gcc
+# leaves libgcc_s_seh-1.dll and libstdc++-6.dll behind, clang leaves libunwind
+# and libc++. Copying over the top would keep whichever of those the other
+# toolchain left, and they are exactly the files nothing would overwrite.
+if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'include\mpv') | Out-Null
 
-Get-ChildItem (Join-Path $MpvSrc 'build') -Filter '*mpv*.dll' -Recurse |
+Get-ChildItem $MpvBuild -Filter '*mpv*.dll' -Recurse |
     ForEach-Object { Copy-Item $_.FullName $Stage -Force }
 Copy-Item (Join-Path $MpvSrc 'include\mpv\*.h') (Join-Path $Stage 'include\mpv') -Force
 
@@ -237,11 +320,12 @@ Get-ChildItem (Join-Path $Deps 'clicker\bin\*.dll') -ErrorAction SilentlyContinu
 # it and fails on every other one. Asking the linker what it actually needs
 # cannot drift.
 Step 'resolving dependencies'
-$deps = & $Bash -lc "export PATH=/mingw64/bin:`$PATH; ldd '$(Unix (Join-Path $Stage 'libmpv-2.dll'))' | grep -i mingw64 | awk '{print `$3}' | sort -u"
+$prefix = $Toolchain.Prefix
+$deps = & $Bash -lc "export PATH=/$prefix/bin:`$PATH; ldd '$(Unix (Join-Path $Stage 'libmpv-2.dll'))' | grep -i $prefix | awk '{print `$3}' | sort -u"
 foreach ($dep in $deps) {
     if (-not $dep) { continue }
     # /mingw64/bin/foo.dll as MSYS2 reports it, back to a Windows path.
-    $windows = Join-Path $Msys ($dep -replace '^/mingw64/', 'mingw64/').Replace('/', '\')
+    $windows = Join-Path $Msys ($dep -replace "^/$prefix/", "$prefix/").Replace('/', '\')
     if (Test-Path $windows) {
         Copy-Item $windows $Stage -Force
     } else {
@@ -268,6 +352,6 @@ if ($bad) {
 $size = (Get-ChildItem $Stage -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
 Write-Host ''
 Write-Host '  Done.' -ForegroundColor Green
-Write-Host ('    {0}  ({1:N1} MB, no GPL components)' -f $Stage, $size)
+Write-Host ('    {0}  ({1}, {2:N1} MB, no GPL components)' -f $Stage, $Arch, $size)
 Get-ChildItem $Stage -Filter *.dll | ForEach-Object { Write-Host ('    {0,-28} {1,7:N1} MB' -f $_.Name, ($_.Length / 1MB)) }
 Write-Host ''

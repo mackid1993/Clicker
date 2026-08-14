@@ -36,7 +36,7 @@ no headers are looked for.
 ## What the mpv build does
 
 `scripts/build-mpv.ps1` fetches FFmpeg `n7.1.1` and mpv `v0.41.0` and builds
-both under mingw-w64. Three things about it are deliberate:
+both under mingw-w64. Four things about it are deliberate:
 
 **Both are built from source rather than downloaded.** mpv is
 GPL-2.0-or-later unless configured otherwise, and every prebuilt FFmpeg for
@@ -56,6 +56,24 @@ else outside the installation folder.
 decoder, demuxer, parser, protocol and hardware accelerator is included, because
 a client that cannot open a recording is worse than one that is larger.
 
+**It builds for the machine it is run on**, and there are two of those. On x64
+that is the MINGW64 environment and gcc; on an Arm PC it is CLANGARM64 and
+clang, with `mingw-w64-clang-aarch64-` in front of every package name instead
+of `mingw-w64-x86_64-`. `bootstrap.ps1` picks the right set the same way, so
+neither is something to choose by hand. Pass `-Arch x64` or `-Arch arm64` to
+override it.
+
+MSYS2 has no aarch64 build of its own runtime, so on an Arm PC the shell,
+pacman and FFmpeg's `configure` all run under x64 emulation while the clang
+they drive is native. Configuring takes noticeably longer there. Compiling
+does not.
+
+Nothing in `src/` knows any of this. libmpv is loaded by name at runtime, so
+the Rust side cannot tell one architecture's DLL from the other's, and
+`build.ps1` is what makes sure they match: it reads the machine type out of
+the PE header of every file it is about to package and refuses a stage whose
+libraries disagree with the executable.
+
 ## Rebuilding
 
 | Situation | Command |
@@ -63,6 +81,7 @@ a client that cannot open a recording is worse than one that is larger.
 | Changed Rust code | `.\build.ps1 -Target App` |
 | Want the installer | `.\build.ps1` |
 | Changed mpv's or FFmpeg's configuration | `scripts\build-mpv.ps1 -Clean` |
+| Switched architecture in one checkout | `scripts\build-mpv.ps1 -Arch <x64\|arm64>` |
 
 `build.ps1` also accepts `-Target Stage` to assemble `dist\Clicker` without
 compiling an installer, which is the fastest way to test a real layout.
