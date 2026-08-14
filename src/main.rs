@@ -3030,13 +3030,41 @@ impl App {
                 // something rather than nothing, and at broadcast rates it is
                 // about a third of a second instead of two.
                 const ENOUGH: u64 = 192 * 1024;
-                let deadline = Instant::now() + Duration::from_secs(30);
+                let began = Instant::now();
+                let deadline = began + Duration::from_secs(30);
+                let mut first_byte = None;
+                let mut size = 0;
                 while Instant::now() < deadline {
-                    let size = std::fs::metadata(&uri).map(|m| m.len()).unwrap_or(0);
+                    size = std::fs::metadata(&uri).map(|m| m.len()).unwrap_or(0);
+                    if size > 0 && first_byte.is_none() {
+                        first_byte = Some(began.elapsed());
+                    }
                     if size >= ENOUGH {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(50));
+                }
+
+                // Both halves of the wait, separately, because they have
+                // different causes and only one of them is ours. Time to the
+                // first byte is the server finding a tuner and locking it,
+                // which nothing here can hurry. The time after that is this
+                // threshold, at whatever rate the channel runs. Timed because
+                // a tune that feels slow was indistinguishable from one that
+                // is: the whole wait happened between two log lines, so
+                // "mpv is slow to lock on" could not be told apart from a
+                // tuner taking ten seconds, and mpv turned out to reach a
+                // decoded frame in under one.
+                let waited = began.elapsed().as_secs_f64();
+                match first_byte {
+                    Some(first) => crate::log::line(&format!(
+                        "[clicker] live buffer: first byte at {:.1}s, {} KiB by {waited:.1}s",
+                        first.as_secs_f64(),
+                        size / 1024
+                    )),
+                    None => crate::log::line(&format!(
+                        "[clicker] live buffer: nothing arrived in {waited:.1}s"
+                    )),
                 }
             }
 
@@ -3084,6 +3112,11 @@ impl App {
         let server = self.settings.server_url();
         let quality = self.effective_quality();
         let uri = stream_uri(&server, channel, quality);
+
+        // The moment the channel was asked for, which is the one timestamp a
+        // tune could not be measured against: everything else in the log
+        // starts once mpv exists, and mpv is created at the end of all this.
+        crate::log::line(&format!("[clicker] tuning {channel}"));
 
         self.loading = Loading::live(channel);
         self.live_channel = Some(channel.to_string());
