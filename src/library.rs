@@ -265,14 +265,30 @@ impl Group {
         (!self.up_next.is_empty()).then(|| self.up_next.clone())
     }
 
-    /// This series' entry in [`Home::series_stats`].
+    /// The id this group's recordings are actually filed under, if any.
     ///
     /// Recordings point at their group by either of the two ids a group
-    /// carries, depending on where the DVR got them, so both are tried.
+    /// carries, depending on where the DVR got them, so both are tried. An
+    /// empty one is not tried at all, and that is the whole of a bug worth
+    /// remembering: a DVR's groups include collections that no recording is
+    /// filed under — Movies, Concerts, whatever the imported library is
+    /// arranged into — and those carry neither id. Asking the stats map for
+    /// "" answered with the bucket every film and one-off import had piled
+    /// into, so each of those collections claimed the same several thousand
+    /// recordings and opened onto the same list of films.
+    pub fn recordings_key<'a>(
+        &'a self,
+        stats: &std::collections::HashMap<&str, (usize, i64)>,
+    ) -> Option<&'a str> {
+        [self.id.as_str(), self.series_id.as_str()]
+            .into_iter()
+            .find(|id| !id.is_empty() && stats.contains_key(id))
+    }
+
+    /// This series' entry in [`Home::series_stats`].
     pub fn stats(&self, stats: &std::collections::HashMap<&str, (usize, i64)>) -> (usize, i64) {
-        stats
-            .get(self.id.as_str())
-            .or_else(|| stats.get(self.series_id.as_str()))
+        self.recordings_key(stats)
+            .and_then(|id| stats.get(id))
             .copied()
             .unwrap_or((0, 0))
     }
@@ -447,6 +463,14 @@ pub struct Upcoming {
     /// Empty when this job was made by hand rather than by a series pass.
     pub rule_id: String,
     pub image: String,
+    /// A film rather than an episode, read from the airing's own categories.
+    ///
+    /// The scheduled list labels a job that came from a rule, and it used to
+    /// label every one of them "Series" on the strength of the rule alone. A
+    /// rule can be a movie rule, so a film the DVR was about to record sat
+    /// there calling itself a series.
+    #[serde(default)]
+    pub is_movie: bool,
 }
 
 /// Everything the browsing screens show, resolved in one go.
@@ -477,7 +501,14 @@ pub struct Home {
 
 impl Home {
     /// Recordings grouped under one series, newest first.
+    ///
+    /// Nothing at all for an empty id. Films and one-off imports carry no
+    /// show id, so matching on one would return the entire imported library
+    /// under whichever group had asked.
     pub fn episodes_of(&self, show_id: &str) -> Vec<&Recording> {
+        if show_id.is_empty() {
+            return Vec::new();
+        }
         let mut list: Vec<&Recording> = self
             .all
             .iter()
@@ -499,6 +530,13 @@ impl Home {
         let mut stats: std::collections::HashMap<&str, (usize, i64)> =
             std::collections::HashMap::new();
         for recording in &self.all {
+            // No series is not a series with no name. Films and one-off
+            // imports carry no show id, and letting them share the empty key
+            // built a bucket of several thousand that any group matching
+            // nothing else would then find.
+            if recording.show_id.is_empty() {
+                continue;
+            }
             let entry = stats.entry(recording.show_id.as_str()).or_insert((0, 0));
             entry.0 += 1;
             entry.1 = entry.1.max(recording.created_at);
@@ -712,6 +750,17 @@ impl Library {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string(),
+                    // The same category the library reads to tell a film from
+                    // an episode, off the same airing the guide reads it off.
+                    is_movie: airing
+                        .get("Categories")
+                        .and_then(|v| v.as_array())
+                        .map(|list| {
+                            list.iter()
+                                .filter_map(|v| v.as_str())
+                                .any(|c| c.eq_ignore_ascii_case("Movie"))
+                        })
+                        .unwrap_or(false),
                 }
             })
             .filter(|u| !u.id.is_empty())

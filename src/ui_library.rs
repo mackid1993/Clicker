@@ -113,10 +113,29 @@ pub fn library_screen(
             // one grid pretending both are the same thing.
             let movies: Vec<&Recording> =
                 data.all.iter().filter(|r| r.is_movie()).collect();
+
+            // One pass over the library for every series' episode count and
+            // newest recording. Two of the sorts order by it, the count under
+            // each tile reads from it, and so does the tab count beside "TV",
+            // which is why it is worked out here rather than beside the grid.
+            let stats = data.series_stats();
+
+            // The groups that have something behind them. A DVR's group list
+            // includes collections nothing is filed under — Movies, Concerts,
+            // whatever the imported library is arranged into — and those were
+            // appearing in the TV grid as posters that claimed thousands of
+            // recordings and opened onto the film library. A group no
+            // recording belongs to is not a series this can show.
+            let series: Vec<_> = data
+                .groups
+                .iter()
+                .filter(|g| g.recordings_key(&stats).is_some())
+                .collect();
+
             ui.horizontal(|ui| {
                 ui.add_space(SPACE_L * 2.0);
                 for (tab, label, count) in [
-                    (LibraryTab::Shows, "TV", data.groups.len()),
+                    (LibraryTab::Shows, "TV", series.len()),
                     (LibraryTab::Movies, "Movies", movies.len()),
                 ] {
                     let selected = state.tab == tab;
@@ -168,15 +187,9 @@ pub fn library_screen(
                 return;
             }
 
-            // One pass over the library for every series' episode count and
-            // newest recording. Two of the sorts order by it, and the count
-            // under each tile reads from it, which replaces the scan of every
-            // recording that used to run once per drawn row.
-            let stats = data.series_stats();
-
-            let mut shows: Vec<_> = data
-                .groups
+            let mut shows: Vec<_> = series
                 .iter()
+                .copied()
                 .filter(|g| needle.is_empty() || g.name.to_lowercase().contains(&needle))
                 .collect();
             settings.sort_shows.apply_shows(&mut shows, &stats);
@@ -205,11 +218,12 @@ pub fn library_screen(
                         group.unwatched,
                         images,
                     ) {
-                        state.open_show = Some(if stats.contains_key(group.id.as_str()) {
-                            group.id.clone()
-                        } else {
-                            group.series_id.clone()
-                        });
+                        // The id the recordings are actually filed under, and
+                        // nothing when there is not one. Falling back to the
+                        // other id unconditionally is how an empty one got
+                        // through and opened the whole film library.
+                        state.open_show =
+                            group.recordings_key(&stats).map(str::to_owned);
                     }
                     ui.add_space(SPACE_M);
                 }
@@ -1013,7 +1027,9 @@ fn upcoming_row(
             ui.painter().text(
                 egui::pos2(rect.max.x - 92.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
-                "Series",
+                // What the rule is for, not merely that there is one. Every
+                // rule-made job used to say "Series", films included.
+                if job.is_movie { "Movie" } else { "Series" },
                 egui::FontId::proportional(11.0),
                 Fluent::TEXT_TERTIARY,
             );
