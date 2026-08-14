@@ -169,7 +169,20 @@ $remaps = @(
     # Safe here because nothing crosses a CRT boundary: libmpv is loaded at
     # runtime through a C ABI of pointers and its own allocator, so no CRT
     # object is ever passed between the two.
-    '-C target-feature=+crt-static'
+    # No crt-static here, and it is worth saying why it is absent rather than
+    # leaving a gap somebody helpfully fills in.
+    #
+    # It was added to fix an arm64 install dying in the loader with
+    # 0xc000007b, because clicker.exe links VCRUNTIME140.dll and that arrives
+    # with the Visual C++ redistributable rather than with Windows. It worked,
+    # and it broke playback: tuning went slow and would not hold, against a
+    # build of the same source without it that tuned fast and stayed steady.
+    # Bisected against the CI build of 73fa8ef, the last commit before it,
+    # with every other change present on both sides.
+    #
+    # The runtime travels beside the executable instead — see the staging step
+    # below, which is a better answer anyway: it fixes the same failure on x64
+    # machines that never had the redistributable either.
 )
 $env:RUSTFLAGS = ($remaps -join ' ')
 
@@ -252,6 +265,62 @@ if ($AppArch -notin @('x64', 'arm64')) {
     Fail "clicker.exe reports an unrecognized machine type ($AppArch)."
 }
 
+# The Visual C++ runtime, beside the executable.
+#
+# clicker.exe links VCRUNTIME140.dll, which is not part of Windows: it arrives
+# with the Visual C++ redistributable, and a machine that has never installed
+# one does not have it. The failure is the loader refusing the program before
+# any of it runs — "the application was unable to start correctly
+# (0xc000007b)", with nothing on screen to say which file was missing.
+#
+# Most x64 desktops have the redistributable because something else installed
+# it years ago and nobody noticed it was a dependency. A fresh Windows on Arm
+# install mostly does not, which is where this was found.
+#
+# Carried rather than compiled in. Building with `-C target-feature=+crt-static`
+# removes the dependency and was tried first; it also made playback tune slowly
+# and fail to hold, measured against the same source without it. The
+# redistributable is designed to travel this way, app-local deployment is a
+# documented and licensed use of these files, and it fixes the same failure on
+# both architectures.
+#
+# The UCRT is not here because it does not need to be: api-ms-win-crt-*.dll
+# have shipped with Windows since 10, which is below this application's floor.
+$vcRedist = @(
+    Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\$AppArch\Microsoft.VC*.CRT" `
+        -Directory -ErrorAction SilentlyContinue
+    Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\$AppArch\Microsoft.VC*.CRT" `
+        -Directory -ErrorAction SilentlyContinue
+) | Sort-Object FullName -Descending | Select-Object -First 1
+
+# vcruntime140_1.dll carries the table-driven exception handling that x64 and
+# arm64 both use; x86 has neither the file nor the need.
+$needed = @('vcruntime140.dll', 'vcruntime140_1.dll')
+$carried = @()
+if ($vcRedist) {
+    foreach ($name in $needed) {
+        $file = Join-Path $vcRedist.FullName $name
+        if (Test-Path $file) {
+            Copy-Item $file $Stage -Force
+            $carried += $name
+        }
+    }
+}
+
+if (-not ($carried -contains 'vcruntime140.dll')) {
+    Fail @"
+The Visual C++ runtime for $AppArch was not found, so this installer would
+fail to start on any machine without the redistributable already on it.
+
+Looked for Microsoft.VC*.CRT under the Visual Studio redist directories.
+Install the C++ workload for this architecture:
+
+  Visual Studio Installer -> Modify -> Individual components
+  -> "MSVC v143 - VS 2022 C++ $AppArch build tools"
+"@
+}
+Write-Host "      runtime carried: $($carried -join ', ')" -ForegroundColor DarkGray
+
 $wrongArch = @(Get-ChildItem (Join-Path $Stage '*.dll') |
     Where-Object { (Get-PeMachine $_.FullName) -ne $AppArch })
 if ($wrongArch) {
@@ -269,7 +338,6 @@ third_party\mpv holds a libmpv built for another processor. Rebuild it:
 "@
 }
 Write-Host "      architecture verified: $AppArch throughout" -ForegroundColor DarkGray
-
 # Licenses are read out of the binaries that are actually being shipped, not
 # taken on trust from the build scripts that produced them. Clicker is MIT and
 # its media components are LGPL; a GPL library in the stage would silently
