@@ -107,6 +107,7 @@ $Toolchain = @{
         Package = 'mingw-w64-x86_64'
         CC      = 'gcc'
         CXX     = 'g++'
+        ObjDump = 'objdump'
         FFArch  = 'x86_64'
         # nasm assembles FFmpeg's x86 SIMD. There is nothing to install in its
         # place for aarch64: clang assembles FFmpeg's NEON with the integrated
@@ -119,6 +120,9 @@ $Toolchain = @{
         Package = 'mingw-w64-clang-aarch64'
         CC      = 'clang'
         CXX     = 'clang++'
+        # binutils is not part of a clang toolchain; llvm-objdump comes with
+        # clang itself and reads a PE import table the same way.
+        ObjDump = 'llvm-objdump'
         FFArch  = 'aarch64'
         Extra   = @()
     }
@@ -314,24 +318,85 @@ Get-ChildItem (Join-Path $Deps 'clicker\bin\*.dll') -ErrorAction SilentlyContinu
 # Everything else libmpv was linked against, resolved rather than listed.
 #
 # There are two dozen of these — libass and libplacebo, their font and shader
-# stacks, and the gcc runtime — and the set changes with the packages MSYS2
-# ships. A hand-written list would be wrong the first time someone updated a
-# package, and wrong in the worst way: the DLL loads on the machine that built
-# it and fails on every other one. Asking the linker what it actually needs
-# cannot drift.
+# stacks, and the compiler runtime — and the set changes with the packages
+# MSYS2 ships. A hand-written list would be wrong the first time someone
+# updated a package, and wrong in the worst way: the DLL loads on the machine
+# that built it and fails on every other one.
+#
+# Read out of the import tables, not asked of the loader. `ldd` answers by
+# loading the library and reporting what came with it, which cannot work when
+# the shell is an emulated x64 one and the libraries are aarch64: it returned
+# seven of the twenty-six and said nothing about the rest, so an arm64
+# installer shipped without libass and libmpv would not load on any machine.
+# An import table is a structure in a file. Reading it does not care what
+# processor either side is for.
+#
+# Recursive, because a direct dependency has dependencies of its own, and
+# whether a name is ours is decided by whether the toolchain ships it: what is
+# in the environment's bin directory travels with us, what is in System32 is
+# Windows' own and must not, and a name that is in neither stops the build.
 Step 'resolving dependencies'
 $prefix = $Toolchain.Prefix
-$deps = & $Bash -lc "export PATH=/$prefix/bin:`$PATH; ldd '$(Unix (Join-Path $Stage 'libmpv-2.dll'))' | grep -i $prefix | awk '{print `$3}' | sort -u"
-foreach ($dep in $deps) {
-    if (-not $dep) { continue }
-    # /mingw64/bin/foo.dll as MSYS2 reports it, back to a Windows path.
-    $windows = Join-Path $Msys ($dep -replace "^/$prefix/", "$prefix/").Replace('/', '\')
-    if (Test-Path $windows) {
-        Copy-Item $windows $Stage -Force
-    } else {
-        Write-Host "      WARNING: $dep was linked but not found" -ForegroundColor Yellow
+$binDir = Join-Path $Msys "$prefix\bin"
+$system = Join-Path $env:SystemRoot 'System32'
+
+$queue = [System.Collections.Generic.Queue[string]]::new()
+$seen = @{}
+foreach ($file in Get-ChildItem (Join-Path $Stage '*.dll')) {
+    $queue.Enqueue($file.FullName)
+    $seen[$file.Name.ToLower()] = $true
+}
+
+$added = 0
+$missing = @()
+while ($queue.Count -gt 0) {
+    $file = $queue.Dequeue()
+    $imports = & $Bash -lc "export PATH=/$prefix/bin:`$PATH; $($Toolchain.ObjDump) -p '$(Unix $file)' | sed -n 's/.*DLL Name: *//p'"
+    if ($LASTEXITCODE -ne 0) { Fail "Could not read the imports of $file" }
+
+    foreach ($name in $imports) {
+        $name = $name.Trim()
+        if (-not $name -or $seen.ContainsKey($name.ToLower())) { continue }
+        $seen[$name.ToLower()] = $true
+
+        # Windows first, and the order matters. vulkan-1.dll is in System32
+        # because the graphics driver put it there, and it is also in the
+        # toolchain's bin because a package brought a copy; carrying that copy
+        # would put a loader beside the executable that wins over the driver's
+        # own. Anything Windows provides is Windows' to provide.
+        #
+        # The api-ms-win- and ext-ms-win- names are matched rather than looked
+        # for. They are API set contracts, resolved by the loader through a
+        # schema, and no file of that name exists anywhere: looking for one
+        # and failing the build over it would reject a perfectly good stage.
+        $source = Join-Path $binDir $name
+        if ($name -like 'api-ms-win-*' -or $name -like 'ext-ms-win-*') {
+            continue
+        } elseif (Test-Path (Join-Path $system $name)) {
+            continue
+        } elseif (Test-Path $source) {
+            Copy-Item $source $Stage -Force
+            $queue.Enqueue((Join-Path $Stage $name))
+            $added++
+        } else {
+            # Neither ours nor Windows'. Shipping this would be an installer
+            # that fails on every machine but the one that built it.
+            $missing += "$name (imported by $(Split-Path -Leaf $file))"
+        }
     }
 }
+
+if ($missing) {
+    Fail @"
+REFUSING: these were imported and could not be found.
+
+  $($missing -join "`n  ")
+
+They are in neither $binDir nor System32, so the staged libraries would not
+load anywhere. Check the packages this environment has installed.
+"@
+}
+Write-Host "      $added libraries carried in, resolved from the import tables" -ForegroundColor DarkGray
 
 # ------------------------------------------------------------------- verify ---
 #
