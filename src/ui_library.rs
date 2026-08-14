@@ -34,6 +34,18 @@ pub struct LibraryState {
     pub open_show: Option<String>,
     pub search: String,
     pub tab: LibraryTab,
+
+    /// Which of `Home::groups` have recordings filed under them, by index.
+    ///
+    /// Worked out from a walk of every recording, so it is worked out when the
+    /// library changes rather than on every frame. The count beside the TV tab
+    /// reads it, which means both tabs need it, which is exactly how a walk of
+    /// eighteen thousand recordings ended up running sixty times a second on
+    /// the Movies tab, where nothing else wanted it.
+    real_series: Vec<usize>,
+    /// What `real_series` was built from: the recording count and the group
+    /// count. Neither changes without a refresh, and a refresh replaces both.
+    real_series_key: (usize, usize),
 }
 
 /// The library: everything playable, recorded and imported alike, by series.
@@ -114,22 +126,32 @@ pub fn library_screen(
             let movies: Vec<&Recording> =
                 data.all.iter().filter(|r| r.is_movie()).collect();
 
-            // One pass over the library for every series' episode count and
-            // newest recording. Two of the sorts order by it, the count under
-            // each tile reads from it, and so does the tab count beside "TV",
-            // which is why it is worked out here rather than beside the grid.
-            let stats = data.series_stats();
-
             // The groups that have something behind them. A DVR's group list
             // includes collections nothing is filed under — Movies, Concerts,
             // whatever the imported library is arranged into — and those were
             // appearing in the TV grid as posters that claimed thousands of
             // recordings and opened onto the film library. A group no
             // recording belongs to is not a series this can show.
-            let series: Vec<_> = data
-                .groups
+            //
+            // Kept across frames, because working it out means walking every
+            // recording in the library and it only changes when the library
+            // does.
+            let key = (data.all.len(), data.groups.len());
+            if state.real_series_key != key {
+                let stats = data.series_stats();
+                state.real_series = data
+                    .groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| g.recordings_key(&stats).is_some())
+                    .map(|(i, _)| i)
+                    .collect();
+                state.real_series_key = key;
+            }
+            let series: Vec<_> = state
+                .real_series
                 .iter()
-                .filter(|g| g.recordings_key(&stats).is_some())
+                .filter_map(|&i| data.groups.get(i))
                 .collect();
 
             ui.horizontal(|ui| {
@@ -186,6 +208,13 @@ pub fn library_screen(
                 ui.add_space(SPACE_L * 2.0);
                 return;
             }
+
+            // One pass over the library for every series' episode count and
+            // newest recording. Two of the sorts order by it, and the count
+            // under each tile reads from it, which replaces the scan of every
+            // recording that used to run once per drawn row. Below the tab
+            // check, so the Movies tab never pays for it.
+            let stats = data.series_stats();
 
             let mut shows: Vec<_> = series
                 .iter()
