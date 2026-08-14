@@ -293,17 +293,25 @@ $vcRedist = @(
         -Directory -ErrorAction SilentlyContinue
 ) | Sort-Object FullName -Descending | Select-Object -First 1
 
-# vcruntime140_1.dll carries the table-driven exception handling that x64 and
-# arm64 both use; x86 has neither the file nor the need.
+# vcruntime140.dll is the one that must be here. vcruntime140_1.dll carries
+# x64's table-driven exception handling and is taken only when it is present
+# and actually for this processor: the arm64 redist directory was observed
+# shipping an x64 copy of it, which the architecture check below caught and
+# refused. Read rather than assumed, for the same reason as everything else in
+# this file — a directory named arm64 is not a promise about what is in it.
 $needed = @('vcruntime140.dll', 'vcruntime140_1.dll')
 $carried = @()
 if ($vcRedist) {
     foreach ($name in $needed) {
         $file = Join-Path $vcRedist.FullName $name
-        if (Test-Path $file) {
-            Copy-Item $file $Stage -Force
-            $carried += $name
+        if (-not (Test-Path $file)) { continue }
+        $machine = Get-PeMachine $file
+        if ($machine -ne $AppArch) {
+            Write-Host "      skipping $name from the redist: it is $machine" -ForegroundColor DarkGray
+            continue
         }
+        Copy-Item $file $Stage -Force
+        $carried += $name
     }
 }
 
