@@ -109,11 +109,55 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-release-
 
-      # The staged libmpv, cached whole. The key hashes build-mpv.ps1 because
-      # that is where the pinned tags and the licensing flags live, so moving
-      # either rebuilds from source and everything else reuses the last build.
-      # No restore-keys, deliberately: a stage built from different tags is
-      # exactly the wrong thing to fall back to silently.
+      # What decides whether a staged libmpv can be reused: the pinned tags,
+      # the licensing and feature flags, and the toolchain that compiled it.
+      # Not the file they live in.
+      #
+      # Keyed on the whole of build-mpv.ps1, every edit to a comment produced a
+      # new key and therefore a miss, and the run spent twelve minutes
+      # recompiling FFmpeg and mpv to prove that a sentence had changed. The
+      # macOS workflow already worked this out; this is the same arrangement in
+      # PowerShell, which both images have natively. Git Bash is not a safe
+      # assumption on the arm64 image, where the MSYS2 runtime under it has no
+      # native port.
+      - name: Work out the libmpv cache key
+        id: mpvkey
+        shell: pwsh
+        run: |
+          # Both comment forms go first, the block comment before the line
+          # ones, or the header's own prose would be hashed: it mentions
+          # --arch= and the environment names while explaining them, so
+          # rewording the documentation would rebuild FFmpeg.
+          $text = Get-Content scripts/build-mpv.ps1 -Raw
+          $text = [regex]::Replace($text, '(?s)<#.*?#>', '')
+          $lines = ($text -split "`r?`n") | ForEach-Object { ($_ -replace '#.*$', '').Trim() }
+
+          # The tag pins, the toolchain table, and every quoted flag handed to
+          # configure or to meson.
+          $signal = $lines | Where-Object {
+            $_ -match '^\$(FFmpegTag|MpvTag)\s*=' -or
+            $_ -match '^(MSystem|Prefix|Package|CC|CXX|ObjDump|FFArch|Extra)\s*=' -or
+            $_ -match '^["'']-'
+          }
+
+          # A regex that matches nothing hashes to the same key forever, which
+          # is the one failure this must not have: a real change to a flag
+          # would restore the previous build and ship it.
+          if ($signal.Count -lt 20) {
+            throw "only $($signal.Count) significant lines found in build-mpv.ps1; the fingerprint patterns no longer match the script"
+          }
+
+          $bytes = [Text.Encoding]::UTF8.GetBytes($signal -join "`n")
+          $sha = [BitConverter]::ToString(
+            [Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+          ).Replace('-', '').ToLower().Substring(0, 16)
+
+          "key=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "libmpv fingerprint: $sha  (from $($signal.Count) lines)"
+
+      # The staged libmpv, cached whole. No restore-keys, deliberately: a
+      # stage built from different tags is exactly the wrong thing to fall
+      # back to silently.
       #
       # The architecture is in the key for a sharper version of that reason.
       # third_party/mpv holds one architecture at a time and nothing in the
@@ -127,7 +171,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: third_party/mpv
-          key: ${{ runner.os }}-${{ matrix.arch }}-mpv-${{ hashFiles('scripts/build-mpv.ps1') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-mpv-${{ steps.mpvkey.outputs.key }}
 
       # Before the half-hour libmpv build, not after it. Through the
       # environment rather than spliced into the script: the input is typed by
