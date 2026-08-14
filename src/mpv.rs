@@ -1971,9 +1971,20 @@ impl Player {
         let decoder = self.get_f64("estimated-vf-fps").unwrap_or(0.0);
         let skipped = self.shared.dropped.load(Ordering::Relaxed);
         let offered = self.shared.offered.load(Ordering::Relaxed);
+        // What mpv believes the display is doing, which on Windows and macOS
+        // is the number `video-sync=display-resample` paces against and drops
+        // frames for missing. It is inferred from when frames are presented,
+        // so a paint loop that cannot hold the refresh rate feeds it a wrong
+        // answer and the drops that follow are a judgement rather than a
+        // shortage: a 165Hz panel, a decoder holding sixty, zero decoder
+        // drops, A/V sync at zero, and the drop counter climbing anyway. The
+        // estimate was the one number in that picture nobody could see.
+        let display = self.get_f64("display-fps").unwrap_or(0.0);
+        let estimated = self.get_f64("estimated-display-fps").unwrap_or(0.0);
         crate::log::line(&format!(
             "[mpv] {frames:.1}fps drawn, {paints:.1}fps painted, at {}x{}; decoder \
-             {decoder:.1}fps, mpv dropped {dropped}, late {late}; render \
+             {decoder:.1}fps, mpv dropped {dropped}, late {late}; display {display:.1}Hz \
+             estimated {estimated:.1}Hz; render \
              {render_ms:.1}ms at {load:.2} of a core, {skipped} of {offered} skipped",
             at.0, at.1
         ));

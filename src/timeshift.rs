@@ -81,8 +81,18 @@ impl Timeshift {
         let task_written = Arc::clone(&written);
         let task_discarded = Arc::clone(&discarded);
         let task_stop = Arc::clone(&stop);
+        // Taken before the spawn, so the gap between this and the task's first
+        // instruction is the runtime's own scheduling delay and nothing else.
+        //
+        // A tune measured eight seconds to its first byte where curl against
+        // the same URL took under four, so half of it is on this side and the
+        // question is which half: a task that is not started, or a request
+        // that is answered slowly once it is. Those want opposite fixes, so
+        // the three moments are timed separately.
+        let requested = std::time::Instant::now();
         runtime.spawn(async move {
             use tokio::io::AsyncWriteExt;
+            let scheduled = requested.elapsed();
 
             let mut file = match tokio::fs::File::create(&task_path).await {
                 Ok(file) => file,
@@ -96,6 +106,7 @@ impl Timeshift {
             // bounds nothing.
             crate::platform::make_sparse(&file);
 
+            let sent = requested.elapsed();
             let mut response = match http.get(&url).send().await.and_then(|r| r.error_for_status())
             {
                 Ok(response) => response,
@@ -104,7 +115,15 @@ impl Timeshift {
                     return;
                 }
             };
+            let headers = requested.elapsed();
+            crate::log::line(&format!(
+                "[timeshift] task started at {:.2}s, request issued at {:.2}s, headers at {:.2}s",
+                scheduled.as_secs_f64(),
+                sent.as_secs_f64(),
+                headers.as_secs_f64()
+            ));
 
+            let mut first_chunk = true;
             let mut total: u64 = 0;
             loop {
                 if task_stop.load(Ordering::SeqCst) {
@@ -116,6 +135,14 @@ impl Timeshift {
                             break;
                         }
                         total += chunk.len() as u64;
+                        if first_chunk {
+                            first_chunk = false;
+                            crate::log::line(&format!(
+                                "[timeshift] first {} bytes on disk at {:.2}s",
+                                chunk.len(),
+                                requested.elapsed().as_secs_f64()
+                            ));
+                        }
                         // Published only after the write, so the player never
                         // seeks to a byte that has not landed.
                         task_written.store(total, Ordering::SeqCst);
