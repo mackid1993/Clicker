@@ -23,19 +23,6 @@ pub fn apply_chrome(_handle: isize, _dark: bool) {}
 /// here, the same as the main window's — see `apply_chrome`.
 pub fn dress_pip(_title: &str) {}
 
-/// The window shows itself, the moment it exists. No mirror stands between
-/// this program's windows and the screen here, so there is nothing to hide
-/// from — the desktops that honor topmost honor it from the window's first
-/// frame, and the one that refuses (Wayland) would refuse just as flatly a
-/// second later.
-pub fn pip_born_hidden() -> bool {
-    false
-}
-
-/// Nothing to tend: a window born visible and honored on the spot needs
-/// neither showing nor watching over.
-pub fn tend_pip(_title: &str, _root: Option<isize>, _age_ms: u64) {}
-
 /// No handle, deliberately. The only consumer is the tray's restore-from-
 /// another-thread path, which is a Win32 mechanism; the tray reads this `None`
 /// as "closing quits", which is the honest capability on these platforms

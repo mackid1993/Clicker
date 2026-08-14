@@ -725,11 +725,6 @@ struct App {
     /// it was last given and the new one, so a remembered size pushed every
     /// pass would fight the hand dragging the corner.
     pip_size: egui::Vec2,
-    /// Whether the popped-out window has already been asked for this time
-    /// round. Only the first ask may say anything about visibility — see
-    /// `pip_window`.
-    pip_declared: bool,
-
     lib: library::Library,
     images: images::Images,
     downloads: downloads::Downloads,
@@ -938,32 +933,15 @@ impl App {
             std::thread::Builder::new()
                 .name("clicker-pip-wake".into())
                 .spawn(move || {
-                    let mut was_popped = false;
-                    let mut popped_ms: u64 = 0;
                     loop {
                         // The cadence is the platform's to pick: a cure where
                         // the starvation is (see `platform::pip_wake_ms`), a
                         // slow keeper where it is not.
                         let beat = platform::pip_wake_ms();
                         std::thread::sleep(std::time::Duration::from_millis(beat));
-                        let popped_now = popped.load(std::sync::atomic::Ordering::Relaxed);
-                        if popped_now && !was_popped {
-                            popped_ms = 0;
-                        }
-                        was_popped = popped_now;
-                        if !popped_now {
+                        if !popped.load(std::sync::atomic::Ordering::Relaxed) {
                             continue;
                         }
-                        popped_ms = popped_ms.saturating_add(beat);
-                        // The popped-out window's own keeper: on the desktops
-                        // where a window cannot simply be born and be right —
-                        // see `platform::pip_born_hidden` — this is what shows
-                        // it, at the moment showing it works, and what
-                        // notices if it ever goes missing afterwards. A no-op
-                        // everywhere else. Handed the window's age because
-                        // every one of its decisions is about how old the
-                        // window is.
-                        crate::platform::tend_pip(&pip_title(), hwnd, popped_ms);
                         // Both halves matter. The request marks the pass as
                         // wanted where egui keeps its books; the posted paint
                         // is what actually reaches a window whose synthesized
@@ -1037,7 +1015,6 @@ impl App {
             pip,
             pip_rx,
             pip_size: settings.pip_size.map(egui::Vec2::from).unwrap_or(PIP_DEFAULT_SIZE),
-            pip_declared: false,
             backdrop: backdrop::Backdrop::new(&cc.egui_ctx),
             // Seeded from the clock so the first card of a session is not the
             // same one every time the program opens.
@@ -2839,9 +2816,6 @@ impl App {
             pip.last_activity = Instant::now();
             pip.dressed = false;
         }
-        // A window that does not exist yet has not been asked for yet — the
-        // ask that creates it is the one allowed to say how it is born.
-        self.pip_declared = false;
         self.popped_out
             .store(true, std::sync::atomic::Ordering::Relaxed);
         crate::log::line("[pip] popped out");
@@ -2995,23 +2969,6 @@ impl App {
         if let Some(at) = self.settings.pip_position {
             builder = builder.with_position(egui::Pos2::from(at));
         }
-        // Born hidden where a window has to be, and said exactly once.
-        //
-        // `platform::tend_pip` is what shows it a moment later, and
-        // `platform::pip_born_hidden` is why. Once, because eframe patches
-        // this builder against the one it kept from last pass, and egui
-        // 0.29 compares a new `visible` against the stored `active` rather
-        // than the stored `visible` — so a `visible: false` repeated every
-        // pass would send a fresh hide command every pass, and the window
-        // would go dark again the instant it was shown. A field left unsaid
-        // is skipped by that comparison entirely, which is the contract this
-        // relies on; the value already stored still governs the window's
-        // birth, including if eframe ever builds the window over.
-        if !self.pip_declared && platform::pip_born_hidden() {
-            builder = builder.with_visible(false);
-        }
-        self.pip_declared = true;
-
         let shared = self.pip.clone();
         ctx.show_viewport_deferred(pip_viewport(), builder, move |ctx, class| {
             // The integration could not give this its own window, so there is

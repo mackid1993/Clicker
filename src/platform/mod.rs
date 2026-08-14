@@ -38,12 +38,10 @@
 //!     about the desktop rather than a lever: the picture-in-picture window
 //!     asks to float everywhere, and this says whether the ask lands, which
 //!     is only ever "no" under Wayland
-//!   * **how the picture's own window is born** — `pip_born_hidden` and
-//!     `tend_pip`. Everywhere but Windows a window can simply be created and
-//!     be right; under Parallels Coherence a window that is born visible is
-//!     mirrored on the Mac side before it can say it floats, and the mirror
-//!     never learns better. So it is born hidden and shown a moment later,
-//!     which is a Windows story from beginning to end and lives there
+//!   * **dressing the picture's own window** — `dress_pip`, the DWM corner
+//!     attribute on a window eframe never hands back a handle for. A window
+//!     is created visible and is right from its first frame on every platform
+//!     here; nothing shows, hides, or watches over it afterwards
 //!
 //! Each platform file implements the full set. A stub is an honest
 //! implementation where the feature has nothing to do — macOS windows come
