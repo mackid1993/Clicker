@@ -942,6 +942,30 @@ impl App {
                         if !popped.load(std::sync::atomic::Ordering::Relaxed) {
                             continue;
                         }
+                        // Not while nobody can see the main window.
+                        //
+                        // The beat exists to keep the main window painting
+                        // under a popped-out picture. Minimized or hidden to
+                        // the tray it has no painting to be kept at, and the
+                        // beat stops being free: eframe ends every pass over
+                        // a minimized viewport with a 10ms sleep on the event
+                        // loop thread (glow_integration.rs, "On Mac, a
+                        // minimized Window uses up all CPU"), and that is the
+                        // same thread the picture paints on. Thirty forced
+                        // passes a second over a window nobody is looking at
+                        // was three hundred milliseconds a second of sleep
+                        // taken straight out of the picture, plus a whole
+                        // browse screen drawn and swapped for it. The picture
+                        // slowed to a crawl the moment the main window went
+                        // down, which is exactly when it should be at its
+                        // best.
+                        //
+                        // Costs the picture's controls nothing: every one of
+                        // them wakes the root itself when it fires, so the
+                        // channel is drained by the ask rather than by this.
+                        if hwnd.is_some_and(platform::window_hidden) {
+                            continue;
+                        }
                         // Both halves matter. The request marks the pass as
                         // wanted where egui keeps its books; the posted paint
                         // is what actually reaches a window whose synthesized

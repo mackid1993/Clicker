@@ -31,6 +31,13 @@ pub fn dress_pip(_title: &str) {}
 /// is busy, and only Windows hands out the handle this would need.
 pub fn request_window_paint(_handle: isize) {}
 
+/// Never, because there is no handle to ask about and nothing that would act
+/// on the answer: the heartbeat this gates is a Windows cure for a Windows
+/// starvation, and here it is already the slow keeper `pip_wake_ms` describes.
+pub fn window_hidden(_handle: isize) -> bool {
+    false
+}
+
 /// A slow keeper, not a cure. These desktops deliver the main window's own
 /// scheduled repaints while the picture is popped out, so the heartbeat only
 /// backstops the command channel — beating it at Windows' pace here would

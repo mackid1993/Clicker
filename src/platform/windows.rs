@@ -202,6 +202,23 @@ fn dress_window(hwnd: windows::Win32::Foundation::HWND) {
     }
 }
 
+/// Whether this window is off the screen: minimized, or hidden to the tray.
+///
+/// Asked from the wake thread, which is why it reads the window rather than
+/// any state of ours: `IsIconic` and `IsWindowVisible` are two loads out of
+/// the window's own bits and are safe from any thread.
+///
+/// Both cases matter and they are different mechanisms. The caption's
+/// minimize sends the window iconic; minimize-to-tray sends
+/// `ViewportCommand::Visible(false)`, which hides it without ever making it
+/// iconic. Nobody can see the main window in either case.
+pub fn window_hidden(handle: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
+    let hwnd = HWND(handle as *mut _);
+    unsafe { IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool() }
+}
+
 /// Whether this window's thread is inside a native move or resize loop.
 fn in_move_or_size(handle: isize) -> bool {
     use windows::Win32::Foundation::HWND;
