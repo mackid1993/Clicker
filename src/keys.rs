@@ -110,6 +110,16 @@ pub const ACTIONS: &[Action] = &[
     #[cfg(target_os = "macos")]
     action("fullscreen", "Full screen", "Cmd+F"),
 
+    // Full screen's opposite number, and next to it for that reason: one puts
+    // the picture on the whole display, the other puts it in a corner of it.
+    // P for picture, which is the letter every browser's own popout uses, and
+    // Command-P on a Mac — a program with nothing to print has no Print for it
+    // to collide with.
+    #[cfg(not(target_os = "macos"))]
+    action("popout", "Picture in picture", "P"),
+    #[cfg(target_os = "macos")]
+    action("popout", "Picture in picture", "Cmd+P"),
+
     #[cfg(not(target_os = "macos"))]
     action("stop", "Stop playback", "Backspace"),
     #[cfg(target_os = "macos")]
@@ -389,6 +399,17 @@ pub fn pressed(ctx: &egui::Context, settings: &Settings, id: &str) -> bool {
         return false;
     }
     let Some(binding) = binding(settings, id) else { return false };
+    fired(ctx, binding)
+}
+
+/// Whether a binding already in hand was pressed this frame.
+///
+/// Split out of `pressed` for the popped-out picture-in-picture window, whose
+/// closure runs with no `Settings` to consult: it snapshots the bindings it
+/// cares about while the main window still can, and asks this. Everything
+/// about *whether the binding counts* — the master switch, an unbinding — is
+/// settled at snapshot time, which is the only moment it is knowable.
+pub fn fired(ctx: &egui::Context, binding: Binding) -> bool {
     ctx.input(|i| {
         i.key_pressed(binding.key)
             && i.modifiers.command == binding.command

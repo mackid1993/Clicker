@@ -174,6 +174,31 @@ pub struct Settings {
     /// use the default size rather than something remembered from nowhere.
     #[serde(default)]
     pub window: Option<Window>,
+    /// How large the popped-out picture was last left, and where.
+    ///
+    /// Two plain pairs rather than a `Window`: the picture-in-picture window is
+    /// never maximized and never restored from maximized, so the flag that
+    /// makes `Window` what it is would only be a field that is always false.
+    ///
+    /// The size is honoured on every desktop. The position is honoured on the
+    /// ones that let a client ask for one — Wayland refuses outright, where
+    /// winit's `set_outer_position` is a documented "Not possible", so there it
+    /// is remembered and quietly ignored. Written anyway, because a settings
+    /// file is portable and the same profile can open on the machine next to
+    /// it.
+    #[serde(default)]
+    pub pip_size: Option<[f32; 2]>,
+    #[serde(default)]
+    pub pip_position: Option<[f32; 2]>,
+    /// Whether the desktop has already been told, once, that it and not this
+    /// program decides what stays on top.
+    ///
+    /// Persisted rather than kept for the session, because the alternative is
+    /// telling somebody the same unwelcome thing every time they launch the
+    /// program, about a decision their compositor made and neither of us can
+    /// change. Said once, it is information; said every time, it is nagging.
+    #[serde(default)]
+    pub pip_stacking_noticed: bool,
 }
 
 /// A remembered window.
@@ -286,6 +311,9 @@ impl Default for Settings {
             shortcuts_enabled: true,
             shortcut_keys: Default::default(),
             window: None,
+            pip_size: None,
+            pip_position: None,
+            pip_stacking_noticed: false,
         }
     }
 }

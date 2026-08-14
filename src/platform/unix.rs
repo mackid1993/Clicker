@@ -19,10 +19,39 @@ use std::ffi::{c_char, c_int, c_long, c_void, CString};
 /// everywhere, so there is nothing to ask the system for.
 pub fn apply_chrome(_handle: isize, _dark: bool) {}
 
+/// Nothing to dress: the popped-out window's shape is the desktop's business
+/// here, the same as the main window's — see `apply_chrome`.
+pub fn dress_pip(_title: &str) {}
+
+/// The window shows itself, the moment it exists. No mirror stands between
+/// this program's windows and the screen here, so there is nothing to hide
+/// from — the desktops that honor topmost honor it from the window's first
+/// frame, and the one that refuses (Wayland) would refuse just as flatly a
+/// second later.
+pub fn pip_born_hidden() -> bool {
+    false
+}
+
+/// Nothing to tend: a window born visible and honored on the spot needs
+/// neither showing nor watching over.
+pub fn tend_pip(_title: &str, _root: Option<isize>, _age_ms: u64) {}
+
 /// No handle, deliberately. The only consumer is the tray's restore-from-
 /// another-thread path, which is a Win32 mechanism; the tray reads this `None`
 /// as "closing quits", which is the honest capability on these platforms
 /// until a native activation path earns its place.
+/// Nothing to do: only Windows starves a window of paint while another one
+/// is busy, and only Windows hands out the handle this would need.
+pub fn request_window_paint(_handle: isize) {}
+
+/// A slow keeper, not a cure. These desktops deliver the main window's own
+/// scheduled repaints while the picture is popped out, so the heartbeat only
+/// backstops the command channel — beating it at Windows' pace here would
+/// paint browse screens at video rate under a popped picture for nothing.
+pub fn pip_wake_ms() -> u64 {
+    100
+}
+
 pub fn window_handle(_cc: &eframe::CreationContext<'_>) -> Option<isize> {
     None
 }

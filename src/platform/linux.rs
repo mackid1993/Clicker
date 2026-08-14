@@ -38,6 +38,28 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
     viewport.with_decorations(true)
 }
 
+/// Whether asking to stay on top is a request this desktop will simply ignore.
+///
+/// True under Wayland, and it is settled rather than open. winit's
+/// `set_window_level` for Wayland is an empty function body — there is nothing
+/// to send, because no Wayland protocol exists for a client to raise itself.
+/// GNOME's position, from Emmanuele Bassi: "there isn't a programmatic way to
+/// manipulate the window stack, by design." Firefox has carried the identical
+/// limitation since 2020 (bugs 1621261 and 1739604, both closed as something
+/// only the user can do by hand).
+///
+/// So the picture-in-picture window is *asked* to float on every platform, the
+/// call is free, and here the compositor declines. What this answers is
+/// whether to say so once — the desktop's own always-on-top menu item pins it
+/// permanently, and running under XWayland (`env -u WAYLAND_DISPLAY`) makes
+/// `_NET_WM_STATE_ABOVE` work again, which mutter honours for X11 clients.
+///
+/// Asked of the environment rather than of a build flag, because the same
+/// binary runs both ways: winit picks X11 whenever `WAYLAND_DISPLAY` is unset.
+pub fn desktop_owns_stacking() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
 /// Nothing here refuses the local network, so no failure is ever that.
 pub fn permission_denied(_message: &str) -> bool {
     false

@@ -53,6 +53,16 @@ pub const APP_NAME: &str = "Clicker";
 const RAIL_COLLAPSED: f32 = 48.0;
 const RAIL_EXPANDED: f32 = 200.0;
 
+/// The popped-out picture's size when nothing has been remembered, and the
+/// smallest it may be dragged to.
+///
+/// Both 16:9, which is what the letterboxing inside will make of them anyway,
+/// and both small: this window's whole point is to be out of the way. The
+/// minimum is where the transport's three buttons still fit side by side with
+/// room to press them.
+const PIP_DEFAULT_SIZE: egui::Vec2 = egui::vec2(480.0, 270.0);
+const PIP_MINIMUM_SIZE: egui::Vec2 = egui::vec2(256.0, 144.0);
+
 /// How many hours of listings to ask for.
 ///
 /// A full day, so tomorrow evening is reachable rather than just tonight. This
@@ -493,6 +503,159 @@ enum Msg {
     FolderPicked(ui_setup::Folder, std::path::PathBuf),
 }
 
+// ── Picture in picture ───────────────────────────────────────────────────
+//
+// A second, frameless, always-on-top window carrying nothing but the video, so
+// the guide can be read while something plays. It is a *deferred* egui
+// viewport, and everything below follows from two facts about that.
+//
+// **The picture is free to draw there.** eframe's glow backend keeps one GL
+// context and one painter for every viewport it opens, so the worker's shared
+// textures, the FBO cache in `mpv.rs` and `present`'s use of
+// `viewport_in_pixels` all work unchanged, and `threaded_present` still never
+// reports a swap — a second window's swap cadence cannot disturb mpv's
+// display-sync. That single-context assumption used to be merely true and is
+// now load-bearing: **if eframe is ever taken past 0.29, re-run the
+// deferred-viewport spike before anything else.** A move to per-viewport
+// contexts would fail *silently*, as wrong pixels or a crash in the middle of
+// a routine `cargo update`, and never at compile time.
+//
+// **One picture at a time.** `Frames.want` in mpv.rs is a single requested
+// size, so two viewports blitting at different sizes would have the worker
+// reallocating its textures every frame. Popping out is therefore exclusive:
+// the main window shows the browse screens while the video is out, and each
+// handoff costs one frame's hitch while the worker resizes. That is the price
+// of not having two presenters, and it is worth it.
+
+/// The picture-in-picture window's viewport id.
+///
+/// Derived from a fixed string rather than handed around, because the decoder's
+/// repaint closure has to name it from another thread with nothing to learn it
+/// from. A function rather than a `const` only because
+/// `ViewportId::from_hash_of` is not `const` in egui 0.29; it hashes eleven
+/// bytes.
+fn pip_viewport() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("clicker-pip")
+}
+
+/// The popped-out window's title, in one place because it is load-bearing
+/// twice: it names the window in every window list and window rule (the KWin
+/// recipe in the README matches on it), and it is how `platform::dress_pip`
+/// finds the window's native handle — eframe never exposes a deferred
+/// viewport's, so the title is the handle.
+fn pip_title() -> String {
+    format!("{APP_NAME} — Picture in Picture")
+}
+
+/// Which viewport the video is drawn in — the one invariant this whole feature
+/// turns on.
+///
+/// Two consumers make it law: the branch in `update` that decides whether the
+/// main window shows the player or the browse screens, and the decoder's
+/// repaint closure. That closure runs off-pass, and off-pass
+/// `Context::viewport_id` always answers `ROOT` — so a popped-out picture whose
+/// repaints were aimed at the root would only actually redraw on the 250ms
+/// housekeeping tick, which is video at four frames a second. The id has to be
+/// carried, never asked for.
+fn video_host(popped_out: bool) -> egui::ViewportId {
+    if popped_out {
+        pip_viewport()
+    } else {
+        egui::ViewportId::ROOT
+    }
+}
+
+/// What the popped-out window asks the main window to do.
+///
+/// It asks rather than acts, even where it could act. Pause and volume are
+/// `App`'s state as much as the player's, and a second place that sets them is
+/// a second place to forget to keep them in step; seeking could have gone
+/// straight through the `Weak` and does not, so that there is one story here
+/// rather than two.
+#[derive(Debug)]
+enum PipCmd {
+    /// Bring the picture back into the main window.
+    Restore,
+    /// Stop playback altogether, which also takes this window with it.
+    Stop,
+    TogglePause,
+    SkipBack,
+    SkipForward,
+    VolumeUp,
+    VolumeDown,
+}
+
+/// The bindings the popped-out window acts on.
+///
+/// Snapshotted rather than looked up, because the closure has no `Settings` to
+/// consult — and the master switch is answered here, at snapshot time: with
+/// shortcuts turned off every field is `None`, so a window that repaints
+/// without the main one cannot go on firing keys the settings page says are
+/// off.
+#[derive(Default, Clone, Copy)]
+struct PipKeys {
+    play: Option<keys::Binding>,
+    back: Option<keys::Binding>,
+    forward: Option<keys::Binding>,
+    volume_up: Option<keys::Binding>,
+    volume_down: Option<keys::Binding>,
+    /// The key that sent the picture out brings it back. The popped-out
+    /// window takes the keyboard when it opens — see `dress_pip` — so a
+    /// toggle that only the main window listened for would stop toggling
+    /// the moment it worked.
+    popout: Option<keys::Binding>,
+}
+
+impl PipKeys {
+    fn snapshot(settings: &settings::Settings) -> Self {
+        if !settings.shortcuts_enabled {
+            return Self::default();
+        }
+        Self {
+            play: keys::binding(settings, "play"),
+            back: keys::binding(settings, "back"),
+            forward: keys::binding(settings, "forward"),
+            volume_up: keys::binding(settings, "volume_up"),
+            volume_down: keys::binding(settings, "volume_down"),
+            popout: keys::binding(settings, "popout"),
+        }
+    }
+}
+
+/// What the popped-out window can see, and how it answers back.
+///
+/// Behind a `Mutex` for a reason the compiler insists on:
+/// `show_viewport_deferred` wants `Fn + Send + Sync`, and an `mpsc::Sender` is
+/// `Send` but not `Sync`, so the channel has to live somewhere that makes it
+/// one. The rest is here for the matching reason from the other direction — the
+/// closure cannot borrow `App`, and the popped-out window repaints at video
+/// rate while the main window ticks four times a second, so what it reads has
+/// to be a snapshot somebody else keeps fresh.
+struct PipShared {
+    /// Weak for exactly the reason `blit_video`'s paint callback is.
+    player: std::sync::Weak<mpv::Player>,
+    paused: bool,
+    keys: PipKeys,
+    /// When the pointer last did anything *in this window*.
+    ///
+    /// Its own, not the main window's. The two idle independently, and
+    /// controls that had faded because somebody was reading the guide would be
+    /// the wrong answer in the window they are actually looking at.
+    last_activity: Instant,
+    /// Whether the window has been told, since it was last popped out, to
+    /// stay on top. Said to the window rather than asked of its builder
+    /// because Windows loses the builder's word for it on the deferred path —
+    /// the window came up *behind* the one it was popped from. Once per
+    /// pop-out: it is a SetWindowPos, and sixty a second is a flicker
+    /// machine. `EnableButtons` looked like it belonged here too, to keep
+    /// Win+Up from maximizing a borderless window, and measurably did not:
+    /// with it sent, the main window's repaints collapsed from ~70 a second
+    /// to under two and clicks in this window went missing. The maximize is
+    /// answered by bouncing the state back instead — see `pip_ui`.
+    dressed: bool,
+    tx: Sender<PipCmd>,
+}
+
 struct App {
     /// Behind an `Arc` because the paint callback that draws the picture runs
     /// later, inside egui's renderer, and has to still have a player then.
@@ -542,8 +705,30 @@ struct App {
     /// returns to what was there rather than to a restored-size window.
     was_maximized: bool,
     /// Set when the player is showing rather than a browsing screen. Live TV
-    /// and a recording are both this; what differs is the source.
+    /// and a recording are both this; what differs is the source. It stays set
+    /// while the picture is popped out — something is still playing, it is
+    /// simply playing somewhere else.
     watching: bool,
+    /// Whether the video has been popped out into its own small window.
+    ///
+    /// Shared, and read from the decoder's thread, because it is what
+    /// `video_host` answers: this is the cell the repaint closure consults to
+    /// decide which window to wake. It is cloned into every `Player::open`
+    /// closure, so it survives popping in and out across sources.
+    popped_out: Arc<std::sync::atomic::AtomicBool>,
+    /// What the popped-out window reads, and the channel it answers on.
+    pip: Arc<std::sync::Mutex<PipShared>>,
+    pip_rx: Receiver<PipCmd>,
+    /// The size the popped-out window is born at, remembered across pop-outs
+    /// and across launches. Read once when the viewport is declared and not
+    /// fed back afterwards: eframe applies the difference between the builder
+    /// it was last given and the new one, so a remembered size pushed every
+    /// pass would fight the hand dragging the corner.
+    pip_size: egui::Vec2,
+    /// Whether the popped-out window has already been asked for this time
+    /// round. Only the first ask may say anything about visibility — see
+    /// `pip_window`.
+    pip_declared: bool,
 
     lib: library::Library,
     images: images::Images,
@@ -601,6 +786,10 @@ struct App {
     playing_local: bool,
     /// Whether `CLICKER_PLAY` has had its turn. See `open_from_environment`.
     environment_opened: bool,
+    /// Whether `CLICKER_POP` has had its turn, and when the picture it waits
+    /// on first arrived. See `pop_from_environment`.
+    environment_popped: bool,
+    environment_playing_at: Option<Instant>,
     /// How the current source is being carried, for the stats card. Known here
     /// rather than asked of the player: mpv opens the address and does not
     /// report back which of these it decided the address was.
@@ -720,6 +909,85 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let settings = settings::Settings::load();
+
+        // The popped-out window's side of the wire, built now rather than on
+        // the first pop-out: the closure has to have something to send on from
+        // its very first pass, and nothing here is worth making optional to
+        // save one allocation at startup.
+        let (pip_tx, pip_rx) = std::sync::mpsc::channel();
+
+        // The main window's keeper, for as long as the picture is popped out.
+        //
+        // While a deferred viewport holds the screen on Windows, the root's
+        // own scheduled repaints stop arriving — the quarter-second tick it
+        // asks for at the end of every pass never fires, and a repaint asked
+        // for from *inside* the popped-out window's pass is dropped with it.
+        // The root freezes on its last frame and the command channel goes
+        // undrained, which is a picture-in-picture window whose every control
+        // is dead. What does survive is a request made from another thread:
+        // the decoder's frame callback wakes the popped-out window that way
+        // sixty times a second, reliably, on the same machine that drops the
+        // in-pass ask. So the wake comes from a thread: a steady heartbeat,
+        // paced where the sleep below says why, and one atomic read per beat
+        // when nothing is popped out.
+        let popped_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let popped = popped_out.clone();
+            let waker = cc.egui_ctx.clone();
+            let hwnd = platform::window_handle(cc);
+            std::thread::Builder::new()
+                .name("clicker-pip-wake".into())
+                .spawn(move || {
+                    let mut was_popped = false;
+                    let mut popped_ms: u64 = 0;
+                    loop {
+                        // The cadence is the platform's to pick: a cure where
+                        // the starvation is (see `platform::pip_wake_ms`), a
+                        // slow keeper where it is not.
+                        let beat = platform::pip_wake_ms();
+                        std::thread::sleep(std::time::Duration::from_millis(beat));
+                        let popped_now = popped.load(std::sync::atomic::Ordering::Relaxed);
+                        if popped_now && !was_popped {
+                            popped_ms = 0;
+                        }
+                        was_popped = popped_now;
+                        if !popped_now {
+                            continue;
+                        }
+                        popped_ms = popped_ms.saturating_add(beat);
+                        // The popped-out window's own keeper: on the desktops
+                        // where a window cannot simply be born and be right —
+                        // see `platform::pip_born_hidden` — this is what shows
+                        // it, at the moment showing it works, and what
+                        // notices if it ever goes missing afterwards. A no-op
+                        // everywhere else. Handed the window's age because
+                        // every one of its decisions is about how old the
+                        // window is.
+                        crate::platform::tend_pip(&pip_title(), hwnd, popped_ms);
+                        // Both halves matter. The request marks the pass as
+                        // wanted where egui keeps its books; the posted paint
+                        // is what actually reaches a window whose synthesized
+                        // WM_PAINT loses the idle-time lottery to the popped
+                        // picture — measured bistable at 2-a-second against
+                        // 70 on the same build, same machine, luck of the
+                        // pop. See platform::request_window_paint.
+                        waker.request_repaint_of(egui::ViewportId::ROOT);
+                        if let Some(handle) = hwnd {
+                            crate::platform::request_window_paint(handle);
+                        }
+                    }
+                })
+                .ok();
+        }
+        let pip = Arc::new(std::sync::Mutex::new(PipShared {
+            player: std::sync::Weak::new(),
+            paused: false,
+            keys: PipKeys::snapshot(&settings),
+            dressed: true,
+            last_activity: Instant::now(),
+            tx: pip_tx,
+        }));
+
         // The menu bar's accelerators, from the bindings actually in force
         // rather than the empty ones it was built with a moment ago.
         platform::sync_menu_shortcuts(&settings);
@@ -765,6 +1033,11 @@ impl App {
             fullscreen: false,
             was_maximized: false,
             watching: false,
+            popped_out: popped_out.clone(),
+            pip,
+            pip_rx,
+            pip_size: settings.pip_size.map(egui::Vec2::from).unwrap_or(PIP_DEFAULT_SIZE),
+            pip_declared: false,
             backdrop: backdrop::Backdrop::new(&cc.egui_ctx),
             // Seeded from the clock so the first card of a session is not the
             // same one every time the program opens.
@@ -807,6 +1080,8 @@ impl App {
             current_recording: None,
             playing_local: false,
             environment_opened: false,
+            environment_popped: false,
+            environment_playing_at: None,
             transport: None,
             open_generation: 0,
             timeshift: None,
@@ -1170,15 +1445,11 @@ impl App {
         }
     }
 
-    /// Put the picture on screen.
+    /// Put the picture on screen in the main window.
     ///
-    /// mpv draws it, inside a paint callback, because that is the only moment
-    /// the OpenGL context is current on this thread. Nothing is uploaded and
-    /// nothing is copied: the frame is decoded, converted and composited on the
-    /// graphics chip and never crosses back into system memory. The old path
-    /// read every frame back, converted it on the processor, allocated eight
-    /// megabytes of `Color32` for it and uploaded that again — three crossings
-    /// of the bus for a picture that was already on the right side of it.
+    /// The blit itself is `blit_video`, which both windows that can carry the
+    /// video share. What stays here is what only the main window does: black
+    /// bars behind a full-screen picture, and the entrance swoop.
     fn draw_video(
         &self,
         ui: &egui::Ui,
@@ -1187,22 +1458,6 @@ impl App {
         entrance: f32,
     ) {
         let Some(player) = &self.player else { return };
-        let (vw, vh) = player.video_size();
-        if vw == 0 || vh == 0 {
-            return;
-        }
-
-        // Where the picture goes, letterboxed inside the content area, with the
-        // entrance rise applied.
-        let size = egui::vec2(vw as f32, vh as f32);
-        let scale = (rect.width() / size.x).min(rect.height() / size.y);
-        let rise = (1.0 - entrance) * 42.0;
-        let target =
-            egui::Rect::from_center_size(rect.center() + egui::vec2(0.0, rise), size * scale);
-        let target = target.intersect(rect);
-        if !target.is_positive() {
-            return;
-        }
 
         // Black behind the picture in full screen, so what surrounds a 4:3 or
         // a 2.35:1 frame is bars rather than the interface.
@@ -1224,70 +1479,8 @@ impl App {
                 .rect_filled(rect, 0.0, egui::Color32::BLACK);
         }
 
-        // Weak, emphatically not a clone of the `Arc`.
-        //
-        // This callback runs after `update` has returned, during egui's paint.
-        // The transport — including its back arrow — is drawn over the picture,
-        // so stopping playback happens *after* this callback is already queued:
-        // teardown frees mpv's renderer and drops the player, and then the
-        // renderer runs this. Holding a strong reference kept the player alive
-        // to that moment and ran its `Drop` from inside egui, destroying an mpv
-        // handle whose render context had just been freed under it. A weak one
-        // simply finds nothing and skips the frame, which is the truth: there is
-        // no longer anything to draw.
-        let player = Arc::downgrade(player);
-        let callback = egui::PaintCallback {
-            rect: target,
-            callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(
-                move |info, _painter| {
-                    let Some(player) = player.upgrade() else { return };
-                    // egui's own conversion of this callback's rect into
-                    // physical pixels, rather than one computed up in the
-                    // interface from points and a scale factor. It is the
-                    // renderer's view of where the picture goes, which is the
-                    // only one that has to be right.
-                    let at = info.viewport_in_pixels();
-                    if let Some(gl) = gl_fns() {
-                        unsafe {
-                            player.present(
-                                gl,
-                                [at.left_px, at.from_bottom_px, at.width_px, at.height_px],
-                                [
-                                    info.screen_size_px[0] as i32,
-                                    info.screen_size_px[1] as i32,
-                                ],
-                            )
-                        };
-                    }
-                },
-            )),
-        };
-        ui.painter().with_clip_rect(rect).add(callback);
-
-        // Keep asking for frames while something is playing.
-        //
-        // mpv's ready-callback alone is not enough to hold a steady rate: it
-        // wakes the event loop, which then has to reach a paint, and a wake
-        // that lands just after the compositor's deadline waits out the whole
-        // refresh and the frame it was carrying is dropped. Asking for the
-        // next frame now means the interface is already at the vsync boundary
-        // when it arrives. Vsync caps this, so it is the display's rate and
-        // not a spin.
-        if !self.paused {
-            ctx.request_repaint();
-        }
-
-        // The entrance fade, painted over the picture rather than tinted into
-        // it: a blit cannot blend, and this is one rectangle for a third of a
-        // second.
-        if entrance < 1.0 {
-            let veil = ((1.0 - entrance) * 255.0) as u8;
-            ui.painter()
-                .with_clip_rect(rect)
-                .rect_filled(target, 0.0, egui::Color32::from_black_alpha(veil));
-        }
+        blit_video(ui, ctx, player, rect, entrance, self.paused, true);
     }
-
 
     fn sample_rates(&mut self) {
         let now = Instant::now();
@@ -1327,6 +1520,639 @@ impl App {
         let mean: f32 = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
         if mean > 0.0 { 1.0 / mean } else { 0.0 }
     }
+}
+
+/// TEMPORARY diagnostic: a throttled beat line, one slot per call site.
+fn diag(slot: usize, line: impl FnOnce(f32) -> String) {
+    static STATE: std::sync::Mutex<[(u32, Option<Instant>); 4]> =
+        std::sync::Mutex::new([(0, None); 4]);
+    let mut rate = None;
+    if let Ok(mut state) = STATE.lock() {
+        let entry = &mut state[slot];
+        entry.0 += 1;
+        match entry.1 {
+            None => entry.1 = Some(Instant::now()),
+            Some(since) => {
+                let elapsed = since.elapsed().as_secs_f32();
+                if elapsed >= 5.0 {
+                    rate = Some(entry.0 as f32 / elapsed);
+                    entry.0 = 0;
+                    entry.1 = Some(Instant::now());
+                }
+            }
+        }
+    }
+    if let Some(rate) = rate {
+        crate::log::line(&line(rate));
+    }
+}
+
+/// Put the picture on screen, letterboxed into `rect`.
+///
+/// mpv draws it, inside a paint callback, because that is the only moment the
+/// OpenGL context is current on this thread. Nothing is uploaded and nothing is
+/// copied: the frame is decoded, converted and composited on the graphics chip
+/// and never crosses back into system memory. The old path read every frame
+/// back, converted it on the processor, allocated eight megabytes of `Color32`
+/// for it and uploaded that again — three crossings of the bus for a picture
+/// that was already on the right side of it.
+///
+/// A free function, and not a method, because both windows that can carry the
+/// video call it and only one of them has an `App` to reach: the popped-out
+/// viewport's callback is `Fn + Send + Sync` and cannot borrow anything. Which
+/// window this is running in is never asked — egui's `viewport_in_pixels`
+/// resolves the rectangle against whichever framebuffer is current, and
+/// eframe's glow backend keeps one context and one painter for every viewport,
+/// which is the same assumption that lets `gl_fns` be a process-wide singleton.
+///
+/// `entrance` is the arrival swoop, 1.0 meaning arrived — which is what the
+/// popped-out window always passes, because a picture that is already playing
+/// does not arrive a second time.
+fn blit_video(
+    ui: &egui::Ui,
+    ctx: &egui::Context,
+    player: &Arc<mpv::Player>,
+    rect: egui::Rect,
+    entrance: f32,
+    paused: bool,
+    pace: bool,
+) {
+    let (vw, vh) = player.video_size();
+    if vw == 0 || vh == 0 {
+        return;
+    }
+
+    // Where the picture goes, letterboxed inside the content area, with the
+    // entrance rise applied.
+    let size = egui::vec2(vw as f32, vh as f32);
+    let scale = (rect.width() / size.x).min(rect.height() / size.y);
+    let rise = (1.0 - entrance) * 42.0;
+    let target =
+        egui::Rect::from_center_size(rect.center() + egui::vec2(0.0, rise), size * scale);
+    let target = target.intersect(rect);
+    if !target.is_positive() {
+        return;
+    }
+
+    // Weak, emphatically not a clone of the `Arc`.
+    //
+    // This callback runs after `update` has returned, during egui's paint.
+    // The transport — including its back arrow — is drawn over the picture,
+    // so stopping playback happens *after* this callback is already queued:
+    // teardown frees mpv's renderer and drops the player, and then the
+    // renderer runs this. Holding a strong reference kept the player alive
+    // to that moment and ran its `Drop` from inside egui, destroying an mpv
+    // handle whose render context had just been freed under it. A weak one
+    // simply finds nothing and skips the frame, which is the truth: there is
+    // no longer anything to draw.
+    let player = Arc::downgrade(player);
+    let callback = egui::PaintCallback {
+        rect: target,
+        callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(
+            move |info, _painter| {
+                let Some(player) = player.upgrade() else { return };
+                // egui's own conversion of this callback's rect into
+                // physical pixels, rather than one computed up in the
+                // interface from points and a scale factor. It is the
+                // renderer's view of where the picture goes, which is the
+                // only one that has to be right.
+                let at = info.viewport_in_pixels();
+                if let Some(gl) = gl_fns() {
+                    unsafe {
+                        player.present(
+                            gl,
+                            [at.left_px, at.from_bottom_px, at.width_px, at.height_px],
+                            [
+                                info.screen_size_px[0] as i32,
+                                info.screen_size_px[1] as i32,
+                            ],
+                        )
+                    };
+                }
+            },
+        )),
+    };
+    ui.painter().with_clip_rect(rect).add(callback);
+
+    diag(2, |rate| {
+        let ppp = ctx.pixels_per_point();
+        let who = if ctx.viewport_id() == pip_viewport() { "pip" } else { "root" };
+        format!(
+            "[diag] blit in {who}: {rate:.1}/s ppp {ppp:.2} into {:.0}x{:.0}pt \
+             target {:.0}x{:.0}pt = {:.0}x{:.0}px",
+            rect.width(),
+            rect.height(),
+            target.width(),
+            target.height(),
+            target.width() * ppp,
+            target.height() * ppp,
+        )
+    });
+
+    // Keep asking for frames while something is playing.
+    //
+    // mpv's ready-callback alone is not enough to hold a steady rate: it
+    // wakes the event loop, which then has to reach a paint, and a wake
+    // that lands just after the compositor's deadline waits out the whole
+    // refresh and the frame it was carrying is dropped. Asking for the
+    // next frame now means the interface is already at the vsync boundary
+    // when it arrives. Vsync caps this, so it is the display's rate and
+    // not a spin.
+    //
+    // Only the main window asks. In the popped-out window this line was a
+    // flywheel: each paint asked for the next, vsync answered at the display's
+    // rate, and on Windows the flood of its own repaints kept the message
+    // queue busy enough that the root window's WM_PAINT — which Windows only
+    // synthesizes when the queue goes idle — never arrived. The root froze on
+    // its last frame, the command channel went undrained, and every control in
+    // the small window was dead. Worse, the flywheel outlived a restore: a
+    // viewport is closed by a root pass noticing it is no longer declared, and
+    // a root that never runs leaves a zombie window playing to nobody. The
+    // popped-out window paints when the decoder announces a frame — sixty
+    // times a second, from its own thread, which Windows delivers — and needs
+    // no ask of its own.
+    if !paused && pace {
+        ctx.request_repaint();
+    }
+
+    // The entrance fade, painted over the picture rather than tinted into
+    // it: a blit cannot blend, and this is one rectangle for a third of a
+    // second.
+    if entrance < 1.0 {
+        let veil = ((1.0 - entrance) * 255.0) as u8;
+        ui.painter()
+            .with_clip_rect(rect)
+            .rect_filled(target, 0.0, egui::Color32::from_black_alpha(veil));
+    }
+}
+
+/// The popped-out window, drawn from the far side of the fence.
+///
+/// It runs on the interface thread like everything else, and with no `App` in
+/// reach: `show_viewport_deferred` wants `Fn + Send + Sync + 'static`, so what
+/// this can see is a snapshot the main window keeps fresh and what it can do is
+/// ask. It also runs *without* the main window — a deferred viewport repaints
+/// on its own, which is the whole point of choosing one, and is why the picture
+/// holds sixty frames a second here while the root ticks four times.
+fn pip_ui(ctx: &egui::Context, shared: &std::sync::Mutex<PipShared>) {
+    // Whether this window, specifically, has been touched. The main window's
+    // idle is no use: the two are looked at separately, and a transport that
+    // had faded while somebody read the guide would be the wrong answer in the
+    // window they are actually pointing at.
+    let stirred = ctx.input(|i| {
+        i.pointer.velocity().length() > 1.0
+            || i.pointer.any_down()
+            || !i.raw.events.is_empty()
+    });
+
+    // One short lock, and everything drawn outside it. The upgrade lives for
+    // this pass only and cannot be the last reference to the player: the main
+    // window drops it inside its own pass, and clears the popped-out cell in
+    // the same breath, so this function is not running when that happens.
+    let (player, paused, keys, tx, idle, dress) = {
+        let Ok(mut pip) = shared.lock() else { return };
+        if stirred {
+            pip.last_activity = Instant::now();
+        }
+        let dress = !pip.dressed;
+        pip.dressed = true;
+        (
+            pip.player.upgrade(),
+            pip.paused,
+            pip.keys,
+            pip.tx.clone(),
+            pip.last_activity.elapsed().as_secs_f32(),
+            dress,
+        )
+    };
+    if dress {
+        // See `PipShared::dressed`. Inside this pass both commands aim at
+        // this window, which is the whole point of sending them from here.
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+            egui::viewport::WindowLevel::AlwaysOnTop,
+        ));
+        // Rounded corners, where the system rounds and eframe's builder does
+        // not reach — the main window got its rounding through a handle
+        // eframe exposed at startup, and a deferred viewport's handle is
+        // never exposed at all.
+        platform::dress_pip(&pip_title());
+    }
+
+    // Asking, and waking the window that answers.
+    //
+    // Without the second half a command sits in the channel undrained: the
+    // root sleeps between its quarter-second ticks while this window repaints
+    // at video rate, so nothing else is going to come along and find it.
+    let ask = |command: PipCmd| {
+        // Logged at both ends of the wire: this line paired with pump_pip's
+        // answers, from one log file, whether a dead control failed to fire
+        // or fired into a channel nobody drained — the two failures every
+        // "the buttons don't work" report so far has turned out to be.
+        crate::log::line(&format!("[pip] ask {command:?}"));
+        let _ = tx.send(command);
+        ctx.request_repaint_of(egui::ViewportId::ROOT);
+    };
+
+    diag(1, |rate| {
+        let size = ctx.screen_rect().size();
+        format!(
+            "[diag] pip pass {rate:.1}/s ppp {:.2} screen {:.0}x{:.0}pt player {}",
+            ctx.pixels_per_point(),
+            size.x,
+            size.y,
+            player.is_some(),
+        )
+    });
+
+    // TEMPORARY, strip with `diag`: every button down and up this window
+    // receives, for the dead-controls report — the log says whether a click
+    // arrived at all, where it landed, and what was done about it.
+    ctx.input(|i| {
+        for event in &i.raw.events {
+            if let egui::Event::PointerButton { pos, pressed, .. } = event {
+                crate::log::line(&format!(
+                    "[pipdbg] {} at {:.0},{:.0}",
+                    if *pressed { "down" } else { "up" },
+                    pos.x,
+                    pos.y
+                ));
+            }
+        }
+    });
+
+    // The same hold-then-fade as the main window's controls, so the two
+    // windows behave identically under a still pointer.
+    const HOLD: f32 = 2.75;
+    const FADE: f32 = 0.45;
+    let opacity = 1.0 - ((idle - HOLD) / FADE).clamp(0.0, 1.0);
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::none().fill(egui::Color32::BLACK))
+        .show(ctx, |ui| {
+            let full = ctx.screen_rect();
+            if let Some(player) = &player {
+                blit_video(ui, ctx, player, full, 1.0, paused, false);
+                if let Some(text) = player.caption() {
+                    // Lifted less than in the main window, because the
+                    // transport here is one short row rather than a scrub bar
+                    // with a row of controls under it.
+                    draw_captions(ui, full, &text, opacity > 0.001, 64.0);
+                }
+            }
+
+            // The picture is the window's handle. There is no title bar to
+            // drag — the whole point of this window is that it has no chrome —
+            // so the surface underneath everything else moves it, and a double
+            // click on it brings the picture home. Registered first so that
+            // everything registered after it wins the hit test.
+            let surface = ui.interact(
+                full,
+                egui::Id::new("pip-surface"),
+                egui::Sense::click_and_drag(),
+            );
+            // Decidedly, not merely started: a human click carries a pixel or
+            // two of drift, and `drag_started` on that jitter began the
+            // native move loop — which eats the release, so the click under
+            // it never finished and every button in this window read as dead.
+            if surface.dragged() && ctx.input(|i| i.pointer.is_decidedly_dragging()) {
+                // TEMPORARY, strip with `diag`.
+                crate::log::line("[pipdbg] StartDrag");
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            if surface.double_clicked() {
+                ask(PipCmd::Restore);
+            }
+            if surface.hovered() {
+                ctx.set_cursor_icon(egui::CursorIcon::Grab);
+            }
+
+            pip_resize_grip(ui, ctx, full, opacity);
+            if opacity > 0.001 {
+                // The way back, in the corner the way *out* was in. The main
+                // window's pop-out button is top right and so is this, so the
+                // two halves of one journey are in the same place.
+                let at = corner_slot(full, 0);
+                let response = corner_button(ui, ctx, at, "pip-return-corner", opacity);
+                pip_mark(
+                    ui.painter(),
+                    at,
+                    with_alpha(Fluent::ACCENT, (255.0 * opacity) as u8),
+                );
+                if response.clicked() {
+                    ask(PipCmd::Restore);
+                }
+
+                pip_transport(ui, full, paused, opacity, &ask);
+            }
+
+            // The keys this window answers, from the snapshot. The root's
+            // `handle_keys` never sees any of them: it may not run a pass at
+            // all while this window has the keyboard.
+            let fired = |binding: Option<keys::Binding>| {
+                binding.is_some_and(|binding| keys::fired(ctx, binding))
+            };
+            if fired(keys.play) {
+                ask(PipCmd::TogglePause);
+            }
+            if fired(keys.back) {
+                ask(PipCmd::SkipBack);
+            }
+            if fired(keys.forward) {
+                ask(PipCmd::SkipForward);
+            }
+            if fired(keys.volume_up) {
+                ask(PipCmd::VolumeUp);
+            }
+            if fired(keys.volume_down) {
+                ask(PipCmd::VolumeDown);
+            }
+            if fired(keys.popout) {
+                ask(PipCmd::Restore);
+            }
+            // Escape is not reboundable and not disableable here either. It is
+            // how every window on this desktop is got out of, and this one has
+            // no visible frame to close.
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                ask(PipCmd::Restore);
+            }
+        });
+
+    // The desktop asked for this window to go: Alt-F4, Command-W, a window
+    // list. It means "put the picture back", not "stop watching" — stopping is
+    // what the transport's own button is for.
+    if ctx.input(|i| i.viewport().close_requested()) {
+        crate::log::line("[pip] the desktop asked it to close");
+        ask(PipCmd::Restore);
+    }
+
+    // Win+Up, or a drag to the top edge, "snaps" a borderless window by
+    // maximizing it — which on a window that is nothing but picture looks
+    // exactly like fullscreen nobody asked for. Stripping the maximize box
+    // from the window's style was the obvious answer and a measured disaster
+    // (see `PipShared::dressed`), so the state is simply put back: the OS
+    // maximizes, the next pass un-maximizes, and the window stays a window.
+    if ctx.input(|i| i.viewport().maximized == Some(true)) {
+        // Counted, because the two ways this can be broken read differently
+        // in a log: never firing means the maximize was invisible to egui,
+        // and firing every pass means the un-maximize is not sticking — a
+        // style-command storm, the class of thing that has broken this
+        // window's input before. Logged sparsely so a storm says so without
+        // writing megabytes.
+        static BOUNCED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let count = BOUNCED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count < 4 || count % 256 == 0 {
+            crate::log::line(&format!("[pip] bounced a maximize (#{count})"));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+    }
+
+    // Repaint through the fade, otherwise it freezes part way whenever the
+    // decoder happens not to deliver a frame — and a slow tick besides,
+    // because a paused picture asks for no frames at all and the controls
+    // still have to answer a pointer.
+    if opacity > 0.0 && idle > HOLD {
+        ctx.request_repaint();
+    }
+    ctx.request_repaint_after(Duration::from_millis(250));
+}
+
+/// The popped-out window's controls: play, and stop.
+///
+/// Minimal by policy rather than by omission. A picture-in-picture window is a
+/// glance, not a console — there is no room for a scrub bar at this size and
+/// no reason for a quality menu or a statistics card in a window somebody is
+/// watching out of the corner of an eye. Coming back is not here either: it is
+/// the corner button, where the button that sent the picture away was.
+///
+/// No hover text, on any of it. A tooltip is drawn at the pointer and sized to
+/// its words, so in a window this small it hangs off the edge and over
+/// whatever is behind — and these are the two glyphs every player on earth
+/// uses, in a window the person opened deliberately.
+fn pip_transport(
+    ui: &mut egui::Ui,
+    full: egui::Rect,
+    paused: bool,
+    opacity: f32,
+    ask: &dyn Fn(PipCmd),
+) {
+    const BUTTON: f32 = 40.0;
+    const HEIGHT: f32 = 36.0;
+    let plate = egui::vec2(
+        BUTTON * 2.0 + SPACE_XS + SPACE_S * 2.0,
+        HEIGHT + SPACE_S,
+    );
+    let row = egui::Rect::from_center_size(
+        egui::pos2(full.center().x, full.max.y - SPACE_L - plate.y / 2.0),
+        plate,
+    );
+    ui.painter().rect_filled(
+        row,
+        theme::RADIUS_CONTROL,
+        with_alpha(Fluent::SOLID, (216.0 * opacity) as u8),
+    );
+
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(row.shrink2(egui::vec2(SPACE_S, SPACE_S / 2.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    ui.set_opacity(opacity);
+    // The plate is sized to exactly these buttons and this spacing, so the
+    // spacing has to be set before the first one is allocated or the row grows
+    // past the surface it is drawn on.
+    ui.spacing_mut().item_spacing.x = SPACE_XS;
+    let glyph = if paused { theme::icon::PLAY } else { theme::icon::PAUSE };
+    let play = subtle_button(&mut ui, glyph, BUTTON, false);
+    // TEMPORARY, strip with `diag`: whether the press ever became the
+    // button's, or something underneath owned it first.
+    if play.is_pointer_button_down_on() {
+        crate::log::line(&format!("[pipdbg] press held on play at {:?}", play.rect));
+    }
+    if play.clicked() {
+        ask(PipCmd::TogglePause);
+    }
+    if subtle_button(&mut ui, theme::icon::CLOSE, BUTTON, false).clicked() {
+        ask(PipCmd::Stop);
+    }
+}
+
+/// The corner somebody drags to resize a window with no frame.
+///
+/// `resize_borders` does this for the main window with eight zones around
+/// every edge; one corner is enough here, because this window is small, always
+/// on top of everything, and habitually parked against a screen edge where
+/// three of those eight edges are unreachable anyway.
+fn pip_resize_grip(ui: &mut egui::Ui, ctx: &egui::Context, full: egui::Rect, opacity: f32) {
+    const GRIP: f32 = 18.0;
+    let at = egui::Rect::from_min_max(full.max - egui::vec2(GRIP, GRIP), full.max);
+    let response = ui.interact(at, egui::Id::new("pip-grip"), egui::Sense::drag());
+    if response.hovered() || response.dragged() {
+        ctx.set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+    if response.drag_started() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
+            egui::viewport::ResizeDirection::SouthEast,
+        ));
+    }
+
+    // Three diagonal ticks, which is what a resize corner has looked like
+    // since before any of this. Faded with the rest of the controls so a
+    // window left alone is only the picture.
+    let ink = with_alpha(Fluent::TEXT_SECONDARY, (200.0 * opacity) as u8);
+    for step in 1..=3 {
+        let inset = 3.0 + step as f32 * 4.0;
+        ui.painter().line_segment(
+            [
+                egui::pos2(full.max.x - inset, full.max.y - 3.0),
+                egui::pos2(full.max.x - 3.0, full.max.y - inset),
+            ],
+            egui::Stroke::new(1.2, ink),
+        );
+    }
+}
+
+/// Closed captions, drawn over the picture.
+///
+/// Sat above the transport rather than behind it: a caption hidden under the
+/// controls is worse than one that moves, so it rides up when they are showing
+/// and drops back down when they fade. `lift` is how far, which differs
+/// between the two windows because their transports are different heights.
+///
+/// Drawn on a plate rather than with an outline. Broadcast captions land on
+/// whatever the picture happens to be, and white-on-white is a caption that is
+/// not there — which is the whole failure this is meant to fix.
+fn draw_captions(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    text: &str,
+    controls_up: bool,
+    lift: f32,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let lift = if controls_up { lift } else { 40.0 };
+
+    // Scaled to the window. A fixed size is most of the picture on a small
+    // window and a whisper on a large one.
+    let size = (rect.width() / 46.0).clamp(13.0, 26.0);
+    // Monospaced and upper case, which is the look a caption decoder has:
+    // CEA-608 is a fixed 32-column grid of capitals, and rendering it in a
+    // proportional face reads as a film subtitle rather than as captions.
+    let font = egui::FontId::monospace(size);
+    let upper = text.to_uppercase();
+
+    let lines: Vec<&str> = upper
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+
+    // Laid out first, because the block is drawn upwards from the bottom
+    // and its height is not known until every line has been measured.
+    let max_width = rect.width() * 0.86;
+    let galleys: Vec<_> = lines
+        .iter()
+        .map(|line| {
+            ui.painter()
+                .layout((*line).to_string(), font.clone(), Fluent::TEXT_PRIMARY, max_width)
+        })
+        .collect();
+
+    let pad = egui::vec2(size * 0.5, size * 0.16);
+    let block: f32 = galleys.iter().map(|g| g.size().y + pad.y * 2.0).sum();
+    let mut y = rect.max.y - lift - block;
+
+    for galley in galleys {
+        let line_size = galley.size();
+        let origin = egui::pos2(rect.center().x - line_size.x / 2.0, y + pad.y);
+        // A box per line, tight to the text, with square corners. One
+        // rounded box around the whole block is a subtitle; the ragged
+        // per-line box is what makes it read as a caption.
+        let plate = egui::Rect::from_min_size(
+            egui::pos2(origin.x - pad.x, y),
+            egui::vec2(line_size.x + pad.x * 2.0, line_size.y + pad.y * 2.0),
+        );
+        ui.painter()
+            .rect_filled(plate, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 235));
+        ui.painter().galley(origin, galley, Fluent::TEXT_PRIMARY);
+        y += line_size.y + pad.y * 2.0;
+    }
+}
+
+/// Where a corner control sits, counting in from the top right.
+///
+/// One place, so the buttons that float over the picture stay a row rather
+/// than becoming two functions' opinions of the same margin.
+fn corner_slot(rect: egui::Rect, from_right: usize) -> egui::Rect {
+    const SIZE: f32 = 38.0;
+    let step = (SIZE + SPACE_S) * from_right as f32;
+    egui::Rect::from_min_size(
+        egui::pos2(rect.max.x - SIZE - SPACE_L - step, rect.min.y + SPACE_L),
+        egui::vec2(SIZE, SIZE),
+    )
+}
+
+/// The plate under a corner control, and its hover.
+///
+/// The plate only. What goes on it belongs to the caller, because one of these
+/// carries a font glyph and the other has to be drawn by hand — see `pip_mark`.
+fn corner_button(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    at: egui::Rect,
+    id: &'static str,
+    opacity: f32,
+) -> egui::Response {
+    let fade = |c: egui::Color32, a: u8| with_alpha(c, (a as f32 * opacity) as u8);
+
+    let response = ui.interact(at, egui::Id::new(id), egui::Sense::click());
+    let hover = ctx.animate_bool_with_time(
+        egui::Id::new((id, "hover")),
+        response.hovered(),
+        theme::ANIM_FAST,
+    );
+
+    let painter = ui.painter();
+    painter.rect_filled(
+        at,
+        theme::RADIUS_CONTROL,
+        fade(
+            theme::mix(Fluent::LAYER_CARD, Fluent::CONTROL_HOVER, hover),
+            215,
+        ),
+    );
+    painter.rect_stroke(
+        at,
+        theme::RADIUS_CONTROL,
+        egui::Stroke::new(1.0, fade(Fluent::STROKE_CONTROL, 255)),
+    );
+
+    if response.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// The picture-in-picture mark: a screen with a smaller screen in its corner.
+///
+/// Drawn rather than set, which is the exception to `theme`'s rule that every
+/// glyph comes out of the icon table. The bundled face is a *subset* — twenty-
+/// eight glyphs, exactly the ones the interface already draws — so adding a
+/// codepoint to it means regenerating the font rather than writing a line, and
+/// none of the twenty-eight means this. The mark is what every browser and
+/// every television uses for it, and it is two rectangles.
+fn pip_mark(painter: &egui::Painter, at: egui::Rect, color: egui::Color32) {
+    let screen = egui::Rect::from_center_size(at.center(), egui::vec2(16.0, 11.5));
+    painter.rect_stroke(screen, 1.5, egui::Stroke::new(1.3, color));
+    let inset = egui::Rect::from_min_max(
+        egui::pos2(screen.center().x + 1.0, screen.center().y + 0.5),
+        egui::pos2(screen.max.x - 1.8, screen.max.y - 1.8),
+    );
+    painter.rect_filled(inset, 1.0, color);
 }
 
 impl eframe::App for App {
@@ -1377,9 +2203,14 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.open_from_environment();
+        self.pop_from_environment(ctx);
         self.pump_tray(ctx);
         self.pump_menu();
         self.drain_messages();
+        // After the messages, not before: a command from the popped-out window
+        // should act on the player this pass has, not the one the last pass
+        // was still waiting for.
+        self.pump_pip(ctx);
 
         // Bring the renderer up, and only then let mpv open the file.
         //
@@ -1413,16 +2244,40 @@ impl eframe::App for App {
         // Noticed here rather than at each of the several places that set the
         // screen or start playback, so a new way of getting home cannot forget
         // to deal one.
-        let view = (!self.watching).then_some(self.screen);
+        //
+        // Popped out counts as browsing. Something is still playing, but it is
+        // playing in another window and this one is showing a screen, which is
+        // what "arrived at" is about.
+        let browsing = !self.watching || self.popped_out();
+        let view = browsing.then_some(self.screen);
         if view == Some(Screen::Home) && self.last_view != Some(Screen::Home) {
             self.hero_pick = self.hero_pick.wrapping_add(1);
         }
         self.last_view = view;
 
+        diag(0, |rate| {
+            let size = ctx.screen_rect().size();
+            format!(
+                "[diag] root pass {rate:.1}/s ppp {:.2} screen {:.0}x{:.0}pt \
+                 popped {} browsing {} watching {}",
+                ctx.pixels_per_point(),
+                size.x,
+                size.y,
+                self.popped_out(),
+                browsing,
+                self.watching,
+            )
+        });
+
         // The material, before anything else is drawn over it. Every surface
         // in the theme is translucent by design and needs something behind it;
         // this is that something, and it used to come from the compositor.
         self.backdrop.paint(ctx, ctx.screen_rect());
+
+        // Set by the caption's picture-in-picture mark, acted on once the
+        // panel has closed: restoring borrows `self` mutably and the closure
+        // below is already holding it.
+        let mut restore_picture = false;
 
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(Fluent::LAYER_BASE))
@@ -1449,7 +2304,11 @@ impl eframe::App for App {
                 // the hamburger feel like it slides a surface open rather than
                 // teleporting the whole layout — and what makes this look like
                 // the picture opening out rather than the rail vanishing.
-                let rail_target = if chrome && self.settings.configured() && !self.watching {
+                //
+                // It slides straight back the moment the picture is popped
+                // out, because then this window is a browsing window again and
+                // browsing is what the rail is for.
+                let rail_target = if chrome && self.settings.configured() && browsing {
                     if self.rail_expanded { RAIL_EXPANDED } else { RAIL_COLLAPSED }
                 } else {
                     0.0
@@ -1460,13 +2319,16 @@ impl eframe::App for App {
                     theme::ANIM_SURFACE,
                 );
 
-                if chrome {
-                    title_bar(
+                if chrome
+                    && title_bar(
                         ui,
                         ctx,
                         egui::Rect::from_min_size(full.min, egui::vec2(full.width(), caption_h)),
                         self.online,
-                    );
+                        self.popped_out(),
+                    )
+                {
+                    restore_picture = true;
                 }
 
                 if rail_w > 0.0 {
@@ -1477,11 +2339,16 @@ impl eframe::App for App {
                     let mut screen = self.screen;
                     if ui::nav_rail(ui, rail, &mut screen, &mut self.rail_expanded) {
                         self.screen = screen;
-                        // Navigating away ends playback, same as Escape. The
+                        // Navigating away used to end playback, because the
                         // alternative — sound continuing under a screen with
-                        // no picture — reads as a bug every time.
+                        // no picture — reads as a bug every time. That
+                        // objection is answered now: the picture goes with
+                        // you. This is only reachable during the moment the
+                        // rail spends sliding away, but it is the same
+                        // question the popout button asks and deserves the
+                        // same answer.
                         if self.watching {
-                            self.stop_playback();
+                            self.pop_out(ctx);
                         }
                     }
                 }
@@ -1503,7 +2370,7 @@ impl eframe::App for App {
                         &mut self.setup,
                     );
                     self.handle_setup(action);
-                } else if self.watching {
+                } else if !browsing {
                     self.watch_view(ui, ctx, full, content);
                 } else {
                     self.browse_view(ui, content);
@@ -1522,8 +2389,15 @@ impl eframe::App for App {
                 resize_borders(ui, ctx, full, self.fullscreen);
             });
 
+        if restore_picture {
+            self.restore_pip(ctx, "the caption's mark");
+        }
+
         self.record_dialog_frame(ctx);
         self.delete_dialog_frame(ctx);
+        // Last, and every pass while it is out: a deferred viewport exists for
+        // exactly as long as its parent keeps asking for it.
+        self.pip_window(ctx);
 
         // The decoder asks for a repaint per frame, so the UI presents in step
         // with the video. This slow tick keeps the clock and the progress bar
@@ -1655,28 +2529,45 @@ impl App {
         if bound("fullscreen") {
             self.set_fullscreen(ctx, !self.fullscreen);
         }
+        // Before the letters below return, because this one has to work in
+        // both directions: from the player it sends the picture out, and from
+        // the browse screens it brings the picture back.
+        if bound("popout") {
+            self.toggle_popout(ctx);
+        }
         if escape {
             if self.fullscreen {
                 self.set_fullscreen(ctx, false);
-            } else if self.watching {
+            } else if self.watching && !self.popped_out() {
                 // Escape stops playback outright. An earlier version kept the
                 // stream running in the background so returning was instant,
                 // but that is not what Escape means anywhere else, and it
                 // silently held a tuner — half of them, on a two-tuner box —
                 // for a program nobody was watching.
+                //
+                // Not while the picture is popped out. Escape belongs to the
+                // window it was pressed in, and in that arrangement this one
+                // is a browse window with nothing to get out of; the popped-out
+                // window answers its own Escape by coming home.
                 self.stop_playback();
             }
         }
+        // Stop playback, which takes the popped-out window with it — that is
+        // what stopping means, and the picture having been sent to a corner
+        // does not make it mean something else.
         if home && self.watching && !self.fullscreen {
             self.stop_playback();
         }
 
         // Letters, for driving this from across a room without a mouse.
         //
-        // Only while not watching. A letter that switched screens mid-programme
-        // would tear the picture away on a mistyped key, and the transport is
-        // what the keyboard should be reaching during playback.
-        if !self.watching {
+        // Only while this window is not the one with the picture in it. A
+        // letter that switched screens mid-programme would tear the picture
+        // away on a mistyped key, and the transport is what the keyboard should
+        // be reaching during playback. Popped out, the picture is somewhere
+        // else and cannot be torn away, so this window is a browse window and
+        // its keyboard says so.
+        if !self.watching || self.popped_out() {
             let screen = [
                 ("home", Screen::Home),
                 ("guide", Screen::Guide),
@@ -1705,12 +2596,7 @@ impl App {
         let (up_arrow, down_arrow, mute) =
             (bound("volume_up"), bound("volume_down"), bound("mute"));
         if up_arrow || down_arrow {
-            let step = if up_arrow { 0.05 } else { -0.05 };
-            self.volume = (self.volume + step).clamp(0.0, 1.0);
-            if let Some(p) = &self.player {
-                p.set_volume(self.volume as f64);
-            }
-            self.announce(format!("Volume {:.0}%", self.volume * 100.0));
+            self.nudge_volume(if up_arrow { 0.05 } else { -0.05 });
         }
         if mute {
             self.volume = if self.volume <= 0.001 { 1.0 } else { 0.0 };
@@ -1885,6 +2771,268 @@ impl App {
         self.current_recording = None;
         self.playing_local = false;
         self.show_quality = false;
+        // The popped-out window is not closed so much as no longer declared:
+        // `update` stops calling `show_viewport_deferred` for it, and eframe
+        // takes the window down at the end of the pass.
+        self.popped_out
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Move the volume by a step and say so.
+    ///
+    /// One place, because two windows reach it: the arrow keys in the main
+    /// window and the same arrows inside the popped-out one, which sends its
+    /// presses here rather than touching the player itself.
+    fn nudge_volume(&mut self, step: f32) {
+        self.volume = (self.volume + step).clamp(0.0, 1.0);
+        if let Some(player) = &self.player {
+            player.set_volume(self.volume as f64);
+        }
+        self.announce(format!("Volume {:.0}%", self.volume * 100.0));
+    }
+
+    /// Whether the picture is currently in its own window.
+    fn popped_out(&self) -> bool {
+        self.popped_out.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Pop the picture out, or bring it back.
+    fn toggle_popout(&mut self, ctx: &egui::Context) {
+        match self.popped_out() {
+            true => self.restore_pip(ctx, "toggled"),
+            false => self.pop_out(ctx),
+        }
+    }
+
+    /// Send the picture to its own window and give the main one back to the
+    /// browse screens.
+    fn pop_out(&mut self, ctx: &egui::Context) {
+        if !self.watching || self.popped_out() {
+            return;
+        }
+        // Full screen and a picture-in-picture window are two answers to the
+        // same question and cannot both be it. Leaving full screen first also
+        // means the main window is an ordinary window by the time the browse
+        // screens arrive in it.
+        if self.fullscreen {
+            self.set_fullscreen(ctx, false);
+        }
+        // Menus that belong to the player, closed on the way out: nothing
+        // draws them any more, and one left open would come back with the
+        // picture minutes later.
+        self.show_quality = false;
+        // The size the window is born at, taken now rather than read live.
+        // eframe applies the difference between the builder it last saw and
+        // the next one, so a remembered size fed back every pass would fight
+        // the hand dragging the corner — see `pip_window`.
+        self.pip_size = self
+            .settings
+            .pip_size
+            .map(egui::Vec2::from)
+            .unwrap_or(PIP_DEFAULT_SIZE);
+        // Arriving counts as activity, or the window opens with its controls
+        // already faded out — idle is measured from the last time somebody
+        // touched *that* window, and until this moment there was no window to
+        // touch. A picture-in-picture window that appears bare has no visible
+        // way back and nothing to say it can be paused.
+        if let Ok(mut pip) = self.pip.lock() {
+            pip.last_activity = Instant::now();
+            pip.dressed = false;
+        }
+        // A window that does not exist yet has not been asked for yet — the
+        // ask that creates it is the one allowed to say how it is born.
+        self.pip_declared = false;
+        self.popped_out
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        crate::log::line("[pip] popped out");
+
+        // Where the pin is the desktop's to give, say so — once, ever.
+        //
+        // The window is asked to float on every platform and the request is
+        // free; under Wayland there is simply nothing for it to travel on, and
+        // the desktop's own menu is where that is granted. Telling somebody
+        // that on every pop-out would be nagging about a decision their
+        // compositor made and neither of us can change, so it is written down
+        // as told and never said again.
+        if platform::desktop_owns_stacking() && !self.settings.pip_stacking_noticed {
+            self.settings.pip_stacking_noticed = true;
+            if let Err(e) = self.settings.save() {
+                eprintln!("[clicker] could not save settings: {e:#}");
+            }
+            self.announce(
+                "Your desktop decides what stays on top. Right-click the picture's \
+                 title bar, or Super and right-click it, and choose Always on Top."
+                    .into(),
+            );
+        }
+    }
+
+    /// Bring the picture back into the main window.
+    ///
+    /// `why` goes to the log, because a restore nobody asked for is the bug
+    /// this feature can have: the window flashing open and shut looks like a
+    /// broken window, and only the reason says which caller did it.
+    fn restore_pip(&mut self, ctx: &egui::Context, why: &str) {
+        if !self.popped_out() {
+            return;
+        }
+        crate::log::line(&format!("[pip] back: {why}"));
+        self.popped_out
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        // The keyboard follows the picture, both ways: the popped-out window
+        // took it when it opened (see `dress_pip`), so the main window takes
+        // it back when the picture comes home — otherwise the toggle key
+        // works exactly once in each direction.
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+        // The picture is about to reappear over whatever screen was being
+        // browsed, so the controls should be up rather than faded out from an
+        // idle that happened in another window.
+        self.last_activity = Instant::now();
+        ctx.request_repaint();
+    }
+
+    /// Act on whatever the popped-out window asked for.
+    ///
+    /// Its closure cannot touch `App`, so everything it wants arrives here, on
+    /// the interface thread, where the player and the state that describes it
+    /// are both in hand.
+    fn pump_pip(&mut self, ctx: &egui::Context) {
+        while let Ok(command) = self.pip_rx.try_recv() {
+            // The other end of `ask`'s wire — see the log line there.
+            crate::log::line(&format!("[pip] pump {command:?}"));
+            match command {
+                PipCmd::Restore => self.restore_pip(ctx, "the window asked"),
+                PipCmd::Stop => {
+                    self.stop_playback();
+                    self.announce("Stopped".into());
+                }
+                PipCmd::TogglePause => {
+                    self.paused = !self.paused;
+                    if let Some(player) = &self.player {
+                        player.set_paused(self.paused);
+                    }
+                }
+                PipCmd::SkipBack => {
+                    let back = self.settings.skip_back_secs as f64;
+                    if let Some(player) = &self.player {
+                        if !player.seek_by(-back) {
+                            self.announce("This source cannot be rewound".into());
+                        }
+                    }
+                }
+                PipCmd::SkipForward => {
+                    let forward = self.settings.skip_forward_secs as f64;
+                    if let Some(player) = &self.player {
+                        player.seek_by(forward);
+                    }
+                }
+                PipCmd::VolumeUp => self.nudge_volume(0.05),
+                PipCmd::VolumeDown => self.nudge_volume(-0.05),
+            }
+        }
+
+        if !self.popped_out() {
+            return;
+        }
+
+        // Nothing to show a picture of, or nothing worth showing one in.
+        //
+        // A decode error puts its text on the player's own screen, and while
+        // the picture is out there is no player screen to put it on — so the
+        // picture comes home first and the message lands where somebody will
+        // read it. An open that failed is the same story from the other end:
+        // it clears `watching` and says so in a toast, and a toast in a window
+        // nobody is looking at is a toast nobody reads.
+        //
+        // Emphatically *not* "the player is gone". It goes briefly on every
+        // reopen — a quality change, a stall recovered from — and yanking the
+        // picture back for the two frames that takes would make a hiccup look
+        // like a fault.
+        if !self.watching || self.error.is_some() {
+            let why = if self.error.is_some() { "a decode error" } else { "nothing playing" };
+            self.restore_pip(ctx, why);
+        }
+    }
+
+    /// Declare the popped-out window, while there is one to declare.
+    ///
+    /// Every root pass, because that is the contract: a deferred viewport
+    /// exists for exactly as long as its parent keeps asking for it, so
+    /// closing it is a matter of no longer calling this. The builder is handed
+    /// over unchanged each time on purpose — eframe applies the difference
+    /// between the builder it last saw and this one, so a size fed back from
+    /// the window itself would fight the hand dragging its corner.
+    fn pip_window(&mut self, ctx: &egui::Context) {
+        if !self.popped_out() {
+            return;
+        }
+
+        // What the window is allowed to know, taken fresh. Cheap enough to
+        // re-take every pass, which is also why nothing here has to be pushed
+        // from the places that change it.
+        if let Ok(mut pip) = self.pip.lock() {
+            pip.player = self.player.as_ref().map(Arc::downgrade).unwrap_or_default();
+            pip.paused = self.paused;
+            pip.keys = PipKeys::snapshot(&self.settings);
+        }
+
+        // A title of its own, and the root keeps the app_id. On the desktops
+        // where nothing may ask to stay on top, this title is the handle a
+        // window rule grabs: a KWin rule matching it with "Keep above: Force",
+        // or GNOME's own always-on-top item, pins it compositor-side and does
+        // it permanently. See the README.
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title(pip_title())
+            .with_decorations(false)
+            .with_resizable(true)
+            .with_always_on_top()
+            .with_inner_size(self.pip_size)
+            .with_min_inner_size(PIP_MINIMUM_SIZE);
+        // Where it was last left, on the desktops that let a window be put
+        // somewhere. Wayland refuses, so there it is simply not asked for and
+        // the compositor places the window — which is the documented answer
+        // there, not a fault to work around.
+        if let Some(at) = self.settings.pip_position {
+            builder = builder.with_position(egui::Pos2::from(at));
+        }
+        // Born hidden where a window has to be, and said exactly once.
+        //
+        // `platform::tend_pip` is what shows it a moment later, and
+        // `platform::pip_born_hidden` is why. Once, because eframe patches
+        // this builder against the one it kept from last pass, and egui
+        // 0.29 compares a new `visible` against the stored `active` rather
+        // than the stored `visible` — so a `visible: false` repeated every
+        // pass would send a fresh hide command every pass, and the window
+        // would go dark again the instant it was shown. A field left unsaid
+        // is skipped by that comparison entirely, which is the contract this
+        // relies on; the value already stored still governs the window's
+        // birth, including if eframe ever builds the window over.
+        if !self.pip_declared && platform::pip_born_hidden() {
+            builder = builder.with_visible(false);
+        }
+        self.pip_declared = true;
+
+        let shared = self.pip.clone();
+        ctx.show_viewport_deferred(pip_viewport(), builder, move |ctx, class| {
+            // The integration could not give this its own window, so there is
+            // no picture-in-picture to be had — ask for the picture back and
+            // draw nothing. It should never happen on eframe native; it costs
+            // three lines not to have to trust that.
+            if class == egui::ViewportClass::Embedded {
+                crate::log::line("[pip] embedded fallback; asking for the picture back");
+                if let Ok(pip) = shared.lock() {
+                    let _ = pip.tx.send(PipCmd::Restore);
+                }
+                ctx.request_repaint_of(egui::ViewportId::ROOT);
+                return;
+            }
+            // Once, because what it answers is binary: did this closure ever
+            // run at all. A window that appears and stays white is one that
+            // did not, which no amount of reading the callers can prove.
+            static FIRST_PASS: std::sync::Once = std::sync::Once::new();
+            FIRST_PASS.call_once(|| crate::log::line("[pip] first pass, real window"));
+            pip_ui(ctx, &shared);
+        });
     }
 
     fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
@@ -1973,6 +3121,7 @@ impl App {
 
         self.captions(ui, content);
         self.fullscreen_button(ui, ctx, content);
+        self.popout_button(ui, ctx, content);
         self.transport(ui, ctx, full);
         self.skip_pill(ctx);
         self.quality_menu(ctx);
@@ -2754,7 +3903,7 @@ impl App {
             });
         }
 
-        let changed = match (wanted, self.settings.window) {
+        let mut changed = match (wanted, self.settings.window) {
             (Some(new), Some(old)) => {
                 // A pixel of jitter is not a move. Without this, a window that
                 // reports 900.0001 forever rewrites the file forever.
@@ -2767,6 +3916,31 @@ impl App {
             (Some(_), None) => true,
             _ => false,
         };
+
+        // The popped-out window, on the same timer and by the same rule.
+        //
+        // Read from the other viewport's own input rather than pushed out of
+        // its closure: it is the same question asked of a different window, and
+        // `input_for` is how egui answers it. Only while the window exists —
+        // once it is gone the entry keeps whatever it last was, which is what
+        // makes the next pop-out the size of the last one.
+        if self.popped_out() {
+            let outer = ctx.input_for(pip_viewport(), |i| i.viewport().outer_rect);
+            if let Some(rect) = outer.filter(|rect| rect.width() > 1.0 && rect.height() > 1.0) {
+                let size = [rect.width(), rect.height()];
+                let at = [rect.min.x, rect.min.y];
+                let moved = |old: Option<[f32; 2]>, new: [f32; 2]| {
+                    old.is_none_or(|old| {
+                        (old[0] - new[0]).abs() > 1.0 || (old[1] - new[1]).abs() > 1.0
+                    })
+                };
+                if moved(self.settings.pip_size, size) || moved(self.settings.pip_position, at) {
+                    self.settings.pip_size = Some(size);
+                    self.settings.pip_position = Some(at);
+                    changed = true;
+                }
+            }
+        }
 
         if changed {
             self.settings.window = wanted;
@@ -2982,6 +4156,46 @@ impl App {
         self.spawn_open(uri, transport, 0.0, stream::JoinAt::Start);
     }
 
+    /// Pop the picture out on a timer, once, for a script with no hands.
+    ///
+    /// `CLICKER_POP=1500` sends the picture to its own window a second and a
+    /// half after the first frame arrives. Its reason is `CLICKER_PLAY`'s:
+    /// the questions this window asks — where does it stack, what is in it
+    /// when it first appears — can only be answered by watching a real
+    /// pop-out happen, and driving one with synthetic keystrokes means
+    /// taking the keyboard away from whoever else is using the machine, on
+    /// the very desktop whose stacking is what is being measured. A number in
+    /// the environment asks nobody for anything.
+    fn pop_from_environment(&mut self, ctx: &egui::Context) {
+        if self.environment_popped {
+            return;
+        }
+        let Some(after) = std::env::var("CLICKER_POP")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        else {
+            self.environment_popped = true;
+            return;
+        };
+        // Measured from the picture, not from the launch: what is being
+        // watched is a pop-out from a window that is really playing, and how
+        // long the stream takes to open is the network's business.
+        let playing = self
+            .player
+            .as_ref()
+            .map(|p| p.video_size().0 > 0)
+            .unwrap_or(false);
+        if !playing {
+            return;
+        }
+        let since = *self.environment_playing_at.get_or_insert(Instant::now());
+        if since.elapsed() < std::time::Duration::from_millis(after) {
+            return;
+        }
+        self.environment_popped = true;
+        self.pop_out(ctx);
+    }
+
     /// Open a source off the UI thread.
     ///
     /// `Player::open` blocks on the network — a connection, then a probe of
@@ -3007,6 +4221,12 @@ impl App {
         let tx = self.tx.clone();
         let notify = self.repaint.clone();
         let frame_repaint = self.repaint.clone();
+        // The cell, not the id. This closure is called from the decoder's own
+        // thread, where `Context::viewport_id` answers `ROOT` whatever window
+        // the picture is actually in — so it has to ask which one that is, on
+        // every frame, and aim there. Cloned per player, so popping in and out
+        // across a channel change keeps working.
+        let host = self.popped_out.clone();
         // Read here rather than on the thread: the settings belong to the
         // interface and the thread must not reach back into them.
         let software_decoding = self.settings.software_decoding;
@@ -3075,7 +4295,17 @@ impl App {
                 transport,
                 software_decoding,
                 scaling,
-                move || frame_repaint.request_repaint(),
+                move || {
+                    // Every frame, unconditionally. A "skip the ask while
+                    // one is outstanding" gate lived here for an afternoon:
+                    // a paint skipped while another window covered the
+                    // picture left the gate shut, no frame ever presented
+                    // again, and the window came back from under showing
+                    // whatever had covered it. Sixty dumb asks a second is
+                    // the reliable amount of clever.
+                    let host = video_host(host.load(std::sync::atomic::Ordering::Relaxed));
+                    frame_repaint.request_repaint_of(host);
+                },
             )
             .map(Arc::new);
             let _ = tx.send(Msg::PlayerOpened {
@@ -3390,34 +4620,9 @@ impl App {
         }
         let fade = |c: egui::Color32, a: u8| with_alpha(c, (a as f32 * opacity) as u8);
 
-        const SIZE: f32 = 38.0;
-        let at = egui::Rect::from_min_size(
-            egui::pos2(rect.max.x - SIZE - SPACE_L, rect.min.y + SPACE_L),
-            egui::vec2(SIZE, SIZE),
-        );
-
-        let response = ui.interact(at, egui::Id::new("fullscreen-corner"), egui::Sense::click());
-        let hover = ctx.animate_bool_with_time(
-            egui::Id::new("fullscreen-corner-hover"),
-            response.hovered(),
-            theme::ANIM_FAST,
-        );
-
-        let painter = ui.painter();
-        painter.rect_filled(
-            at,
-            theme::RADIUS_CONTROL,
-            fade(
-                theme::mix(Fluent::LAYER_CARD, Fluent::CONTROL_HOVER, hover),
-                215,
-            ),
-        );
-        painter.rect_stroke(
-            at,
-            theme::RADIUS_CONTROL,
-            egui::Stroke::new(1.0, fade(Fluent::STROKE_CONTROL, 255)),
-        );
-        painter.text(
+        let at = corner_slot(rect, 0);
+        let response = corner_button(ui, ctx, at, "fullscreen-corner", opacity);
+        ui.painter().text(
             at.center(),
             egui::Align2::CENTER_CENTER,
             if self.fullscreen {
@@ -3429,9 +4634,6 @@ impl App {
             fade(Fluent::TEXT_PRIMARY, 255),
         );
 
-        if response.hovered() {
-            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
         let response = response.on_hover_text(if self.fullscreen {
             "Leave full screen (F11)"
         } else {
@@ -3442,73 +4644,47 @@ impl App {
         }
     }
 
-    /// Closed captions, drawn over the picture.
+    /// Pop the picture out into its own window: full screen's opposite number,
+    /// and sat beside it for that reason.
     ///
-    /// Sat above the transport rather than behind it: a caption hidden under
-    /// the controls is worse than one that moves, so it rides up when they are
-    /// showing and drops back down when they fade.
-    ///
-    /// Drawn on a plate rather than with an outline. Broadcast captions land
-    /// on whatever the picture happens to be, and white-on-white is a caption
-    /// that is not there — which is the whole failure this is meant to fix.
+    /// Only offered where it can be honoured. In full screen there is no
+    /// interface to browse behind the picture, which is the entire reason this
+    /// exists, so the button steps aside rather than doing something the
+    /// window would immediately have to undo.
+    fn popout_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
+        if self.fullscreen {
+            return;
+        }
+        let opacity = self.controls_opacity(ctx);
+        if opacity <= 0.001 {
+            return;
+        }
+
+        let at = corner_slot(rect, 1);
+        let response = corner_button(ui, ctx, at, "popout-corner", opacity);
+        pip_mark(
+            ui.painter(),
+            at,
+            with_alpha(Fluent::TEXT_PRIMARY, (255.0 * opacity) as u8),
+        );
+
+        let response = response.on_hover_text("Picture in picture");
+        if response.clicked() {
+            self.pop_out(ctx);
+        }
+    }
+
+    /// Closed captions in the main window.
     fn captions(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let Some(player) = &self.player else { return };
         let Some(text) = player.caption() else { return };
-        if text.is_empty() {
-            return;
-        }
-
-        let controls_up = self.last_activity.elapsed().as_secs_f32() < 3.2;
-        let lift = if controls_up { 112.0 } else { 40.0 };
-
-        // Scaled to the window. A fixed size is most of the picture on a small
-        // window and a whisper on a large one.
-        let size = (rect.width() / 46.0).clamp(13.0, 26.0);
-        // Monospaced and upper case, which is the look a caption decoder has:
-        // CEA-608 is a fixed 32-column grid of capitals, and rendering it in a
-        // proportional face reads as a film subtitle rather than as captions.
-        let font = egui::FontId::monospace(size);
-        let upper = text.to_uppercase();
-
-        let lines: Vec<&str> = upper
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
-        if lines.is_empty() {
-            return;
-        }
-
-        // Laid out first, because the block is drawn upwards from the bottom
-        // and its height is not known until every line has been measured.
-        let max_width = rect.width() * 0.86;
-        let galleys: Vec<_> = lines
-            .iter()
-            .map(|line| {
-                ui.painter()
-                    .layout((*line).to_string(), font.clone(), Fluent::TEXT_PRIMARY, max_width)
-            })
-            .collect();
-
-        let pad = egui::vec2(size * 0.5, size * 0.16);
-        let block: f32 = galleys.iter().map(|g| g.size().y + pad.y * 2.0).sum();
-        let mut y = rect.max.y - lift - block;
-
-        for galley in galleys {
-            let line_size = galley.size();
-            let origin = egui::pos2(rect.center().x - line_size.x / 2.0, y + pad.y);
-            // A box per line, tight to the text, with square corners. One
-            // rounded box around the whole block is a subtitle; the ragged
-            // per-line box is what makes it read as a caption.
-            let plate = egui::Rect::from_min_size(
-                egui::pos2(origin.x - pad.x, y),
-                egui::vec2(line_size.x + pad.x * 2.0, line_size.y + pad.y * 2.0),
-            );
-            ui.painter()
-                .rect_filled(plate, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 235));
-            ui.painter().galley(origin, galley, Fluent::TEXT_PRIMARY);
-            y += line_size.y + pad.y * 2.0;
-        }
+        draw_captions(
+            ui,
+            rect,
+            &text,
+            self.last_activity.elapsed().as_secs_f32() < 3.2,
+            112.0,
+        );
     }
 
     /// The transport, drawn over the picture as a single Fluent surface.
@@ -4275,7 +5451,13 @@ fn resize_borders(ui: &mut egui::Ui, ctx: &egui::Context, full: egui::Rect, full
 /// The custom caption. Undecorated windows have to provide their own, which is
 /// what lets the material run edge to edge instead of stopping below a system
 /// title bar.
-fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: bool) {
+fn title_bar(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    rect: egui::Rect,
+    online: bool,
+    popped_out: bool,
+) -> bool {
     // Past the traffic lights, where a platform has put some. On the others
     // the inset is zero and this is the same left margin it always was.
     let left = rect.min.x + SPACE_L + platform::CAPTION_INSET;
@@ -4288,6 +5470,44 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: b
         Fluent::TEXT_SECONDARY,
     );
 
+    // The way back to a picture that is playing in another window.
+    //
+    // Here rather than over the screen, which was the first attempt and was
+    // wrong: every browse screen puts its own controls along the top of the
+    // content area — a sort menu on Recordings, Clear Finished on Downloads —
+    // and a floating button in that corner sits on top of them and swallows
+    // their clicks. The caption is chrome. Nothing else is ever drawn in it,
+    // it is present on every screen, and a small mark beside the application's
+    // own name is exactly how a window says something of its is playing.
+    let chip = egui::Rect::from_center_size(
+        egui::pos2(left + 58.0, rect.center().y),
+        egui::vec2(30.0, rect.height() - 10.0),
+    );
+    let mut restore = false;
+    // Registered before the caption's drag, and drawn after it, so a press
+    // lands on the button rather than starting a window move.
+    if popped_out {
+        let response = ui.interact(chip, egui::Id::new("caption-pip"), egui::Sense::click());
+        let hover = ctx.animate_bool_with_time(
+            egui::Id::new("caption-pip-hover"),
+            response.hovered(),
+            theme::ANIM_FAST,
+        );
+        let painter = ui.painter();
+        painter.rect_filled(
+            chip,
+            theme::RADIUS_CONTROL,
+            theme::mix(egui::Color32::TRANSPARENT, Fluent::CONTROL_HOVER, hover),
+        );
+        pip_mark(painter, chip, Fluent::ACCENT);
+        if response.hovered() {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        restore = response
+            .on_hover_text("Bring the picture back into this window")
+            .clicked();
+    }
+
     // Say so when the server has gone.
     //
     // Everything on screen was fetched while it was still there, so without
@@ -4295,7 +5515,11 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: b
     // being interesting — which is how one ends up being relaunched instead of
     // waited for.
     if !online {
-        let at = egui::pos2(left + 68.0, rect.center().y);
+        let painter = ui.painter();
+        // Past the picture-in-picture mark when there is one, rather than
+        // under it: both of these are things the caption says about right now.
+        let x = if popped_out { chip.max.x + SPACE_S } else { left + 68.0 };
+        let at = egui::pos2(x, rect.center().y);
         painter.circle_filled(egui::pos2(at.x + 5.0, at.y), 4.0, Fluent::LIVE);
         painter.text(
             egui::pos2(at.x + 16.0, at.y),
@@ -4317,7 +5541,7 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: b
     // quickest way to look like a port. Everything above still applies; only
     // the buttons are the system's.
     if platform::NATIVE_FRAME {
-        return;
+        return restore;
     }
 
     // Caption buttons, laid out right to left in the Windows order.
@@ -4371,6 +5595,8 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect, online: b
             }
         }
     }
+
+    restore
 }
 
 enum CaptionAction {

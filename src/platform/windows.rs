@@ -26,6 +26,14 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
     viewport.with_decorations(false)
 }
 
+/// Whether asking to stay on top is a request this desktop will simply ignore.
+///
+/// Never. `WindowLevel::AlwaysOnTop` becomes `WS_EX_TOPMOST`, which is the
+/// oldest promise in this window manager and is kept.
+pub fn desktop_owns_stacking() -> bool {
+    false
+}
+
 /// Dark title-bar tinting, and rounded corners where the system has them.
 ///
 /// This used to ask DWM for Mica as well, which is what made the application
@@ -71,6 +79,162 @@ pub fn apply_chrome(handle: isize, dark: bool) {
     }
 }
 
+/// Round the popped-out picture's corners, the way `apply_chrome` rounds the
+/// main window's.
+///
+/// Windows 11 rounds every window that owns a frame and leaves undecorated
+/// ones square, so a window that is nothing but picture ships with the only
+/// sharp corners on the desktop unless it asks. It has to be found by title:
+/// the main window's handle came from eframe at startup, and a deferred
+/// viewport's handle is never exposed. Windows 10 has no corner attribute and
+/// rejects the call, which is why nothing is checked — square is correct
+/// there.
+/// This process's own top-level window with exactly this title, if any.
+///
+/// Not `FindWindowW`: that matches across every process on the desktop, and
+/// two copies of this program running at once — an installed one and a test
+/// build, say — each found the *other's* picture-in-picture window and
+/// hid/showed/redressed it. Two players blinking each other's windows looks
+/// exactly as broken as it sounds. The title is still the handle (eframe
+/// never exposes a deferred viewport's HWND); the process id is the fence.
+fn find_own_window(title: &str) -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextW, GetWindowThreadProcessId,
+    };
+
+    struct Search {
+        wanted: Vec<u16>,
+        found: Option<HWND>,
+    }
+    unsafe extern "system" fn visit(
+        hwnd: HWND,
+        lparam: LPARAM,
+    ) -> windows::Win32::Foundation::BOOL {
+        let search = &mut *(lparam.0 as *mut Search);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != std::process::id() {
+            return true.into();
+        }
+        let mut text = [0u16; 128];
+        let len = GetWindowTextW(hwnd, &mut text) as usize;
+        if text[..len] == search.wanted[..search.wanted.len() - 1] {
+            search.found = Some(hwnd);
+            return false.into();
+        }
+        true.into()
+    }
+
+    let mut search = Search {
+        wanted: wide(title),
+        found: None,
+    };
+    unsafe {
+        // Err when the callback stops the walk early — which is the found
+        // case, not a failure.
+        let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize));
+    }
+    search.found
+}
+
+pub fn dress_pip(title: &str) {
+    if let Some(hwnd) = find_own_window(title) {
+        dress_window(hwnd);
+    }
+}
+
+/// Everything the popped-out window should be wearing: round corners, and the
+/// top of the pile.
+///
+/// The raise comes without the activation. The style bit alone was not enough
+/// — the window still spawned behind — so the z-order is set explicitly. But
+/// quietly: called from `dress_pip` this runs *inside* the window's first
+/// pass, and a `SetForegroundWindow` here sends the whole activation cascade
+/// back into the window procedure mid-paint, after which the window never
+/// presents a frame again. Guest-side screenshots showed it simply absent
+/// from the composition while its blits counted merrily on. Treat any
+/// programmatic activation of this window as suspect; winit makes it
+/// foreground at creation on its own, when it is created visible at all.
+fn dress_window(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+
+    unsafe {
+        let corner = DWMWCP_ROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner as *const _ as *const _,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+    raise_window(hwnd);
+}
+
+/// Say again that this window floats above the others.
+///
+/// Not a no-op even when the bit is already set, which is the whole reason
+/// this is its own function. Under Parallels the main window changing shape —
+/// a maximize, a resize, a drag that ends somewhere new — leaves the picture
+/// behind it on screen while every probe still swears the picture is topmost:
+/// `WS_EX_TOPMOST` set, above the main window in the desktop's own z-order,
+/// its mirror listed in front on the Mac side, and `PrintWindow` showing live
+/// video inside it. The pixels are there and simply not composited. Saying
+/// the same thing again — the same call, the same flags, changing nothing —
+/// is what puts them back, immediately and without a flicker.
+fn raise_window(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// Where a window is, packed small enough to keep in one atomic.
+///
+/// Only ever compared with itself, so the packing may be lossy at the edges
+/// of a very large desktop; what it has to catch is a window changing shape,
+/// and no maximize is subtle enough to hide in the low sixteen bits.
+fn window_shape(handle: isize) -> u64 {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut rect = RECT::default();
+    unsafe {
+        if GetWindowRect(HWND(handle as *mut _), &mut rect).is_err() {
+            return 0;
+        }
+    }
+    let part = |v: i32| (v as u64) & 0xffff;
+    part(rect.left) | part(rect.top) << 16 | part(rect.right) << 32 | part(rect.bottom) << 48
+}
+
+/// Whether this window's thread is inside a native move or resize loop.
+fn in_move_or_size(handle: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO, GUI_INMOVESIZE,
+    };
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        let thread = GetWindowThreadProcessId(HWND(handle as *mut _), None);
+        GetGUIThreadInfo(thread, &mut info).is_ok() && info.flags.contains(GUI_INMOVESIZE)
+    }
+}
+
 /// The app's own window handle, for the DWM attributes and for the tray.
 ///
 /// Taken from the window itself rather than GetForegroundWindow: the app is not
@@ -83,6 +247,329 @@ pub fn window_handle(cc: &eframe::CreationContext<'_>) -> Option<isize> {
         RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
         _ => None,
     }
+}
+
+/// Make a window paint, from any thread, now rather than at the queue's mercy.
+///
+/// The ordinary path — invalidate and wait for `WM_PAINT` — only delivers
+/// when the thread's message queue goes idle, and the synthesis that happens
+/// then picks *one* dirty window, preferring the topmost. While the
+/// popped-out picture repaints at video rate it is always the topmost and
+/// always dirty again by the next idle, so the main window loses every draw:
+/// measured at two paints a second against the thirty asked for, with plain
+/// `InvalidateRect` at any cadence. `RDW_UPDATENOW` is the documented way
+/// out: it delivers the `WM_PAINT` for the region this call itself dirties
+/// before returning, riding the cross-thread send path rather than entering
+/// the idle lottery at all. (A hand-made *posted* `WM_PAINT` is not the same
+/// thing and crashed the process within seconds — a paint the window system
+/// never booked. This one is booked by the invalidate half of the same
+/// call.)
+pub fn request_window_paint(handle: isize) {
+    use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{RedrawWindow, RDW_INVALIDATE, RDW_UPDATENOW};
+
+    // Not while somebody is dragging the window by its caption.
+    //
+    // A native move loop is a message loop of its own, and it advances the
+    // window one mouse message at a time. A paint forced into it is not a
+    // paint the loop asked for: it is sent, it is synchronous, and the loop
+    // cannot look at the mouse again until the whole browse screen has been
+    // drawn. Sixty of those a second is a window that follows the pointer in
+    // steps — which is exactly what dragging felt like. A few a second keeps
+    // the screen alive under the drag and leaves the rest of the time to the
+    // pointer.
+    if in_move_or_size(handle) {
+        static BEAT: AtomicU32 = AtomicU32::new(0);
+        if BEAT.fetch_add(1, Relaxed) % 8 != 0 {
+            return;
+        }
+    }
+    unsafe {
+        let _ = RedrawWindow(
+            HWND(handle as *mut _),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_UPDATENOW,
+        );
+    }
+}
+
+// --- the popped-out window's first moments -----------------------------------
+
+/// Whether the popped-out window has to be born hidden and shown by hand.
+///
+/// Yes here, because of a window manager that is not this desktop's own.
+/// Under Parallels Coherence every guest window is mirrored as a window on
+/// the Mac side, and the mirror's stacking is settled when the mirror is
+/// made — which happens at `CreateWindow`, milliseconds before any code of
+/// ours gets to say "always on top". Born visible, the mirror is born behind
+/// the main window and stays there while every probe inside Windows swears
+/// the window is topmost and frontmost: the `WS_EX_TOPMOST` bit is real, the
+/// mirror simply never hears about it. Re-asserting topmost afterwards does
+/// not move it — the mirror visibly reacts and settles behind again.
+///
+/// What did move it was blinking the window off and on, which makes Parallels
+/// build the mirror over. But only once the window was old enough to have
+/// been mirrored at all: done in the window's first frames the blink was
+/// invisible to Parallels, and what the person watching got was a picture
+/// that arrived wearing the main window's pixels and then sank behind it.
+///
+/// So the window is not shown at all until it is ready to be seen. It is
+/// created hidden, given the topmost bit and its rounded corners while
+/// nobody can see it, and only then shown — at which point the mirror is
+/// made, for the first time, from a window that already is what it claims to
+/// be. Nothing at all is on screen in the meantime, which is strictly better
+/// than the wrong thing being on screen. `tend_pip` does the timing.
+pub fn pip_born_hidden() -> bool {
+    strategy() != Strategy::Blink
+}
+
+/// Which cure for Coherence's stacking is in force.
+///
+/// Two mechanisms, because one fact about Parallels cannot be established
+/// from inside the guest: whether the mirror is made when the window is
+/// *created* or when it is first *shown*. If it is the showing, being born
+/// hidden is the whole cure and a blink afterwards would only be a flicker;
+/// if it is the creation, the window needs the blink as well, timed from the
+/// moment it became visible. Both are in the tree so that settling it is a
+/// matter of running one build three ways rather than building three times —
+/// `CLICKER_PIP=hidden|blink|both`, read once, default the first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Strategy {
+    /// Born hidden, shown once it is ready to be seen.
+    Hidden,
+    /// Born visible and blinked, the way it was done before hiding existed.
+    Blink,
+    /// Born hidden, shown, and then blinked once for good measure.
+    Both,
+}
+
+fn strategy() -> Strategy {
+    static CHOICE: std::sync::OnceLock<Strategy> = std::sync::OnceLock::new();
+    *CHOICE.get_or_init(|| match std::env::var("CLICKER_PIP").ok().as_deref() {
+        Some("blink") => Strategy::Blink,
+        Some("both") => Strategy::Both,
+        _ => Strategy::Hidden,
+    })
+}
+
+/// How long the window is left alone before it is shown, in milliseconds.
+///
+/// Four hundred, which is the one number this platform has evidence for: the
+/// blink was honored at 400ms and ignored at 32ms, so whatever Parallels
+/// needs settled takes something between the two. The wait costs nothing
+/// visible now that the window spends it hidden — the picture arrives a
+/// moment after the key rather than instantly and wrong. `CLICKER_PIP_MS`
+/// tunes it from the bench.
+fn reveal_ms() -> u64 {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MS.get_or_init(|| {
+        std::env::var("CLICKER_PIP_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(400)
+    })
+}
+
+/// How long after the showing the extra blink lands, under `CLICKER_PIP=both`.
+const BLINK_AFTER_MS: u64 = 400;
+
+/// How long to keep looking for a window that ought to exist by now.
+const GIVE_UP_MS: u64 = 3000;
+
+/// Keep the popped-out window's birth in order, from the wake thread.
+///
+/// Called every beat while the picture is out, with how long it has been
+/// out. Off the interface thread on purpose: window messages sent into a
+/// pass are what made this window stop presenting once already.
+///
+/// The window is found by title — eframe never exposes a deferred viewport's
+/// handle — and then remembered, so the walk over every window on the desktop
+/// happens once per pop-out rather than sixty times a second.
+pub fn tend_pip(title: &str, root: Option<isize>, age_ms: u64) {
+    use std::sync::atomic::{AtomicIsize, AtomicU32, AtomicU64, Ordering::Relaxed};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IsWindow, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOWNA,
+    };
+
+    const WAITING: u32 = 0;
+    const SHOWN: u32 = 1;
+    const DONE: u32 = 2;
+    const LOST: u32 = 3;
+
+    /// How often the picture is told it floats even when nothing happened.
+    /// A floor under the shape-change trigger, for whatever else this
+    /// desktop's compositor can lose it to.
+    const REASSERT_MS: u64 = 1000;
+
+    /// How long after the window is shown it keeps being told, every beat.
+    ///
+    /// The mirror is built when the window appears, and under Parallels it is
+    /// not built in one go: for the first fraction of a second afterwards it
+    /// can still settle behind the main window — which is what the person
+    /// watching described as the picture spawning behind and then coming
+    /// forward. Saying it again on every beat through that window costs a few
+    /// syscalls and holds the picture in front from the first frame anybody
+    /// sees.
+    const SETTLE_MS: u64 = 600;
+
+    static STAGE: AtomicU32 = AtomicU32::new(WAITING);
+    static LAST_AGE: AtomicU64 = AtomicU64::new(u64::MAX);
+    static HANDLE: AtomicIsize = AtomicIsize::new(0);
+    static HEALS: AtomicU32 = AtomicU32::new(0);
+    static ROOT_SHAPE: AtomicU64 = AtomicU64::new(0);
+    static RAISED_AT: AtomicU64 = AtomicU64::new(0);
+    static SHOWN_AT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+    // A window's age only ever grows, so an age that did not is a different
+    // window: the picture came home and went out again, and nothing learned
+    // about the last one applies to this one.
+    if age_ms <= LAST_AGE.swap(age_ms, Relaxed) {
+        STAGE.store(WAITING, Relaxed);
+        HANDLE.store(0, Relaxed);
+        HEALS.store(0, Relaxed);
+        ROOT_SHAPE.store(0, Relaxed);
+        RAISED_AT.store(0, Relaxed);
+        SHOWN_AT.store(u64::MAX, Relaxed);
+    }
+
+    // Show it without taking the keyboard, and make it paint at once: a
+    // hidden window is never sent `WM_PAINT`, so this one has not drawn a
+    // frame yet and its first exposed pixels would otherwise be whatever the
+    // window system had lying around — which is the very thing being fixed.
+    // The paint is delivered synchronously; see `request_window_paint` for
+    // why that is the lawful way to ask for one.
+    let show = |hwnd: HWND| unsafe {
+        dress_window(hwnd);
+        let _ = ShowWindow(hwnd, SW_SHOWNA);
+        request_window_paint(hwnd.0 as isize);
+    };
+    // Make Parallels build its mirror over: gone, dressed while nobody is
+    // looking, back without the keyboard.
+    let blink = |hwnd: HWND| unsafe {
+        let _ = ShowWindow(hwnd, SW_HIDE);
+        dress_window(hwnd);
+        let _ = ShowWindow(hwnd, SW_SHOWNA);
+    };
+
+    match STAGE.load(Relaxed) {
+        WAITING => {
+            if age_ms < reveal_ms() {
+                return;
+            }
+            let Some(hwnd) = find_own_window(title) else {
+                if age_ms >= GIVE_UP_MS {
+                    STAGE.store(LOST, Relaxed);
+                    crate::log::line("[pip] no window ever turned up to show");
+                }
+                return;
+            };
+            HANDLE.store(hwnd.0 as isize, Relaxed);
+            if strategy() == Strategy::Blink {
+                blink(hwnd);
+                STAGE.store(DONE, Relaxed);
+                crate::log::line(&format!("[pip] blinked at {age_ms}ms"));
+            } else {
+                show(hwnd);
+                SHOWN_AT.store(age_ms, Relaxed);
+                STAGE.store(SHOWN, Relaxed);
+                crate::log::line(&format!("[pip] shown at {age_ms}ms"));
+            }
+        }
+        stage @ (SHOWN | DONE) => {
+            let remembered = HANDLE.load(Relaxed);
+            let mut hwnd = HWND(remembered as *mut _);
+            // The handle can die under us: eframe rebuilds a viewport's
+            // window when a builder change cannot be applied to the one it
+            // has, and the replacement is born hidden like the last one.
+            if remembered == 0 || unsafe { !IsWindow(hwnd).as_bool() } {
+                let Some(found) = find_own_window(title) else {
+                    return;
+                };
+                hwnd = found;
+                HANDLE.store(hwnd.0 as isize, Relaxed);
+            }
+
+            if stage == SHOWN {
+                if strategy() == Strategy::Both && age_ms < reveal_ms() + BLINK_AFTER_MS {
+                    return;
+                }
+                if strategy() == Strategy::Both {
+                    blink(hwnd);
+                    crate::log::line(&format!("[pip] blinked at {age_ms}ms"));
+                }
+                STAGE.store(DONE, Relaxed);
+                return;
+            }
+
+            // The one failure this scheme has that the old one did not: a
+            // window that is hidden and stays hidden. The picture is meant to
+            // be on screen for as long as it is popped out, so if it is not,
+            // show it — a beat late beats never, and it means no bookkeeping
+            // mistake anywhere else can cost the person their picture.
+            // Counted, because a heal every beat would mean something is
+            // hiding it back and the log should say so.
+            if unsafe { !IsWindowVisible(hwnd).as_bool() } {
+                show(hwnd);
+                let n = HEALS.fetch_add(1, Relaxed) + 1;
+                if n <= 3 || n % 60 == 0 {
+                    crate::log::line(&format!("[pip] window had gone hidden; shown again (#{n})"));
+                }
+                return;
+            }
+
+            // Say it floats again whenever the main window changes shape.
+            //
+            // That is the moment this desktop loses it: maximize the main
+            // window, or resize it over the picture, and the picture stops
+            // being drawn while every probe still says it is on top — see
+            // `raise_window`. The shape is read every beat because it is two
+            // syscalls and no allocation, and the picture is only told
+            // anything on the beats where something actually moved. The
+            // timer underneath catches whatever the shape does not.
+            //
+            // Never during a drag: the same thread is inside a modal move
+            // loop then, and a window position command from outside it is
+            // how a drag gets dropped halfway.
+            let shape = root.map_or(0, window_shape);
+            let moved = shape != 0 && shape != ROOT_SHAPE.swap(shape, Relaxed);
+            let due = age_ms.saturating_sub(RAISED_AT.load(Relaxed)) >= REASSERT_MS;
+            let settling = age_ms.saturating_sub(SHOWN_AT.load(Relaxed)) < SETTLE_MS;
+            if (moved || due || settling) && !root.is_some_and(in_move_or_size) {
+                raise_window(hwnd);
+                RAISED_AT.store(age_ms, Relaxed);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// How often to beat the heart that keeps the main window painting while the
+/// picture is popped out.
+///
+/// Every beat is a whole browse screen drawn, forced, whether anything
+/// changed or not — so this number is the price of the feature, paid sixty
+/// seconds a minute for as long as the picture is out. It started at 16ms
+/// because `InvalidateRect` used to lose a lottery to the popped window and
+/// no cadence helped; with `RedrawWindow` the rate is exactly what is asked
+/// for, and asking for sixty a second bought nothing but heat — a browse
+/// screen nobody is looking at does not need more frames than a browse
+/// screen anybody is looking at. Thirty is smooth to the hand and half the
+/// work; the channel from the popped window is drained on the same beat, so
+/// its buttons still answer within a frame.
+///
+/// `CLICKER_PIP_WAKE` overrides it from the bench, in milliseconds.
+pub fn pip_wake_ms() -> u64 {
+    static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *MS.get_or_init(|| {
+        std::env::var("CLICKER_PIP_WAKE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|ms| *ms > 0)
+            .unwrap_or(33)
+    })
 }
 
 /// Bring the window back and put it in front, from any thread.

@@ -85,6 +85,10 @@ source, or uninstall — and only offers what the machine can actually do.
   Windows only: macOS has the Dock for this and Linux has no tray worth
   relying on
 - **Reconnects by itself** after sleep, a network change or a DVR restart
+- **Picture in picture** — pop the video into a small frameless window that
+  stays on top, and browse the guide behind it. Drag it anywhere, resize it
+  from the corner, and it comes back where you left it next time. See below
+  for what Wayland makes of "stays on top"
 - Full screen, an auto-hiding transport, and keyboard control throughout
 
 ## What it cannot do
@@ -105,6 +109,28 @@ User-Agent, where it reaches the logs and stops.
 handles and the dark window chrome are all Win32, and 1809 is the release that
 added the dark-mode attribute — below it a light system border is drawn around
 an application that is entirely dark.
+
+**On Wayland, the picture-in-picture window will not stay on top.** Not a bug
+here, and not one anybody can fix from inside an application: there is no
+Wayland protocol for a client to raise itself, and GNOME's position is that
+there will not be one — "there isn't a programmatic way to manipulate the
+window stack, by design." Firefox's picture-in-picture has had the identical
+limitation since 2020 ([bug 1621261][ffpip]) and closed it as something only
+the user can do by hand. Clicker asks to float on every platform, the request
+costs nothing, and on Wayland the compositor declines it. Three things do work,
+and the window is built to make all three easy:
+
+- **The desktop's own menu.** GNOME: Super and right-click the window, then
+  Always on Top. KDE: right-click its title bar → More Actions → Keep Above.
+- **A window rule, permanently.** The window carries a stable title, `Clicker —
+  Picture in Picture`, so a KWin rule matching that title with *Keep above:
+  Force* pins it for good.
+- **Run under XWayland.** `env -u WAYLAND_DISPLAY clicker` — winit falls back to
+  X11 when that variable is unset, and mutter honours `_NET_WM_STATE_ABOVE` for
+  X11 clients, so the pin simply works. The trades: the Adwaita client-side
+  decorations are inert under X11, and XWayland blurs under fractional scaling.
+
+[ffpip]: https://bugzilla.mozilla.org/show_bug.cgi?id=1621261
 
 **The window frame differs by platform, and only the frame.** Windows and Linux
 get the caption this application draws itself; macOS gets its own traffic

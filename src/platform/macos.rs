@@ -37,6 +37,17 @@ pub fn shape_window(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::Vi
         .with_title_shown(false)
 }
 
+/// Whether asking to stay on top is a request this desktop will simply ignore.
+///
+/// No: `WindowLevel::AlwaysOnTop` is an NSWindow floating level and it holds.
+/// The one thing it does not do is float over *another* application's
+/// full-screen Space, which wants an `NSWindowCollectionBehavior` on a native
+/// window handle that a deferred viewport does not have. That is a polish
+/// item, not a desktop declining the request, so it is not this.
+pub fn desktop_owns_stacking() -> bool {
+    false
+}
+
 // --- the menu bar ------------------------------------------------------------
 
 // The menu items this program owns, kept so their accelerators can be
@@ -268,6 +279,10 @@ pub fn install_menu_bar() {
         // a menu item promising a key the settings page has moved is exactly
         // the disagreement this whole arrangement exists to prevent.
         &item("fullscreen", "Full Screen", &mut registry),
+        // Full screen's opposite number, so it sits beside it. One line: the
+        // action id is what `handle_keys` acts on, and the accelerator comes
+        // from the same binding the settings page shows.
+        &item("popout", "Picture in Picture", &mut registry),
     ]);
 
     let window = Submenu::new("Window", true);
