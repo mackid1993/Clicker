@@ -2340,9 +2340,19 @@ fn picture_size(api: &Api, ctx: *mut c_void) -> (usize, usize) {
     (read("dwidth"), read("dheight"))
 }
 
+/// How long to leave an audio underrun alone before resyncing again.
+///
+/// A resync is a seek, and a seek that fires on every underrun during a run of
+/// them would be worse than the stall it is answering: the picture would stop
+/// on every recovery instead of running smoothly behind one. One underrun is a
+/// glitch worth recovering from; a stream of them is a machine with a problem
+/// no seek is going to solve.
+const RESYNC_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn event_loop(api: &'static Api, ctx: Ptr, shared: Arc<Shared>, resume_at: f64) {
     let mut resumed = resume_at <= 1.0;
     let mut announced = (0usize, 0usize);
+    let mut last_resync: Option<std::time::Instant> = None;
 
     while !shared.quit.load(Ordering::SeqCst) {
         // A real wait, not a poll. Rendering happens on the interface thread
@@ -2396,6 +2406,46 @@ fn event_loop(api: &'static Api, ctx: Ptr, shared: Arc<Shared>, resume_at: f64) 
                 let prefix = unsafe { CStr::from_ptr(message.prefix) }.to_string_lossy();
                 let text = unsafe { CStr::from_ptr(message.text) }.to_string_lossy();
                 crate::log::line(&format!("[mpv/{prefix}] {}", text.trim_end()));
+
+                // One audio device underrun wedges playback permanently, and
+                // this is where that is caught.
+                //
+                // Video is paced against the audio clock, and on Windows and
+                // macOS against a refresh rate mpv estimates from swap timings
+                // as well. An underrun disturbs both. What was measured: sixty
+                // frames a second and a hundred and sixty-five repaints,
+                // "Audio device underrun detected", and three seconds later
+                // 31.7fps with the drop counter climbing — for eleven more
+                // minutes, until the session ended. The decoder held 60fps
+                // throughout and nothing was ever late. mpv had simply decided
+                // every other frame was, and had no reason to reconsider.
+                //
+                // A seek is the remedy because a seek flushes the decoders and
+                // rebuilds the sync from what is actually arriving, which is
+                // why seeking to the live edge cleared it by hand. Relative
+                // zero and exact: it lands where it already was, so live stays
+                // live and a recording keeps its place. On a stream that
+                // cannot seek there is nothing to be done and mpv says so.
+                if text.contains("Audio device underrun") {
+                    let now = std::time::Instant::now();
+                    match last_resync {
+                        Some(previous) if now.duration_since(previous) < RESYNC_COOLDOWN => {
+                            crate::log::line(
+                                "[mpv] audio underrun again inside the cooldown; not resyncing",
+                            );
+                        }
+                        _ => {
+                            last_resync = Some(now);
+                            crate::log::line("[mpv] audio underrun; resyncing in place");
+                            let seek = CString::new("seek").unwrap();
+                            let to = CString::new("0").unwrap();
+                            let mode = CString::new("relative+exact").unwrap();
+                            let argv =
+                                [seek.as_ptr(), to.as_ptr(), mode.as_ptr(), std::ptr::null()];
+                            unsafe { (api.command)(ctx.0, argv.as_ptr()) };
+                        }
+                    }
+                }
             }
             _ => {}
         }
