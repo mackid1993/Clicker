@@ -616,6 +616,14 @@ fn picture_for(scaling: crate::settings::Scaling) -> Picture {
 /// the interface swapping at the compositor's. That is the real reason the
 /// render thread is not the default where the display sets the pace, and it
 /// is written here rather than in a commit nobody will find.
+/// Worth knowing, and not acted on: mpv reports `display-fps 0.0` and
+/// `estimated-display-fps 0.0` on Windows here, on a 165Hz panel, because it
+/// owns no window in this embedding and so has no vsync to measure. Switching
+/// Windows to the audio clock on the strength of that changed nothing —
+/// the drops had another cause entirely, which is written up on
+/// `Player::stats` — so it was put back rather than left in as a change that
+/// fixed nothing. If display pacing is ever suspected again, that zero is
+/// where to start.
 const PACES_ON_DISPLAY: bool = !cfg!(target_os = "linux");
 
 /// Where mpv is asked to draw its picture.
@@ -734,6 +742,19 @@ struct Surface {
     painted: bool,
 }
 
+/// One sample of the properties the interface reads while drawing.
+///
+/// See [`Player::stats`], which is where the reason lives.
+#[derive(Clone, Copy, Default)]
+struct Stats {
+    position: Option<f64>,
+    duration: Option<f64>,
+    buffered: f64,
+    avsync: f64,
+    dropped: u64,
+    decoder_dropped: u64,
+}
+
 pub struct Player {
     api: &'static Api,
     ctx: Ptr,
@@ -752,6 +773,9 @@ pub struct Player {
     /// else.
     threaded: std::sync::OnceLock<Option<Arc<worker::Link>>>,
     render_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The properties the interface reads while drawing, sampled together.
+    /// See [`Stats`] for why they are not read one at a time.
+    stats: Mutex<(Stats, Option<std::time::Instant>)>,
     /// The interface's own framebuffers wrapping the worker's textures, per
     /// generation. Containers are per-context even when textures are shared.
     ui_fbos: Mutex<(u64, [u32; 2])>,
@@ -1151,6 +1175,7 @@ impl Player {
             threaded: std::sync::OnceLock::new(),
             render_thread: Mutex::new(None),
             ui_fbos: Mutex::new((0, [0, 0])),
+            stats: Mutex::new((Stats::default(), None)),
             shared,
             thread: Some(thread),
         })
@@ -1722,21 +1747,72 @@ impl Player {
         self.shared.rendered.load(Ordering::Relaxed)
     }
 
+    /// One sample of everything the interface reads while drawing a frame.
+    ///
+    /// Every field here is an `mpv_get_property`, and each of those takes
+    /// mpv's core lock. The interface was making about a dozen per painted
+    /// frame: the scrub bar wants the position and the range, the skip pill
+    /// wants both again, the commercial check wants the range, and the
+    /// statistics card wants seven more. At sixty frames a second, against a
+    /// decoder and a render thread contending for the same lock, the paint
+    /// loop stalls — and because mpv only delivers frames the interface asks
+    /// for, its drop counter climbs.
+    ///
+    /// Measured on a 165Hz panel: with the statistics card closed, 100fps
+    /// painted, 60fps drawn, six frames dropped and holding. Opening the card
+    /// took it to 38fps painted, 38fps drawn, and 204 dropped inside fifteen
+    /// seconds, while the render call itself stayed at 1.1ms and three percent
+    /// of a core. The instrument was causing the reading.
+    ///
+    /// A tenth of a second, because nothing here is watched closely enough to
+    /// tell: a progress bar moving in tenths reads as continuous, and the
+    /// counters beside it are read at a glance. Seeks clear it, so the one
+    /// case where a stale position would be visible is not one.
+    fn stats(&self) -> Stats {
+        const MAX_AGE: std::time::Duration = std::time::Duration::from_millis(100);
+
+        let mut held = self.stats.lock().unwrap();
+        if held.1.is_none_or(|at| at.elapsed() >= MAX_AGE) {
+            held.0 = Stats {
+                position: self.get_f64("time-pos"),
+                duration: self.get_f64("duration").filter(|d| *d > 0.0),
+                buffered: self.get_f64("demuxer-cache-duration").unwrap_or(0.0),
+                avsync: self.get_f64("avsync").unwrap_or(0.0),
+                dropped: self.get_i64("frame-drop-count").unwrap_or(0).max(0) as u64,
+                decoder_dropped: self
+                    .get_i64("decoder-frame-drop-count")
+                    .unwrap_or(0)
+                    .max(0) as u64,
+            };
+            held.1 = Some(std::time::Instant::now());
+        }
+        held.0
+    }
+
+    /// Throw the sample away, so the next read goes to mpv.
+    ///
+    /// After a seek, because that is the one moment the interface changes the
+    /// position itself and a tenth of a second of the old one would show as
+    /// the bar springing back under the cursor.
+    fn forget_stats(&self) {
+        self.stats.lock().unwrap().1 = None;
+    }
+
     pub fn dropped(&self) -> u64 {
-        self.get_i64("frame-drop-count").unwrap_or(0).max(0) as u64
+        self.stats().dropped
     }
 
     /// Frames the decoder threw away before they ever reached output, which is
     /// a different fault from `dropped` and has a different cause: the machine
     /// cannot decode in real time, rather than cannot present in time.
     pub fn decoder_dropped(&self) -> u64 {
-        self.get_i64("decoder-frame-drop-count").unwrap_or(0).max(0) as u64
+        self.stats().decoder_dropped
     }
 
     /// Seconds the picture is ahead of the sound. mpv's own figure, and the
     /// one number that says whether playback is actually correct.
     pub fn avsync(&self) -> f64 {
-        self.get_f64("avsync").unwrap_or(0.0)
+        self.stats().avsync
     }
 
     /// The stream's picture size, or zeros before there is one.
@@ -1751,7 +1827,7 @@ impl Player {
 
     /// Seconds of media read ahead of playback.
     pub fn buffered(&self) -> f64 {
-        self.get_f64("demuxer-cache-duration").unwrap_or(0.0)
+        self.stats().buffered
     }
 
     /// What fraction of one processor core mpv's software renderer is costing,
@@ -2233,11 +2309,11 @@ impl Player {
     }
 
     pub fn position(&self) -> Option<f64> {
-        self.get_f64("time-pos")
+        self.stats().position
     }
 
     pub fn duration(&self) -> Option<f64> {
-        self.get_f64("duration").filter(|d| *d > 0.0)
+        self.stats().duration
     }
 
     /// From zero, because mpv reports time from the start of the item whatever
@@ -2252,14 +2328,17 @@ impl Player {
     }
 
     pub fn seek_to(&self, secs: f64) -> bool {
+        self.forget_stats();
         self.is_seekable() && self.command(&["seek", &format!("{secs:.3}"), "absolute"])
     }
 
     pub fn seek_by(&self, delta: f64) -> bool {
+        self.forget_stats();
         self.is_seekable() && self.command(&["seek", &format!("{delta:.3}"), "relative"])
     }
 
     pub fn seek_to_live(&self) -> bool {
+        self.forget_stats();
         // The end of what is available, which for a growing playlist is the
         // live edge.
         self.command(&["seek", "100", "absolute-percent"])
