@@ -96,8 +96,17 @@ pub struct Collection {
     pub name: String,
     #[serde(default)]
     pub slug: String,
-    #[serde(default)]
+    /// `null` on the wire when the collection is empty, not `[]`: the server
+    /// is Go, and Go marshals a nil slice as `null`. Plain `#[serde(default)]`
+    /// only covers a *missing* key, so without the custom reader one
+    /// channel-less collection — created and not yet filled — refused to
+    /// parse at all.
+    #[serde(default, deserialize_with = "null_items")]
     pub items: Vec<String>,
+}
+
+fn null_items<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(Option::<Vec<String>>::deserialize(d)?.unwrap_or_default())
 }
 
 /// What the DVR already intends to record.
@@ -476,10 +485,18 @@ impl GuideApi {
             .collect();
         sources.sort();
 
-        let collections: Vec<Collection> = collections
-            .ok()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
+        // One element at a time. Parsing the whole array in one call made a
+        // single unreadable collection erase every other one — the error was
+        // swallowed and the picker simply had nothing in it, on a server where
+        // the collections were fine. A collection this client cannot read
+        // should cost exactly itself.
+        let collections: Vec<Collection> = match collections {
+            Ok(Value::Array(list)) => list
+                .into_iter()
+                .filter_map(|c| serde_json::from_value(c).ok())
+                .collect(),
+            _ => Vec::new(),
+        };
 
         // The window starts at the previous half hour, not at this exact
         // second. Listings are organized in half-hour slots, so a ruler that
