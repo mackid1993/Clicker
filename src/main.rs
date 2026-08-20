@@ -318,6 +318,10 @@ fn choose_opengl(asked: settings::Graphics) -> bool {
         }
     };
 
+    // Whether this launch could draw at all if it were left alone, which is
+    // the difference between a restart that rescues somebody and a restart
+    // that interrupts them.
+    let mut stranded = false;
     let wanted = match asked {
         Graphics::System => false,
         Graphics::Software => true,
@@ -325,7 +329,10 @@ fn choose_opengl(asked: settings::Graphics) -> bool {
         // processor this is also how the software renderer is given back when
         // the graphics start working — a driver installed after the fact, or a
         // session that is no longer remote.
-        Graphics::Automatic => !machine_can_draw(),
+        Graphics::Automatic => {
+            stranded = !machine_can_draw();
+            stranded
+        }
     };
 
     if wanted == drawing_on_processor {
@@ -339,6 +346,13 @@ fn choose_opengl(asked: settings::Graphics) -> bool {
         match platform::place_software_opengl() {
             Placement::Placed => {
                 log::logline!("[clicker] software renderer put in place; it draws from the next start");
+                // Only where there would otherwise be no window. A machine
+                // that can draw is left to finish the launch it is having: the
+                // setting says it applies at the next start, and taking that
+                // start without being asked is not the same promise.
+                if stranded {
+                    RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
             }
             Placement::Missing => {
                 log::logline!("[clicker] no software renderer to fall back to");
@@ -382,6 +396,20 @@ pub fn software_gl_in_use() -> bool {
 /// page reasoning from the picture would tell a machine that correctly chose
 /// the software renderer that it had been changed.
 static STARTED_WITH: std::sync::OnceLock<settings::Graphics> = std::sync::OnceLock::new();
+
+/// Whether this launch put the software renderer where the next one will find
+/// it, on a machine that cannot open a window without it.
+///
+/// The one case where starting again is the difference between a program and
+/// nothing at all: the library a process draws with is bound before its own
+/// code runs, so the copy this launch just made is of no use to it. It happens
+/// once on such a machine — the file stays where it was put, and every start
+/// after this one binds it directly.
+static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set on the one that is started, so a machine where the renderer is in place
+/// and still cannot draw stops rather than starting itself forever.
+const PLACED: &str = "CLICKER_GL_PLACED";
 
 /// Why the software renderer is not in place, when it was asked for and could
 /// not be put there. The settings page says this instead of promising a
@@ -432,6 +460,32 @@ fn graphics_failed(error: &eframe::Error, on_software: bool, asked: settings::Gr
         APP_NAME,
         &no_graphics_message(graphics.as_ref(), on_software, asked),
     );
+}
+
+/// Start once more, on the renderer this launch just put in place.
+///
+/// The same arguments and one thing added to the environment, which is what
+/// stops it happening twice: a machine where the renderer is deployed and the
+/// window still will not open has a fault this cannot fix, and should say so
+/// rather than starting itself again.
+fn start_again() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    match std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env(PLACED, "1")
+        .spawn()
+    {
+        Ok(_) => {
+            log::logline!("[clicker] starting again, on the software renderer");
+            true
+        }
+        Err(e) => {
+            log::logline!("[clicker] could not start again: {e}");
+            false
+        }
+    }
 }
 
 /// What to tell somebody whose machine could not draw this program.
@@ -556,6 +610,16 @@ fn main() -> eframe::Result<()> {
     let on_software_gl = choose_opengl(saved_graphics);
     SOFTWARE_GL.store(on_software_gl, std::sync::atomic::Ordering::Relaxed);
     let _ = STARTED_WITH.set(saved_graphics);
+
+    // A machine that cannot draw, and a renderer that is now where the loader
+    // will find it. Nothing else in this launch can use it, so this launch is
+    // over — see `RESTART`. Once, guarded, and never on a machine that has a
+    // window to show for itself.
+    if RESTART.load(std::sync::atomic::Ordering::Relaxed) && std::env::var_os(PLACED).is_none() {
+        if start_again() {
+            return Ok(());
+        }
+    }
 
     // The build's own license, from the binary rather than from a claim in a
     // text file. This application may only be distributed if FFmpeg was built
