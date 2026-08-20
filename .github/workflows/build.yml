@@ -80,6 +80,14 @@ jobs:
     permissions:
       contents: read
 
+    env:
+      # The software OpenGL, pinned by version and by the bytes themselves. Up
+      # here rather than on the step that fetches it because the cache key
+      # below has to name the same two things: a cache that outlives the pin it
+      # was filled for is a build shipping a renderer nobody chose.
+      MESA_VERSION: "26.2.0"
+      MESA_SHA256: "dcb2719ef346dab5b609fcb193a5f13cfc4b0502e3f4de1ad43d349477402f47"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -307,24 +315,60 @@ jobs:
       # x64 only. This distribution builds x86 and x64; Windows-on-Arm binaries
       # come from a different project, so the arm64 installer ships without one
       # and says where to put one if it is ever needed.
-      - name: Fetch the software OpenGL
+      # Kept between runs, like libmpv. The package is 63MB from a third
+      # party, and a build that re-downloads it every time is both slower and
+      # one transport error away from failing for a reason that has nothing to
+      # do with the code — which is exactly how it failed once.
+      - name: Cache the software OpenGL
         if: matrix.arch == 'x64'
+        id: mesa
+        uses: actions/cache@v4
+        with:
+          path: third_party/mesa
+          key: ${{ runner.os }}-x64-mesa-${{ env.MESA_VERSION }}-${{ env.MESA_SHA256 }}
+
+      # The software OpenGL that ships inside the installer, in mesa\.
+      #
+      # Windows has an OpenGL for machines with no graphics driver — GDI
+      # Generic, version 1.1, no shading language — and nothing in this
+      # application can draw on it: egui needs 2.0 for a shader and mpv wants
+      # 2.1 for a renderer. A virtual machine with no graphics chip is left
+      # with exactly that, and so is any Remote Desktop session, which replaces
+      # the display driver with one that has no OpenGL in it. Mesa's llvmpipe
+      # rasterises on the processor and is complete, and the application loads
+      # it only when the machine turns out to have nothing better. Without this
+      # step the installer still builds — build.ps1 treats the directory as
+      # optional — and those machines get a dialog instead of a program.
+      #
+      # Two DLLs, not one, and the second is easy to miss: since Mesa 21.3.0
+      # opengl32.dll is only a loader and libgallium_wgl.dll is where the
+      # drivers actually live. dxil.dll is what the Direct3D 12 driver needs to
+      # load, which is worth having on a machine whose only "GPU" is WARP.
+      #
+      # x64 only. This distribution builds x86 and x64; Windows-on-Arm binaries
+      # come from a different project, so the arm64 installer ships without one
+      # and says where to put one if it is ever needed.
+      - name: Fetch the software OpenGL
+        if: matrix.arch == 'x64' && steps.mesa.outputs.cache-hit != 'true'
         shell: pwsh
-        env:
-          # Pinned, like the FFmpeg and mpv tags: a build that quietly picks up
-          # a different renderer than the last one is a build that cannot be
-          # compared to it.
-          MESA_VERSION: "26.2.0"
-          # The bytes, not just the name. A tag can be moved and a release
-          # asset can be replaced; this is what says the renderer inside this
-          # installer is the one that was looked at. Read off the first build
-          # that fetched it, and it changes only when MESA_VERSION does.
-          MESA_SHA256: "dcb2719ef346dab5b609fcb193a5f13cfc4b0502e3f4de1ad43d349477402f47"
         run: |
           $package = "mesa3d-$env:MESA_VERSION-release-msvc.7z"
           $url = "https://github.com/pal1000/mesa-dist-win/releases/download/$env:MESA_VERSION/$package"
           Write-Host "Fetching $url"
-          Invoke-WebRequest -Uri $url -OutFile $package
+
+          # Three tries. The one failure seen so far was the connection closed
+          # mid-download, which is not a thing to fail a build over and not a
+          # thing to retry forever either.
+          for ($attempt = 1; ; $attempt++) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $package
+              break
+            } catch {
+              if ($attempt -ge 3) { throw }
+              Write-Host "attempt $attempt failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds (3 * $attempt)
+            }
+          }
 
           $sha = (Get-FileHash $package -Algorithm SHA256).Hash.ToLower()
           if ($sha -ne $env:MESA_SHA256) {
@@ -350,12 +394,17 @@ jobs:
           $size = (Get-ChildItem third_party\mesa -File | Measure-Object Length -Sum).Sum / 1MB
           Write-Host ("staged {0}: {1:N1} MB" -f ($taken -join ', '), $size)
 
-          # The licenses travel with the binaries or the binaries do not ship.
-          # Mesa is MIT; llvmpipe links LLVM, which is Apache-2.0 with the LLVM
-          # exceptions. Both texts are in licenses\ and build.ps1 stages that
-          # whole directory into the installer, so this only has to check that
-          # they are still there — a fetch step that quietly outlived the
-          # paperwork is exactly the failure worth being loud about.
+      # Separate from the fetch because it has to hold whether the renderer was
+      # just downloaded or came out of the cache. The licenses travel with the
+      # binaries or the binaries do not ship: Mesa is MIT, and llvmpipe links
+      # LLVM, which is Apache-2.0 with the LLVM exceptions. build.ps1 stages the
+      # whole licenses directory into the installer, so this only has to check
+      # that both texts are still in the tree — a renderer that quietly outlived
+      # its paperwork is the failure worth being loud about.
+      - name: The renderer's licenses must be in the tree
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
           foreach ($license in 'licenses\mesa-license.txt', 'licenses\llvm-license.txt') {
             if (-not (Test-Path $license)) {
               throw "$license is missing, and these binaries do not ship without it."
