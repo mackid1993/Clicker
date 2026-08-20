@@ -346,6 +346,15 @@ fn choose_opengl(asked: settings::Graphics) -> bool {
         match platform::place_software_opengl() {
             Placement::Placed => {
                 log::logline!("[clicker] software renderer put in place; it draws from the next start");
+                // Written down as the setting, not merely acted on. It is what
+                // the settings page will show, it is what stops every later
+                // launch paying for a probe, and it is a plain word in a file
+                // somebody can read and change.
+                if asked == Graphics::Automatic {
+                    let mut settings = settings::Settings::load();
+                    settings.graphics = Graphics::Software;
+                    let _ = settings.save();
+                }
                 // Only where there would otherwise be no window. A machine
                 // that can draw is left to finish the launch it is having: the
                 // setting says it applies at the next start, and taking that
@@ -396,6 +405,42 @@ pub fn software_gl_in_use() -> bool {
 /// page reasoning from the picture would tell a machine that correctly chose
 /// the software renderer that it had been changed.
 static STARTED_WITH: std::sync::OnceLock<settings::Graphics> = std::sync::OnceLock::new();
+
+/// The file that says a launch chose its graphics and never drew with them.
+///
+/// Written before the window is attempted and removed by the first frame that
+/// reaches the screen, so what is left behind is exactly the launches that
+/// died in between. A setting that can stop the program from opening must not
+/// be able to stop it twice: without this, choosing a renderer this machine
+/// cannot use is a decision nobody can take back, because taking it back needs
+/// the window it prevents.
+fn attempt_marker() -> Option<std::path::PathBuf> {
+    Some(paths::data_dir()?.join("graphics.attempt"))
+}
+
+fn note_attempt(mode: &str) {
+    if let Some(path) = attempt_marker() {
+        let _ = std::fs::write(path, mode);
+    }
+}
+
+/// Called by the first frame that draws. Anything that got this far works.
+pub fn graphics_survived() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Some(path) = attempt_marker() {
+            let _ = std::fs::remove_file(path);
+        }
+    });
+}
+
+/// What the last launch was trying to draw with, if it never drew.
+fn failed_attempt() -> Option<String> {
+    let path = attempt_marker()?;
+    let mode = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    Some(mode)
+}
 
 /// Whether this launch put the software renderer where the next one will find
 /// it, on a machine that cannot open a window without it.
@@ -606,6 +651,29 @@ fn main() -> eframe::Result<()> {
 
     // Before the window, before glutin, and before mpv: whichever OpenGL is
     // loaded first is the one the whole process draws with.
+    // A launch that chose a renderer and never drew with it. Whatever it
+    // chose, this one does not choose again: the way out of a machine that
+    // cannot draw with what it was told to use is to stop using it, and that
+    // decision cannot wait for a window nobody is going to see.
+    let mut saved = saved;
+    if let Some(mode) = failed_attempt() {
+        if mode == "software" {
+            log::logline!(
+                "[clicker] the software renderer did not survive the last launch; \
+                 going back to this machine's OpenGL"
+            );
+            platform::remove_software_opengl();
+            saved.graphics = settings::Graphics::System;
+        } else {
+            log::logline!(
+                "[clicker] the last launch never drew with this machine's OpenGL; \
+                 the software renderer is what this one will try"
+            );
+            saved.graphics = settings::Graphics::Software;
+        }
+        let _ = saved.save();
+    }
+
     let saved_graphics = saved.graphics;
     let on_software_gl = choose_opengl(saved_graphics);
     SOFTWARE_GL.store(on_software_gl, std::sync::atomic::Ordering::Relaxed);
@@ -674,6 +742,10 @@ fn main() -> eframe::Result<()> {
         viewport,
         ..Default::default()
     };
+
+    // From here until the first frame, this launch is on the record as having
+    // chosen something it has not yet proved.
+    note_attempt(if on_software_gl { "software" } else { "system" });
 
     let ran = eframe::run_native(
         APP_NAME,
@@ -2521,6 +2593,10 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // This launch drew. Whatever it was told to draw with works, so the
+        // record of an unproven choice comes off — see `attempt_marker`.
+        graphics_survived();
+
         self.open_from_environment();
         self.pop_from_environment(ctx);
         self.pump_tray(ctx);
