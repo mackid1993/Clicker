@@ -593,11 +593,7 @@ pub fn settings_screen(
 
             control_row(ui, |ui| {
                 use crate::settings::Scaling;
-                ui.label(
-                    egui::RichText::new("Picture scaling")
-                        .size(12.0)
-                        .color(Fluent::TEXT_SECONDARY),
-                );
+                setting_label(ui, "Picture scaling");
                 let name = |s: Scaling| match s {
                     Scaling::Automatic => "Automatic",
                     Scaling::Fast => "Fast",
@@ -649,11 +645,7 @@ pub fn settings_screen(
             if crate::platform::HAS_SOFTWARE_GL {
                 control_row(ui, |ui| {
                     use crate::settings::Graphics;
-                    ui.label(
-                        egui::RichText::new("Graphics")
-                            .size(12.0)
-                            .color(Fluent::TEXT_SECONDARY),
-                    );
+                    setting_label(ui, "Graphics");
                     let name = |g: Graphics| match g {
                         Graphics::Automatic => "Automatic",
                         Graphics::Software => "Software",
@@ -756,20 +748,7 @@ pub fn settings_screen(
                 ),
             ] {
                 control_row(ui, |ui| {
-                    // A fixed column rather than however wide the word is.
-                    // "Downloads" and "Live buffer" are not the same width, so
-                    // laying the row out after the label put the two fields,
-                    // and the two Browse buttons under them, a couple of pixels
-                    // apart — which is exactly the kind of misalignment that is
-                    // impossible to unsee.
-                    let start = ui.cursor().min.x;
-                    ui.label(
-                        egui::RichText::new(label)
-                            .size(12.0)
-                            .color(Fluent::TEXT_SECONDARY),
-                    );
-                    let used = ui.cursor().min.x - start;
-                    ui.add_space((LABEL_COLUMN - used).max(0.0));
+                    setting_label(ui, label);
 
                     let entry = field(ui, value, FIELD_W - 110.0).hint_text(PATH_HINT);
                     let typed = ui.add(entry);
@@ -1112,9 +1091,28 @@ const ROW_H: f32 = 34.0;
 /// How far in the description column of the keyboard list starts.
 const KEY_COLUMN: f32 = 150.0;
 
-/// How wide the label before a folder field is, so the fields below each other
+/// How wide the label before a setting is, so the controls below each other
 /// start at the same place whatever their labels say.
 const LABEL_COLUMN: f32 = 96.0;
+
+/// A setting's label, and the space that puts what follows it in a column.
+///
+/// "Downloads" and "Live buffer" are not the same width, and neither are
+/// "Picture scaling" and "Graphics", so a row laid out straight after its
+/// label puts the fields under each other a few pixels apart — which is
+/// exactly the kind of misalignment that is impossible to unsee. Measured
+/// rather than guessed at, because the face is the system's own and is a
+/// different width on each of the three.
+fn setting_label(ui: &mut egui::Ui, text: &str) {
+    let start = ui.cursor().min.x;
+    ui.label(
+        egui::RichText::new(text)
+            .size(12.0)
+            .color(Fluent::TEXT_SECONDARY),
+    );
+    let used = ui.cursor().min.x - start;
+    ui.add_space((LABEL_COLUMN - used).max(0.0));
+}
 
 /// How wide a single-line setting field is.
 ///
