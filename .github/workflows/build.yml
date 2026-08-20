@@ -286,6 +286,76 @@ jobs:
           $msys = if ($env:MSYS_LOCATION) { $env:MSYS_LOCATION } else { 'C:\msys64' }
           ./scripts/build-mpv.ps1 -Arch ${{ matrix.arch }} -Msys $msys
 
+      # The software OpenGL that ships inside the installer, in mesa\.
+      #
+      # Windows has an OpenGL for machines with no graphics driver — GDI
+      # Generic, version 1.1, no shading language — and nothing in this
+      # application can draw on it: egui needs 2.0 for a shader and mpv wants
+      # 2.1 for a renderer. A virtual machine with no graphics chip is left
+      # with exactly that, and so is any Remote Desktop session, which replaces
+      # the display driver with one that has no OpenGL in it. Mesa's llvmpipe
+      # rasterises on the processor and is complete, and the application loads
+      # it only when the machine turns out to have nothing better. Without this
+      # step the installer still builds — build.ps1 treats the directory as
+      # optional — and those machines get a dialog instead of a program.
+      #
+      # Two DLLs, not one, and the second is easy to miss: since Mesa 21.3.0
+      # opengl32.dll is only a loader and libgallium_wgl.dll is where the
+      # drivers actually live. dxil.dll is what the Direct3D 12 driver needs to
+      # load, which is worth having on a machine whose only "GPU" is WARP.
+      #
+      # x64 only. This distribution builds x86 and x64; Windows-on-Arm binaries
+      # come from a different project, so the arm64 installer ships without one
+      # and says where to put one if it is ever needed.
+      - name: Fetch the software OpenGL
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        env:
+          # Pinned, like the FFmpeg and mpv tags: a build that quietly picks up
+          # a different renderer than the last one is a build that cannot be
+          # compared to it.
+          MESA_VERSION: "26.2.0"
+        run: |
+          $package = "mesa3d-$env:MESA_VERSION-release-msvc.7z"
+          $url = "https://github.com/pal1000/mesa-dist-win/releases/download/$env:MESA_VERSION/$package"
+          Write-Host "Fetching $url"
+          Invoke-WebRequest -Uri $url -OutFile $package
+
+          # Printed rather than checked, for now. Pin it here once it has been
+          # read off a build: a third-party binary that goes into an installer
+          # should be the same bytes every time or say why not.
+          $sha = (Get-FileHash $package -Algorithm SHA256).Hash.ToLower()
+          Write-Host "sha256: $sha"
+
+          7z x $package -omesa-package -y | Out-Null
+          New-Item -ItemType Directory -Force -Path third_party\mesa | Out-Null
+
+          $wanted = 'opengl32.dll', 'libgallium_wgl.dll', 'libglapi.dll', 'dxil.dll'
+          $taken = @()
+          foreach ($name in $wanted) {
+            $file = "mesa-package\x64\$name"
+            if (Test-Path $file) {
+              Copy-Item $file third_party\mesa -Force
+              $taken += $name
+            }
+          }
+          if ($taken -notcontains 'opengl32.dll' -or $taken -notcontains 'libgallium_wgl.dll') {
+            throw "the Mesa package did not contain the two libraries the renderer needs: got $($taken -join ', ')"
+          }
+          $size = (Get-ChildItem third_party\mesa -File | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host ("staged {0}: {1:N1} MB" -f ($taken -join ', '), $size)
+
+          # The license travels with the binaries or the binaries do not ship.
+          # Mesa is MIT and llvmpipe links LLVM, which is Apache-2.0 with the
+          # LLVM exception; both texts are in the source tree this was built
+          # from. Not fatal here because this is a build, not a release — but a
+          # release must not go out without it, which is what the warning is
+          # for.
+          $license = 'licenses\mesa-license.txt'
+          if (-not (Test-Path $license)) {
+            Write-Host "::warning::$license is missing. The Mesa binaries in this installer are shipping without their license text; do not publish a release from this build until it is there."
+          }
+
       # Inno Setup ships on the windows runner images, and build.ps1 looks for
       # it in the two Program Files directories, which is where choco puts it
       # too. Installed only if the image has dropped it, so this workflow does

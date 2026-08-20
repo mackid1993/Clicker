@@ -132,26 +132,33 @@ and the window is built to make all three easy:
 
 [ffpip]: https://bugzilla.mozilla.org/show_bug.cgi?id=1621261
 
-**It cannot draw on Windows' own OpenGL.** Where there is no graphics driver
-to ask, Windows answers with an OpenGL of its own: `GDI Generic`, version 1.1,
-from 1996 and without a shading language in it. Nothing here can use it — egui
-needs 2.0 before it can compile a shader and mpv wants 2.1 before it will make
-a renderer — and there are two ordinary ways to meet it: a virtual machine
-with no graphics chip, and a Remote Desktop session, which replaces the
-desktop's display driver with one that has no OpenGL even on a machine that
-has a good one. The window then does not open at all.
+**It cannot draw on Windows' own OpenGL, so it brings one.** Where there is
+no graphics driver to ask, Windows answers with an OpenGL of its own: `GDI
+Generic`, version 1.1, from 1996 and without so much as a shading language.
+Nothing here can use it — egui needs 2.0 before it can compile a shader and
+mpv wants 2.1 before it will make a renderer — and there are two ordinary ways
+to meet it: a virtual machine with no graphics chip, and a Remote Desktop
+session, which replaces the desktop's display driver with one that has no
+OpenGL in it even on a machine that has a good graphics card.
 
-What happens instead is a fallback, and it is a whole software OpenGL rather
-than anything drawn through GDI directly: if `mesa\opengl32.dll` is beside the
-application or in `%LOCALAPPDATA%\Clicker\mesa\`, Clicker starts itself again
-with that loaded in front of the system's and comes up on it — the interface
-and the picture both, rasterised on the processor, which works and is not
-fast. Where there is no such library, the failure is at least reported: a
-dialog naming what the display offered and where to put one, and the same in
-`player.log`, in place of a program that started and vanished. A machine known
-to have no graphics can skip the failed first launch by setting `CLICKER_GL`
-to `software`; `CLICKER_OPENGL` names a library somewhere else entirely.
-Machines with a real driver never load any of it and are untouched.
+So the Windows installer carries Mesa's software renderer in `mesa\`, and the
+choice is made before the window exists. A machine with a graphics driver that
+is not on a remote desktop is never even asked the question; one that is gets
+its OpenGL probed once, through a throwaway window, and draws with Mesa only
+if what came back cannot compile a shader. There is no second launch and
+nothing to install by hand: it either has graphics or it has the renderer that
+travels with it.
+
+Settings has the override, under Video: **Automatic** is the above,
+**Software** draws on the processor whatever the machine has — the way out of
+a virtual GPU whose OpenGL is present but draws wrong — and **This machine's**
+refuses the fallback, for proving what the graphics really are. It applies the
+next time Clicker starts, because whichever library loads first is the one the
+whole process draws with.
+
+Drawn on the processor, everything works and nothing is fast. The picture
+profiles already read `llvmpipe` as software and drop to mpv's cheap scalers
+there, and `CLICKER_RENDER_THREAD=1` is worth trying on such a machine.
 
 **The window frame differs by platform, and only the frame.** Windows and Linux
 get the caption this application draws itself; macOS gets its own traffic
@@ -225,21 +232,23 @@ Once `third_party\mpv` exists, `cargo build` on its own needs nothing but a
 Rust toolchain: libmpv is loaded by name at runtime rather than linked, so
 there is no native compilation step and no headers to find.
 
-#### Shipping a software OpenGL
+#### The software OpenGL
 
-Optional, and off unless the file is there. Put a Mesa `opengl32.dll` built
-for the same processor as the application in `third_party\mesa\`, and
-`build.ps1` stages it into `mesa\` beside the executable and the installer
-carries it; leave the directory empty and nothing changes. It is what makes
-the application run on a machine with no graphics driver — see **It cannot
-draw on Windows' own OpenGL** above — and it is tens of megabytes, which is
-why it is a decision rather than a default.
+`build.ps1` stages whatever is in `third_party\mesa\` into `mesa\` beside the
+executable, and the installer carries it. The Windows build workflow fetches
+it — a pinned [mesa-dist-win](https://github.com/pal1000/mesa-dist-win)
+release-msvc package, `opengl32.dll` and `libgallium_wgl.dll` out of `x64` —
+so a CI installer has it and a local `build.ps1` does not unless you put one
+there. An empty directory is not an error: the installer is then what it was
+before any of this, and a machine with no OpenGL gets a dialog saying so.
+
+Both DLLs, and the second is easy to miss: since Mesa 21.3.0 `opengl32.dll` is
+only a loader and `libgallium_wgl.dll` is where the drivers live.
 
 It goes in a subdirectory and never beside the executable. An `opengl32.dll`
 there would be found by the loader ahead of the real driver on every machine
-that installs this, which is the opposite of a fallback: the application loads
-this one by full path, and only after the window has already failed to open on
-the system's own.
+that installs this, which is the opposite of a fallback: it is loaded by full
+path, and only once the machine has been found to need it.
 
 ### macOS
 

@@ -642,6 +642,76 @@ pub fn settings_screen(
                     );
             });
 
+            // Shown only where there is a second renderer to choose. That is
+            // Windows alone: it is the one platform whose answer, when there is
+            // no graphics driver to ask, is an OpenGL that exists, answers and
+            // cannot draw a shader.
+            if crate::platform::HAS_SOFTWARE_GL {
+                control_row(ui, |ui| {
+                    use crate::settings::Graphics;
+                    ui.label(
+                        egui::RichText::new("Graphics")
+                            .size(12.0)
+                            .color(Fluent::TEXT_SECONDARY),
+                    );
+                    let name = |g: Graphics| match g {
+                        Graphics::Automatic => "Automatic",
+                        Graphics::Software => "Software",
+                        Graphics::System => "This machine's",
+                    };
+                    egui::ComboBox::from_id_salt("graphics")
+                        .selected_text(name(settings.graphics))
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for choice in [Graphics::Automatic, Graphics::Software, Graphics::System]
+                            {
+                                if ui
+                                    .selectable_label(settings.graphics == choice, name(choice))
+                                    .on_hover_text(match choice {
+                                        Graphics::Automatic => {
+                                            "This machine's own OpenGL, unless it turns out \
+                                             not to have one — a virtual machine with no \
+                                             graphics chip, or a Remote Desktop session — \
+                                             where the software renderer is used instead."
+                                        }
+                                        Graphics::Software => {
+                                            "The software renderer always. Everything is \
+                                             drawn on the processor, which works and is not \
+                                             fast; the way out of a display whose OpenGL is \
+                                             there but draws wrong."
+                                        }
+                                        Graphics::System => {
+                                            "This machine's own OpenGL always, and no window \
+                                             at all if it has none. For proving what the \
+                                             graphics really are."
+                                        }
+                                    })
+                                    .clicked()
+                                {
+                                    settings.graphics = choice;
+                                    action = SetupAction::Save;
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Which OpenGL the interface and the picture are drawn with. \
+                             Whichever one is loaded first is the one the whole program \
+                             uses, so this takes effect the next time Clicker starts.",
+                        );
+                    // Automatic does not say what it chose, and on the machines
+                    // this setting exists for that is the only thing anybody
+                    // wants to know.
+                    if crate::software_gl_in_use() {
+                        ui.label(
+                            egui::RichText::new("drawing on the processor")
+                                .size(11.0)
+                                .color(Fluent::TEXT_SECONDARY),
+                        );
+                    }
+                });
+            }
+
             // ── Where things are kept ──────────────────────────────────
             //
             // Both default to under the user's profile, on whichever disk the

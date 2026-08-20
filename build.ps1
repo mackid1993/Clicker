@@ -355,7 +355,7 @@ Write-Host "      runtime carried: $($carried -join ', ')" -ForegroundColor Dark
 $mesa = Join-Path $Root 'third_party\mesa'
 $mesaStage = (New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'mesa')).FullName
 @"
-A software OpenGL goes in this folder.
+Clicker's software OpenGL lives in this folder.
 
 Clicker draws with OpenGL 2.0 or later. Where there is no graphics driver to
 ask, Windows answers with an OpenGL of its own - "GDI Generic", version 1.1,
@@ -364,14 +364,19 @@ machines are left with it: a virtual machine with no graphics chip, and a
 Remote Desktop session, which replaces the display driver even on a machine
 that has a good one.
 
-Put Mesa's opengl32.dll, built for this machine's processor, in this folder and
-start Clicker again. Clicker loads it only after the window has failed to open
-on the system's own OpenGL, so a machine whose graphics work never touches it.
-Everything is drawn on the processor then, which works and is not fast.
+So Mesa is here instead. Clicker loads it only when the machine turns out to
+have no OpenGL of its own, or when Graphics is set to Software in Settings.
+Everything is drawn on the processor then, which works and is not fast. A
+machine with a graphics driver never loads any of this.
+
+If the folder is empty, this installer was built without it. Two files are
+needed, both from a Mesa build for this processor ($AppArch): opengl32.dll and
+libgallium_wgl.dll. Since Mesa 21.3.0 the first is only a loader and the
+second is where the drivers actually are, so one without the other does
+nothing. dxil.dll is optional and lets the Direct3D 12 driver load.
 
 Windows builds of Mesa: https://github.com/pal1000/mesa-dist-win/releases
-Take the release-msvc package and the desktop-gl opengl32.dll for this
-processor ($AppArch).
+Take the release-msvc package and the files under x64.
 "@ | Set-Content -Path (Join-Path $mesaStage 'README.txt') -Encoding UTF8
 
 $mesaDlls = @(Get-ChildItem (Join-Path $mesa '*.dll') -ErrorAction SilentlyContinue)

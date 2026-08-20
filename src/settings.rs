@@ -152,6 +152,10 @@ pub struct Settings {
     /// picture. See `Scaling`.
     #[serde(default)]
     pub scaling: Scaling,
+    /// Which OpenGL is drawn with, on the one platform where there is a
+    /// choice. See `Graphics`.
+    #[serde(default)]
+    pub graphics: Graphics,
     /// Whether keyboard shortcuts do anything at all.
     ///
     /// On by default, and turned off by its own shortcut, which keeps working
@@ -308,6 +312,7 @@ impl Default for Settings {
             cache_dir: String::new(),
             software_decoding: false,
             scaling: Scaling::default(),
+            graphics: Graphics::default(),
             shortcuts_enabled: true,
             shortcut_keys: Default::default(),
             window: None,
@@ -369,6 +374,37 @@ pub fn writable(dir: &std::path::Path) -> Result<()> {
         .with_context(|| format!("writing to {}", dir.display()))?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
+}
+
+/// Which OpenGL the interface and the picture are drawn with.
+///
+/// Only Windows has a choice to make. Where there is no graphics driver to
+/// ask, Windows answers with an OpenGL of its own — `GDI Generic`, version
+/// 1.1, with no shading language in it — and nothing here can draw on that:
+/// egui needs 2.0 to compile a shader and mpv wants 2.1 to make a renderer.
+/// That is what a virtual machine with no graphics chip is left with, and what
+/// a Remote Desktop session gets even on a machine that has one. So a software
+/// OpenGL travels with the application for those machines, and this is which
+/// of the two is used.
+///
+/// A restart is what applies it, and the interface says so. Whichever library
+/// is loaded first is the one the whole process draws with, so the question is
+/// settled before the window exists and cannot be reopened while it does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum Graphics {
+    /// The machine's own OpenGL, unless it turns out not to have one. Right
+    /// for everybody: a machine with a graphics driver never loads anything
+    /// else, and one without gets the software renderer without being asked a
+    /// question it has no way to answer.
+    #[default]
+    Automatic,
+    /// The software renderer always, whatever the machine has. For a display
+    /// whose OpenGL is present but broken — a virtual GPU that draws the
+    /// interface wrong is a real thing, and this is the way out of it.
+    Software,
+    /// The machine's own OpenGL always, and no window at all if it has none.
+    /// For proving what the graphics really are.
+    System,
 }
 
 /// How the picture is resized to the window it is shown in.

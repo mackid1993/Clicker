@@ -109,6 +109,12 @@ pub unsafe fn library_symbol(module: *mut c_void, name: *const u8) -> *mut c_voi
 
 // --- OpenGL, and which OpenGL ------------------------------------------------
 
+/// No, and so the setting that chooses one is not shown. macOS has its own
+/// OpenGL always; on Linux the desktop's Mesa already falls back to llvmpipe
+/// by itself, which is the same answer arrived at by the driver stack rather
+/// than by this program.
+pub const HAS_SOFTWARE_GL: bool = false;
+
 /// Where a software OpenGL would be looked for, which is nowhere: see
 /// `software_opengl`.
 pub fn software_opengl_candidates() -> Vec<std::path::PathBuf> {
@@ -118,11 +124,18 @@ pub fn software_opengl_candidates() -> Vec<std::path::PathBuf> {
 /// Nothing to ask, and nothing that would act on the answer. The Windows
 /// counterpart exists because a window can fail to open there before anything
 /// has had the chance to write down what the graphics were.
-pub fn probe_opengl() -> Option<String> {
+pub fn probe_opengl() -> Option<super::GlReport> {
     None
 }
 
-/// Nothing to fall back to, because there is nothing to fall back *from*.
+/// Never, so the probe above is never reached either. There is no session
+/// here that swaps the display driver out from under a running desktop, and
+/// no OpenGL of last resort to be left with if there were.
+pub fn session_may_lack_opengl() -> bool {
+    false
+}
+
+/// Nothing to activate, because there is nothing to fall back *from*.
 ///
 /// The Windows counterpart exists for a machine with no graphics driver at
 /// all, where the system's OpenGL is a 1.1 implementation from 1996 that
@@ -130,11 +143,6 @@ pub fn probe_opengl() -> Option<String> {
 /// its own OpenGL, and on Linux the desktop's Mesa already falls back to
 /// llvmpipe — software rasterising, the same answer, arrived at by the driver
 /// stack rather than by this program.
-pub fn software_opengl() -> Option<std::path::PathBuf> {
-    None
-}
-
-/// The same, and for the same reason. Never anything to activate.
 pub fn use_software_opengl() -> Option<std::path::PathBuf> {
     None
 }

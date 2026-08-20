@@ -48,6 +48,19 @@
 //! rounded — and a `None` where a capability is genuinely absent, which the
 //! caller must already handle because Windows callers handled it first.
 
+/// What an OpenGL implementation says it is, when asked before there is a
+/// window to ask through.
+///
+/// Both halves are used and by different callers: `major` is what the choice
+/// of renderer turns on — 1 is the software OpenGL Windows falls back to when
+/// there is no driver, and nothing here can draw on it — and `identity` is the
+/// vendor, renderer and version as three strings, for the log and for telling
+/// somebody what their machine offered.
+pub struct GlReport {
+    pub identity: String,
+    pub major: u32,
+}
+
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

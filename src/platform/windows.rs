@@ -548,6 +548,7 @@ pub fn punch_hole(file: &tokio::fs::File, from: u64, len: u64) -> bool {
 extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
     fn LoadLibraryExW(name: *const u16, reserved: *mut c_void, flags: u32) -> *mut c_void;
+    fn FreeLibrary(module: *mut c_void) -> i32;
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
     fn GetCurrentThread() -> *mut c_void;
     fn GetThreadTimes(
@@ -624,8 +625,8 @@ fn opengl32() -> *mut c_void {
         as *mut c_void
 }
 
-/// The handful of WGL calls this program makes, resolved once out of whatever
-/// `opengl32()` turned out to be.
+/// The handful of WGL calls this program makes, resolved out of whichever
+/// `opengl32.dll` is being asked about.
 struct Wgl {
     get_proc_address: unsafe extern "system" fn(*const u8) -> *mut c_void,
     get_current_dc: unsafe extern "system" fn() -> *mut c_void,
@@ -637,36 +638,40 @@ struct Wgl {
 }
 
 impl Wgl {
-    /// `None` only if there is no OpenGL at all, which on Windows means the
-    /// system DLL is missing — every caller here already treats that as "no
-    /// second context" or "no such function" rather than as a fault.
-    fn get() -> Option<&'static Self> {
-        static WGL: std::sync::OnceLock<Option<Wgl>> = std::sync::OnceLock::new();
-        WGL.get_or_init(|| {
-            let module = opengl32();
-            if module.is_null() {
+    /// Out of a particular module, which is what the probe needs: it holds a
+    /// handle of its own that it means to give back, and must not go through
+    /// the cache below or it would pin the very library it is letting go of.
+    fn from_module(module: *mut c_void) -> Option<Self> {
+        if module.is_null() {
+            return None;
+        }
+        unsafe fn find<T>(module: *mut c_void, name: &[u8]) -> Option<T> {
+            let found = GetProcAddress(module, name.as_ptr());
+            if found.is_null() {
                 return None;
             }
-            unsafe fn find<T>(module: *mut c_void, name: &[u8]) -> Option<T> {
-                let found = GetProcAddress(module, name.as_ptr());
-                if found.is_null() {
-                    return None;
-                }
-                Some(std::mem::transmute_copy::<*mut c_void, T>(&found))
-            }
-            unsafe {
-                Some(Wgl {
-                    get_proc_address: find(module, b"wglGetProcAddress\0")?,
-                    get_current_dc: find(module, b"wglGetCurrentDC\0")?,
-                    get_current_context: find(module, b"wglGetCurrentContext\0")?,
-                    create_context: find(module, b"wglCreateContext\0")?,
-                    share_lists: find(module, b"wglShareLists\0")?,
-                    make_current: find(module, b"wglMakeCurrent\0")?,
-                    delete_context: find(module, b"wglDeleteContext\0")?,
-                })
-            }
-        })
-        .as_ref()
+            Some(std::mem::transmute_copy::<*mut c_void, T>(&found))
+        }
+        unsafe {
+            Some(Wgl {
+                get_proc_address: find(module, b"wglGetProcAddress\0")?,
+                get_current_dc: find(module, b"wglGetCurrentDC\0")?,
+                get_current_context: find(module, b"wglGetCurrentContext\0")?,
+                create_context: find(module, b"wglCreateContext\0")?,
+                share_lists: find(module, b"wglShareLists\0")?,
+                make_current: find(module, b"wglMakeCurrent\0")?,
+                delete_context: find(module, b"wglDeleteContext\0")?,
+            })
+        }
+    }
+
+    /// The process's OpenGL, whichever one that turned out to be. `None` only
+    /// if there is no OpenGL at all, which on Windows means the system DLL is
+    /// missing — every caller here already treats that as "no second context"
+    /// or "no such function" rather than as a fault.
+    fn get() -> Option<&'static Self> {
+        static WGL: std::sync::OnceLock<Option<Wgl>> = std::sync::OnceLock::new();
+        WGL.get_or_init(|| Wgl::from_module(opengl32())).as_ref()
     }
 }
 
@@ -702,13 +707,6 @@ pub fn software_opengl_candidates() -> Vec<PathBuf> {
         candidates.push(data.join("mesa").join("opengl32.dll"));
     }
     candidates
-}
-
-/// Whether there is a software OpenGL on this machine to fall back to, and
-/// where. Existence only — nothing is loaded, because the question is asked on
-/// machines whose graphics are fine.
-pub fn software_opengl() -> Option<PathBuf> {
-    software_opengl_candidates().into_iter().find(|c| c.is_file())
 }
 
 /// Make a software OpenGL *the* OpenGL for this process.
@@ -818,19 +816,109 @@ const GL_VENDOR: u32 = 0x1F00;
 const GL_RENDERER: u32 = 0x1F01;
 const GL_VERSION: u32 = 0x1F02;
 
-/// What OpenGL this display actually offers, in its own words.
+/// Whether a software OpenGL can be had here, and so whether the setting that
+/// chooses one is worth showing.
 ///
-/// A duplicate of what `log_gl_identity` writes down on a good day, and it
-/// exists for the day that never comes: when the graphics are too old the
-/// window fails before any of this program's code runs, so the one line that
-/// would say *why* is never written. This asks the same three questions
-/// through a throwaway window of its own, so a failed start can name the
-/// driver it failed on instead of leaving somebody to guess.
+/// True on this platform alone. It is the only one with a state to escape: an
+/// OpenGL that exists, answers, and cannot draw.
+pub const HAS_SOFTWARE_GL: bool = true;
+
+/// Whether this is the kind of machine that may have no usable OpenGL, asked
+/// cheaply and answered pessimistically.
+///
+/// Not the decision — `probe_opengl` is the decision, and it costs a window
+/// and a context. This is only whether it is worth asking, so that an ordinary
+/// desktop pays nothing at all on the way to its own graphics driver. Two
+/// facts, either of which is enough:
+///
+///   * **A remote session.** Remote Desktop replaces the desktop's display
+///     driver with one of its own that has no OpenGL in it, whatever the
+///     machine's real graphics are. It is the common half of this problem and
+///     `SM_REMOTESESSION` is exactly the question.
+///   * **No graphics hardware.** A virtual machine with no chip in it has one
+///     DXGI adapter, Microsoft's own software one, which no OpenGL driver
+///     comes with. Asked of DXGI rather than of a driver name, because
+///     `DXGI_ADAPTER_FLAG_SOFTWARE` is a fact and a string is a guess.
+///
+/// Either can be true on a machine whose OpenGL is fine — a Remote Desktop
+/// session on a workstation with a graphics card and the hardware-adapter
+/// policy set is a real configuration — which costs a probe and nothing else,
+/// because the probe is what answers.
+pub fn session_may_lack_opengl() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
+
+    if unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0 {
+        return true;
+    }
+    !has_hardware_adapter()
+}
+
+/// Whether anything in this machine draws in hardware.
+///
+/// True when DXGI cannot be asked at all, which is the same rule as everywhere
+/// else here: an unknown answer is read as "the graphics are real", because
+/// the cost of being wrong that way is a probe and the cost of being wrong the
+/// other way is a working machine drawing on its processor.
+fn has_hardware_adapter() -> bool {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_SOFTWARE,
+    };
+
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else {
+            return true;
+        };
+        let mut index = 0;
+        while let Ok(adapter) = factory.EnumAdapters1(index) {
+            index += 1;
+            let Ok(description) = adapter.GetDesc1() else {
+                continue;
+            };
+            let flags = DXGI_ADAPTER_FLAG(description.Flags as i32);
+            if (flags & DXGI_ADAPTER_FLAG_SOFTWARE) == DXGI_ADAPTER_FLAG(0) {
+                return true;
+            }
+        }
+        // Every adapter said software, or there were none. Both mean the same
+        // thing here.
+        index == 0
+    }
+}
+
+/// What the system's OpenGL is, asked before there is a window and without
+/// keeping the library afterwards.
+///
+/// This is the question the whole fallback turns on, and it has to be answered
+/// without settling it: whichever `opengl32.dll` the process loads first is
+/// the one it draws with, so a probe that left the system's copy resident
+/// would make the software one unreachable in the same process — which is how
+/// this used to need a second launch to do its work. So the module is loaded
+/// here by hand, asked, and given back with `FreeLibrary`, which unmaps it
+/// while nothing else holds a reference. Nothing else does: `Wgl::get` and
+/// `opengl32` are the only other users and neither runs until there is a
+/// window.
+///
+/// It also fills the gap in the log. When the graphics are too old the window
+/// fails before any of this program's own code runs, so the line that usually
+/// says what they are is never written; this is where it comes from instead.
 ///
 /// `None` means OpenGL could not be brought up at all, which is a different
 /// and worse answer than an old version.
-pub fn probe_opengl() -> Option<String> {
-    let wgl = Wgl::get()?;
+pub fn probe_opengl() -> Option<super::GlReport> {
+    let module = unsafe { LoadLibraryW(wide("opengl32.dll").as_ptr()) };
+    let wgl = Wgl::from_module(module)?;
+    let report = probe_with(&wgl);
+    // Given back whatever the answer was. On the machines this is asked about
+    // the library is about to be replaced; on the rest it is about to be
+    // loaded again by name, by glutin, and is the same file either way.
+    if !module.is_null() {
+        unsafe { FreeLibrary(module) };
+    }
+    report
+}
+
+/// The window and the context, made and taken down around one question.
+fn probe_with(wgl: &Wgl) -> Option<super::GlReport> {
     unsafe {
         // `STATIC` is a class the system has already registered, which saves
         // registering and unregistering one of our own for a window that
@@ -861,9 +949,9 @@ pub fn probe_opengl() -> Option<String> {
     }
 }
 
-/// The middle of `probe_opengl`, split out so that every way of failing still
+/// The middle of `probe_with`, split out so that every way of failing still
 /// gives the device context and the context back.
-unsafe fn probe_through(window: *mut c_void, wgl: &Wgl) -> Option<String> {
+unsafe fn probe_through(window: *mut c_void, wgl: &Wgl) -> Option<super::GlReport> {
     let dc = GetDC(window);
     if dc.is_null() {
         return None;
@@ -906,12 +994,29 @@ unsafe fn probe_through(window: *mut c_void, wgl: &Wgl) -> Option<String> {
                                 .into_owned()
                         }
                     };
-                    answer = Some(format!(
-                        "{} · {} · {}",
-                        read(GL_VENDOR),
-                        read(GL_RENDERER),
-                        read(GL_VERSION)
-                    ));
+                    let version = read(GL_VERSION);
+                    // "1.1.0", "4.6.0 NVIDIA 551.23", "4.5 (Core Profile) Mesa
+                    // 24.0" — the major number is the leading digits of the
+                    // first word, and everything after it is prose. Anything
+                    // that cannot be read is taken as modern: a version string
+                    // nobody here has seen before is far more likely to be a
+                    // graphics card than the software renderer from 1996, and
+                    // guessing the other way would put a working machine on
+                    // llvmpipe.
+                    let major = version
+                        .split(['.', ' '])
+                        .next()
+                        .and_then(|n| n.parse::<u32>().ok())
+                        .unwrap_or(u32::MAX);
+                    answer = Some(super::GlReport {
+                        identity: format!(
+                            "{} · {} · {}",
+                            read(GL_VENDOR),
+                            read(GL_RENDERER),
+                            version
+                        ),
+                        major,
+                    });
                 }
                 (wgl.make_current)(std::ptr::null_mut(), std::ptr::null_mut());
             }

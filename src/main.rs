@@ -265,48 +265,82 @@ fn prefer_integrated_gpu() {
     }
 }
 
-/// Which OpenGL this launch is to use. `software` is the fallback below asking
-/// for its own second attempt, and is also the lever for anyone who wants that
-/// attempt first — a machine known to have no graphics driver can be told once
-/// rather than paying for the failed launch every time.
-const GL_CHOICE: &str = "CLICKER_GL";
-
-/// Put a software OpenGL in front of the system's, if this launch was asked to.
+/// Which OpenGL this program is about to draw with, settled before anything
+/// can draw.
 ///
-/// **Why there is a fallback at all.** Windows has an OpenGL of its own for
+/// **Why there is a choice at all.** Windows has an OpenGL of its own for
 /// machines with no graphics driver: `GDI Generic`, version 1.1, from 1996 and
 /// without so much as a shading language. It is what a virtual machine with no
-/// GPU is left with, and what a Remote Desktop session gets even on a machine
-/// that has one, because the session replaces the display driver with its own.
-/// Nothing here can run on it — egui needs 2.0 to compile a shader, and mpv
-/// wants 2.1 before it will make a renderer — so the whole program is a
-/// process that starts and vanishes. The way through is to bring an OpenGL
-/// along: Mesa's `opengl32.dll`, rasterising on the processor, which is slow
-/// and complete.
+/// graphics chip is left with, and what a Remote Desktop session gets even on
+/// a machine that has one, because the session replaces the display driver
+/// with its own. Nothing here can draw on it — egui needs 2.0 to compile a
+/// shader, and mpv wants 2.1 before it will make a renderer — so the window
+/// simply never opens. A software OpenGL travels with this program for those
+/// machines: Mesa, rasterising on the processor, which is slow and complete.
 ///
-/// **Why it is a whole second launch.** The substitution works by loading that
-/// DLL before anything else asks for one — see `platform::use_software_opengl`
-/// — and by the time the window has failed, the system's copy is already in
-/// the process and cannot be taken back out. So the failure path starts the
-/// program again with this variable set, and the second process, which has
-/// touched nothing yet, comes up on Mesa.
+/// **Why it happens here.** Whichever `opengl32.dll` the process loads first
+/// is the one every OpenGL call in it goes to, this program's and its
+/// libraries' alike, and nothing can change that afterwards. So the question
+/// is settled above the window, before glutin and before mpv, and the machine
+/// is asked about rather than tried and failed.
 ///
-/// Returns whether this launch is the fallback one, which is what tells the
-/// failure path that the fallback has had its turn. True even where the
-/// library could not be loaded: the turn is spent either way, and a launch
-/// that restarted itself over a library that is not there would restart itself
-/// forever.
-fn on_software_opengl() -> bool {
-    if std::env::var(GL_CHOICE).as_deref() != Ok("software") {
-        return false;
-    }
-    match platform::use_software_opengl() {
-        Some(path) => log::logline!("[clicker] OpenGL from {}", path.display()),
+/// **What it costs when it is not needed.** Nothing. A machine with a graphics
+/// driver that is not on a remote desktop does not get probed at all — see
+/// `platform::session_may_lack_opengl`, which is two facts and no window.
+///
+/// Returns whether the software renderer is what is being drawn with, which
+/// the interface says on its settings page.
+fn choose_opengl(asked: settings::Graphics) -> bool {
+    use settings::Graphics;
+
+    let take_software = |why: &str| match platform::use_software_opengl() {
+        Some(path) => {
+            log::logline!("[clicker] {why}: OpenGL from {}", path.display());
+            true
+        }
         None => {
-            log::logline!("[clicker] a software OpenGL was asked for and none could be loaded")
+            // Not fatal here. The window is about to be tried on whatever the
+            // machine does have, and if that fails too, `graphics_failed` is
+            // where somebody is told about it.
+            log::logline!("[clicker] {why}, and no software OpenGL could be loaded");
+            false
+        }
+    };
+
+    match asked {
+        Graphics::System => false,
+        Graphics::Software => take_software("asked for the software renderer"),
+        Graphics::Automatic => {
+            if !platform::session_may_lack_opengl() {
+                return false;
+            }
+            match platform::probe_opengl() {
+                // A remote session or a machine with no graphics chip that
+                // nonetheless has a real OpenGL. It is the machine's, and it
+                // is better than anything drawn on the processor.
+                Some(report) if report.major >= 2 => {
+                    log::logline!("[clicker] GL {} · the machine's own", report.identity);
+                    false
+                }
+                Some(report) => {
+                    take_software(&format!("this display offers only GL {}", report.identity))
+                }
+                None => take_software("this display has no OpenGL that could be started"),
+            }
         }
     }
-    true
+}
+
+/// Whether the picture and the interface are being drawn on the processor.
+///
+/// Settled once, above the window, by `choose_opengl`. The settings page reads
+/// it to say what is actually in use, which matters because the setting that
+/// governs it is `Automatic` on nearly every machine and Automatic does not
+/// say what it chose.
+static SOFTWARE_GL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn software_gl_in_use() -> bool {
+    SOFTWARE_GL.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether an error out of `run_native` is the graphics refusing, rather than
@@ -318,8 +352,8 @@ fn is_graphics_failure(error: &eframe::Error) -> bool {
     )
 }
 
-/// The window did not open. Say so where somebody will find it, and try the
-/// one thing that might work.
+/// The window did not open. Say so where somebody will find it, and say what
+/// to do about it.
 ///
 /// A release build is `windows_subsystem = "windows"`, so what `main` returns
 /// is printed to a handle nobody is holding: without this, the entire report
@@ -329,63 +363,42 @@ fn is_graphics_failure(error: &eframe::Error) -> bool {
 /// written after the point this failed — and a dialog, which is the only way
 /// left to reach the person who double-clicked.
 ///
-/// Returns whether the program is to leave quietly, which it is when a second
-/// launch has been started to take its place.
-fn graphics_failed(error: &eframe::Error, fallback_had_its_turn: bool) -> bool {
+/// Reaching this at all means the choice above was wrong or was overruled: a
+/// machine that said it had OpenGL and then would not open a window, a
+/// settings page set to System on a machine with none, or a software renderer
+/// that is not where it should be. All three are worth a sentence naming which
+/// one it was.
+fn graphics_failed(error: &eframe::Error, on_software: bool, asked: settings::Graphics) {
     log::logline!("[clicker] the window could not be opened: {error}");
     let graphics = platform::probe_opengl();
     match &graphics {
-        Some(identity) => log::logline!("[clicker] this display offers GL {identity}"),
+        Some(report) => log::logline!("[clicker] this display offers GL {}", report.identity),
         None => log::logline!("[clicker] this display has no OpenGL that could be started"),
     }
-
-    if !fallback_had_its_turn {
-        if let Some(software) = platform::software_opengl() {
-            log::logline!("[clicker] starting again on {}", software.display());
-            if restart_on_software_opengl() {
-                return true;
-            }
-        }
-    }
-    platform::alert(APP_NAME, &no_graphics_message(graphics.as_deref()));
-    false
+    platform::alert(
+        APP_NAME,
+        &no_graphics_message(graphics.as_ref(), on_software, asked),
+    );
 }
 
-/// Start this program again, on the software OpenGL this one could not reach.
-///
-/// The same arguments, and one more thing in the environment. Nothing is
-/// waited for: this process is about to end, and the one it started is the
-/// program now.
-fn restart_on_software_opengl() -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    match std::process::Command::new(exe)
-        .args(std::env::args_os().skip(1))
-        .env(GL_CHOICE, "software")
-        .spawn()
-    {
-        Ok(_) => true,
-        Err(e) => {
-            log::logline!("[clicker] could not start again: {e}");
-            false
-        }
-    }
-}
-
-/// What to tell somebody whose machine cannot draw this program.
+/// What to tell somebody whose machine could not draw this program.
 ///
 /// Written for the case it is nearly always going to be — a virtual machine or
-/// a Remote Desktop session — and it names the places a software OpenGL would
-/// be picked up from, because "install Mesa" without a directory is a sentence
-/// that ends the conversation.
-fn no_graphics_message(graphics: Option<&str>) -> String {
+/// a Remote Desktop session — and it ends in something to do, which differs by
+/// how the program got here: a settings page to change where the setting is
+/// what refused the way out, and a directory to put a library in where the
+/// library is what is missing.
+fn no_graphics_message(
+    graphics: Option<&platform::GlReport>,
+    on_software: bool,
+    asked: settings::Graphics,
+) -> String {
     let mut said = vec![
         "Clicker could not open its window, because it needs OpenGL 2.0 or later to draw \
          anything."
             .to_string(),
         match graphics {
-            Some(identity) => format!("This display offers OpenGL: {identity}."),
+            Some(report) => format!("This display offers OpenGL: {}.", report.identity),
             None => "OpenGL could not be started on this display at all.".to_string(),
         },
         "Windows falls back to an OpenGL of its own — version 1.1, with no shaders in it — \
@@ -395,11 +408,26 @@ fn no_graphics_message(graphics: Option<&str>) -> String {
             .to_string(),
     ];
 
-    let places = platform::software_opengl_candidates();
-    if !places.is_empty() {
+    if on_software {
+        // The software renderer was loaded and the window still did not open,
+        // which is the one case here with nothing left to suggest.
         said.push(
-            "Either use the machine's own screen, or give this one a software OpenGL to draw \
-             with: put Mesa's opengl32.dll in any of these and start Clicker again."
+            "Clicker was already drawing with its own software renderer, so this is not the \
+             display's OpenGL failing — something else refused the window."
+                .to_string(),
+        );
+    } else if asked == settings::Graphics::System {
+        said.push(
+            "Clicker is set to use this machine's own OpenGL and nothing else. Its own \
+             software renderer would draw on a display like this one: delete the settings \
+             file, or set Graphics back to Automatic, and start Clicker again."
+                .to_string(),
+        );
+    } else {
+        let places = platform::software_opengl_candidates();
+        said.push(
+            "Clicker ships with a software renderer for exactly this, and could not find it. \
+             It is Mesa's opengl32.dll and libgallium_wgl.dll, and it belongs in one of these:"
                 .to_string(),
         );
         said.push(
@@ -410,7 +438,9 @@ fn no_graphics_message(graphics: Option<&str>) -> String {
                 .join("\n"),
         );
         said.push(
-            "Everything is drawn on the processor then, which works and is not fast.".to_string(),
+            "Reinstalling Clicker puts it back. Everything is drawn on the processor then, \
+             which works and is not fast."
+                .to_string(),
         );
     }
 
@@ -468,9 +498,10 @@ fn main() -> eframe::Result<()> {
     prefer_integrated_gpu();
 
     // Before the window, before glutin, and before mpv: whichever OpenGL is
-    // loaded first is the one the whole process gets. Ordinary launches ask
-    // for nothing and this does nothing.
-    let on_software_gl = on_software_opengl();
+    // loaded first is the one the whole process draws with.
+    let saved_graphics = saved.graphics;
+    let on_software_gl = choose_opengl(saved_graphics);
+    SOFTWARE_GL.store(on_software_gl, std::sync::atomic::Ordering::Relaxed);
 
     // The build's own license, from the binary rather than from a claim in a
     // text file. This application may only be distributed if FFmpeg was built
@@ -538,18 +569,12 @@ fn main() -> eframe::Result<()> {
 
     // The one failure that happens before there is an interface to report it
     // in, and so the one that has to be reported by hand.
-    match ran {
-        Err(e) if is_graphics_failure(&e) => {
-            if graphics_failed(&e, on_software_gl) {
-                // A second launch is carrying on where this one stopped, so
-                // this one is not a failure to report.
-                Ok(())
-            } else {
-                Err(e)
-            }
+    if let Err(e) = &ran {
+        if is_graphics_failure(e) {
+            graphics_failed(e, on_software_gl, saved_graphics);
         }
-        other => other,
     }
+    ran
 }
 
 /// Record panics to a file as well as to stderr.
