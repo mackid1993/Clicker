@@ -76,6 +76,26 @@ needed to debug that. Clicker's MIT license permits modification and reverse
 engineering outright, so those requirements are met with nothing to carve out;
 the separate, replaceable DLLs above are the relinking half of the bargain.
 
+## Mesa — MIT (and LLVM, Apache-2.0 with LLVM exceptions)
+
+The Windows installer carries Mesa's software OpenGL in `mesa\` beside the
+executable, and only the Windows one: it exists for machines whose own OpenGL
+cannot draw a shader — a virtual machine with no graphics chip, or a Remote
+Desktop session, both of which are left with Windows' `GDI Generic` 1.1. It is
+loaded by full path, only once the machine has been found to need it, and never
+on a machine with a working graphics driver.
+
+* Source: <https://gitlab.freedesktop.org/mesa/mesa>, packaged for Windows by
+  <https://github.com/pal1000/mesa-dist-win>, release `26.2.0`, `release-msvc`
+* What is shipped: `opengl32.dll` and `libgallium_wgl.dll` — since Mesa 21.3.0
+  the first is a loader and the second holds the drivers — plus `dxil.dll`,
+  which the Direct3D 12 driver needs to load. Unmodified, separate files,
+  replaceable with any compatible build.
+* The driver actually used is llvmpipe, which rasterises on the processor and
+  needs no graphics hardware of any kind.
+* License text: `mesa-license.txt`, distributed alongside this file. llvmpipe
+  links LLVM, whose license is `llvm-license.txt`.
+
 ## Rust crates
 
 The Rust dependencies in `Cargo.toml` and their transitive dependencies are

@@ -315,17 +315,22 @@ jobs:
           # a different renderer than the last one is a build that cannot be
           # compared to it.
           MESA_VERSION: "26.2.0"
+          # The bytes, not just the name. A tag can be moved and a release
+          # asset can be replaced; this is what says the renderer inside this
+          # installer is the one that was looked at. Read off the first build
+          # that fetched it, and it changes only when MESA_VERSION does.
+          MESA_SHA256: "dcb2719ef346dab5b609fcb193a5f13cfc4b0502e3f4de1ad43d349477402f47"
         run: |
           $package = "mesa3d-$env:MESA_VERSION-release-msvc.7z"
           $url = "https://github.com/pal1000/mesa-dist-win/releases/download/$env:MESA_VERSION/$package"
           Write-Host "Fetching $url"
           Invoke-WebRequest -Uri $url -OutFile $package
 
-          # Printed rather than checked, for now. Pin it here once it has been
-          # read off a build: a third-party binary that goes into an installer
-          # should be the same bytes every time or say why not.
           $sha = (Get-FileHash $package -Algorithm SHA256).Hash.ToLower()
-          Write-Host "sha256: $sha"
+          if ($sha -ne $env:MESA_SHA256) {
+            throw "$package is not the package this build was pinned to.`n  expected $env:MESA_SHA256`n  got      $sha"
+          }
+          Write-Host "sha256 verified: $sha"
 
           7z x $package -omesa-package -y | Out-Null
           New-Item -ItemType Directory -Force -Path third_party\mesa | Out-Null
@@ -345,15 +350,16 @@ jobs:
           $size = (Get-ChildItem third_party\mesa -File | Measure-Object Length -Sum).Sum / 1MB
           Write-Host ("staged {0}: {1:N1} MB" -f ($taken -join ', '), $size)
 
-          # The license travels with the binaries or the binaries do not ship.
-          # Mesa is MIT and llvmpipe links LLVM, which is Apache-2.0 with the
-          # LLVM exception; both texts are in the source tree this was built
-          # from. Not fatal here because this is a build, not a release — but a
-          # release must not go out without it, which is what the warning is
-          # for.
-          $license = 'licenses\mesa-license.txt'
-          if (-not (Test-Path $license)) {
-            Write-Host "::warning::$license is missing. The Mesa binaries in this installer are shipping without their license text; do not publish a release from this build until it is there."
+          # The licenses travel with the binaries or the binaries do not ship.
+          # Mesa is MIT; llvmpipe links LLVM, which is Apache-2.0 with the LLVM
+          # exceptions. Both texts are in licenses\ and build.ps1 stages that
+          # whole directory into the installer, so this only has to check that
+          # they are still there — a fetch step that quietly outlived the
+          # paperwork is exactly the failure worth being loud about.
+          foreach ($license in 'licenses\mesa-license.txt', 'licenses\llvm-license.txt') {
+            if (-not (Test-Path $license)) {
+              throw "$license is missing, and these binaries do not ship without it."
+            }
           }
 
       # Inno Setup ships on the windows runner images, and build.ps1 looks for

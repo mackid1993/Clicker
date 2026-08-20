@@ -55,6 +55,16 @@ and shows it in Settings under About. `scripts/build-mpv.ps1` reproduces the
 build from the pinned tag, and `build.ps1` re-reads the shipped library and
 refuses to package it if it reports GPL.
 
+## Mesa
+
+The Windows installer includes Mesa's software OpenGL — `opengl32.dll`,
+`libgallium_wgl.dll` and `dxil.dll` — in the `mesa` directory beside the
+executable, for machines with no OpenGL of their own to draw with. They are
+unmodified and separately replaceable, they are loaded only when the machine
+turns out to need them, and Mesa is MIT. The renderer used is llvmpipe, which
+links LLVM, licensed under Apache-2.0 with LLVM exceptions. Both license texts
+are installed in `licenses`.
+
 ## Rust crates
 
 The Rust dependencies listed in `Cargo.toml`, and their own dependencies, are
