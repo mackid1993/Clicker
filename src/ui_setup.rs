@@ -645,11 +645,17 @@ pub fn settings_screen(
             if crate::platform::HAS_SOFTWARE_GL {
                 control_row(ui, |ui| {
                     use crate::settings::Graphics;
-                    setting_label(ui, "Graphics");
+                    // "Draw with", not "Graphics", and it is a deliberate pair
+                    // with "Decode in software" above: one names what turns the
+                    // stream into frames, the other what puts frames on the
+                    // screen. Called anything vaguer they read as two spellings
+                    // of the same switch, which is how the first version of
+                    // this row was read.
+                    setting_label(ui, "Draw with");
                     let name = |g: Graphics| match g {
                         Graphics::Automatic => "Automatic",
                         Graphics::Software => "Software",
-                        Graphics::System => "This machine's",
+                        Graphics::System => "Graphics chip",
                     };
                     egui::ComboBox::from_id_salt("graphics")
                         .selected_text(name(settings.graphics))
@@ -661,21 +667,21 @@ pub fn settings_screen(
                                     .selectable_label(settings.graphics == choice, name(choice))
                                     .on_hover_text(match choice {
                                         Graphics::Automatic => {
-                                            "This machine's own OpenGL, unless it turns out \
-                                             not to have one — a virtual machine with no \
-                                             graphics chip, or a Remote Desktop session — \
-                                             where the software renderer is used instead."
+                                            "The graphics chip, unless this machine turns \
+                                             out not to have one that can draw — a virtual \
+                                             machine, or a Remote Desktop session — where \
+                                             the software renderer is used instead."
                                         }
                                         Graphics::Software => {
-                                            "The software renderer always. Everything is \
-                                             drawn on the processor, which works and is not \
-                                             fast; the way out of a display whose OpenGL is \
-                                             there but draws wrong."
+                                            "The software renderer always: the picture and \
+                                             the interface drawn on the processor, which \
+                                             works and is not fast. The way out of a \
+                                             display whose driver is there and draws wrong."
                                         }
                                         Graphics::System => {
-                                            "This machine's own OpenGL always, and no window \
-                                             at all if it has none. For proving what the \
-                                             graphics really are."
+                                            "The graphics chip always, and no window at all \
+                                             if its driver cannot draw. For proving what \
+                                             the graphics really are."
                                         }
                                     })
                                     .clicked()
@@ -687,18 +693,39 @@ pub fn settings_screen(
                         })
                         .response
                         .on_hover_text(
-                            "Which OpenGL the interface and the picture are drawn with. \
-                             Whichever one is loaded first is the one the whole program \
-                             uses, so this takes effect the next time Clicker starts.",
+                            "Which OpenGL draws the interface and the picture — this \
+                             machine's own, or the software renderer that ships with \
+                             Clicker. Separate from decoding above: one is what turns the \
+                             stream into frames, this is what puts them on the screen.",
                         );
-                    // Automatic does not say what it chose, and on the machines
-                    // this setting exists for that is the only thing anybody
-                    // wants to know.
-                    if crate::software_gl_in_use() {
+
+                    // What is happening, beside what has been asked for.
+                    // Automatic does not say which way it went, and a setting
+                    // that only takes effect at the next start looks broken
+                    // until something says so — which a tooltip nobody hovers
+                    // does not.
+                    let drawing_on_processor = crate::software_gl_in_use();
+                    let wanted_now = match settings.graphics {
+                        Graphics::Software => true,
+                        Graphics::System => false,
+                        Graphics::Automatic => drawing_on_processor,
+                    };
+                    let note = if settings.graphics == Graphics::Software
+                        && crate::platform::software_opengl().is_none()
+                    {
+                        Some("no software renderer installed".to_string())
+                    } else if wanted_now != drawing_on_processor {
+                        Some("restart Clicker to apply".to_string())
+                    } else if drawing_on_processor {
+                        Some("drawing on the processor".to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(note) = note {
                         ui.label(
-                            egui::RichText::new("drawing on the processor")
+                            egui::RichText::new(note)
                                 .size(11.0)
-                                .color(Fluent::TEXT_SECONDARY),
+                                .color(Fluent::TEXT_TERTIARY),
                         );
                     }
                 });

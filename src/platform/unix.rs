@@ -135,6 +135,11 @@ pub fn session_may_lack_opengl() -> bool {
     false
 }
 
+/// Never anything, so the setting that would choose one is not offered here.
+pub fn software_opengl() -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Nothing to activate, because there is nothing to fall back *from*.
 ///
 /// The Windows counterpart exists for a machine with no graphics driver at

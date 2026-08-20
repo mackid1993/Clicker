@@ -549,6 +549,7 @@ extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
     fn LoadLibraryExW(name: *const u16, reserved: *mut c_void, flags: u32) -> *mut c_void;
     fn FreeLibrary(module: *mut c_void) -> i32;
+    fn GetModuleFileNameW(module: *mut c_void, filename: *mut u16, size: u32) -> u32;
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
     fn GetCurrentThread() -> *mut c_void;
     fn GetThreadTimes(
@@ -621,9 +622,38 @@ pub unsafe fn library_symbol(module: *mut c_void, name: *const u8) -> *mut c_voi
 /// chance to choose, and the substitution above would silently do nothing.
 fn opengl32() -> *mut c_void {
     static MODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *MODULE.get_or_init(|| unsafe { LoadLibraryW(wide("opengl32.dll").as_ptr()) as usize })
-        as *mut c_void
+    *MODULE.get_or_init(|| unsafe {
+        match CHOSEN.get() {
+            // The same file glutin was pointed at, by the same full path.
+            // These two must be one library: mpv is handed function pointers
+            // out of this module and draws into the context glutin made, so a
+            // process holding both a software OpenGL and the system's, with
+            // the renderer on one and the loader on the other, is worse than
+            // having neither.
+            Some(path) => {
+                let wide: Vec<u16> = std::os::windows::ffi::OsStrExt::encode_wide(path.as_os_str())
+                    .chain(std::iter::once(0))
+                    .collect();
+                LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH)
+                    as usize
+            }
+            None => LoadLibraryW(wide("opengl32.dll").as_ptr()) as usize,
+        }
+    }) as *mut c_void
 }
+
+/// The software OpenGL this process was told to use, once it has been.
+///
+/// Set before the window exists and read by everything afterwards, which is
+/// what keeps one library under the whole program.
+static CHOSEN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// What glutin reads to decide which library its WGL backend loads.
+///
+/// It takes the name verbatim and hands it to `LoadLibraryW`, so a full path
+/// here is a full path loaded — no search, no base-name collision, no question
+/// about which of two `opengl32.dll`s a process ends up drawing with.
+const GLUTIN_OPENGL_DLL: &str = "GLUTIN_WGL_OPENGL_DLL";
 
 /// The handful of WGL calls this program makes, resolved out of whichever
 /// `opengl32.dll` is being asked about.
@@ -709,6 +739,40 @@ pub fn software_opengl_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+/// Whether there is a software OpenGL on this machine at all, and where.
+///
+/// Existence only, and remembered: the settings page asks every frame so it
+/// can say whether the renderer it is offering is actually installed, and
+/// three files being stat-ed sixty times a second to answer a question whose
+/// answer cannot change while the program runs is three files too many.
+pub fn software_opengl() -> Option<PathBuf> {
+    static FOUND: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FOUND
+        .get_or_init(|| software_opengl_candidates().into_iter().find(|c| c.is_file()))
+        .clone()
+}
+
+/// Where a loaded module came from on disk.
+///
+/// Asked rather than assumed. The path handed to `LoadLibraryEx` is what was
+/// meant to be loaded; this is what the loader actually mapped, and a line in
+/// the log naming the file is the difference between "the setting did nothing"
+/// and knowing why.
+fn module_path(module: *mut c_void) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    unsafe {
+        let mut name = [0u16; 1024];
+        let len = GetModuleFileNameW(module, name.as_mut_ptr(), name.len() as u32);
+        if len == 0 {
+            return None;
+        }
+        Some(PathBuf::from(std::ffi::OsString::from_wide(
+            &name[..len as usize],
+        )))
+    }
+}
+
 /// Make a software OpenGL *the* OpenGL for this process.
 ///
 /// Must run before anything touches graphics — before the window, before
@@ -738,9 +802,30 @@ pub fn use_software_opengl() -> Option<PathBuf> {
         let module = unsafe {
             LoadLibraryExW(path.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH)
         };
-        if !module.is_null() {
-            return Some(candidate);
+        if module.is_null() {
+            continue;
         }
+
+        // Both halves of the process are pointed at this exact file. glutin
+        // reads the variable and loads what it names; everything of ours goes
+        // through `opengl32`, which reads `CHOSEN`.
+        //
+        // Loading it here and hoping was the first attempt at this and it does
+        // not work. glutin asks for "opengl32.dll" by bare name, and a bare
+        // name is resolved by the search path — System32 — rather than
+        // answered from a module already loaded from somewhere else. The
+        // library was in the process and nothing used it: the interface came
+        // up on the graphics chip with the software renderer sitting loaded
+        // beside it.
+        std::env::set_var(GLUTIN_OPENGL_DLL, &candidate);
+        let _ = CHOSEN.set(candidate.clone());
+        crate::log::line(&format!(
+            "[clicker] OpenGL is {} for this process",
+            module_path(module)
+                .unwrap_or_else(|| candidate.clone())
+                .display()
+        ));
+        return Some(candidate);
     }
     None
 }
