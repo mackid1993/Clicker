@@ -57,14 +57,17 @@ refuses to package it if it reports GPL.
 
 ## Mesa
 
-The Windows installer includes Mesa's software OpenGL — `opengl32.dll`,
-`libgallium_wgl.dll` and `dxil.dll` — in the `mesa` directory beside the
-executable, for machines with no OpenGL of their own to draw with. They are
-unmodified and separately replaceable, they are loaded only when the machine
-turns out to need them, and Mesa is MIT — most of it, with individual files
-naming their own license by SPDX identifier. The renderer used is llvmpipe,
-which links LLVM, licensed under Apache-2.0 with LLVM exceptions. Both license
-texts are installed in `licenses`.
+The x64 Windows installer includes Mesa's software OpenGL — `opengl32.dll` and
+`libgallium_wgl.dll` — in the `mesa` directory beside the executable, for
+machines with no OpenGL of their own to draw with. They are unmodified and
+separately replaceable, and they are loaded when the machine turns out to need
+them or when Clicker is set to draw with the software renderer. Mesa is MIT —
+most of it, with individual files naming their own license by SPDX identifier.
+The renderer used is llvmpipe, which links LLVM, licensed under Apache-2.0 with
+LLVM exceptions. Both license texts are installed in `licenses`.
+
+The arm64 installer ships no renderer: the distribution these binaries come
+from publishes x86 and x64 only.
 
 ## Rust crates
 

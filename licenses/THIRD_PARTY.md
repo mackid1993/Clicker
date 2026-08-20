@@ -78,28 +78,35 @@ the separate, replaceable DLLs above are the relinking half of the bargain.
 
 ## Mesa — MIT (and LLVM, Apache-2.0 with LLVM exceptions)
 
-The Windows installer carries Mesa's software OpenGL in `mesa\` beside the
-executable, and only the Windows one: it exists for machines whose own OpenGL
-cannot draw a shader — a virtual machine with no graphics chip, or a Remote
-Desktop session, both of which are left with Windows' `GDI Generic` 1.1. It is
-loaded by full path, only once the machine has been found to need it, and never
-on a machine with a working graphics driver.
+The x64 Windows installer carries Mesa's software OpenGL in `mesa\` beside the
+executable, and only that one: it exists for machines whose own OpenGL cannot
+draw a shader — a virtual machine with no graphics chip, or a Remote Desktop
+session, both of which are left with Windows' `GDI Generic` 1.1. Every machine
+is asked what it has before a window is opened; this is loaded, by full path,
+when the answer is that it cannot draw, or when Clicker is set to draw with the
+software renderer. The arm64 installer ships without one, because the
+distribution below publishes x86 and x64 only.
 
 * Source: <https://gitlab.freedesktop.org/mesa/mesa>, packaged for Windows by
-  <https://github.com/pal1000/mesa-dist-win>, release `26.2.0`, `release-msvc`
+  <https://github.com/pal1000/mesa-dist-win>, release `26.2.0`, `release-msvc`,
+  pinned by sha256 in `.github/workflows/build.yml`
 * What is shipped: `opengl32.dll` and `libgallium_wgl.dll` — since Mesa 21.3.0
-  the first is a loader and the second holds the drivers — plus `dxil.dll`,
-  which the Direct3D 12 driver needs to load. Unmodified, separate files,
-  replaceable with any compatible build.
-* The driver actually used is llvmpipe, which rasterises on the processor and
-  needs no graphics hardware of any kind.
+  the first is a loader and the second holds the drivers. Unmodified, separate
+  files, replaceable with any compatible build. Nothing else from that package
+  is taken: `dxil.dll` ships in it and is Microsoft's, for the Direct3D 12
+  driver, which is not the driver this is here for.
+* The driver used is llvmpipe, which rasterises on the processor and needs no
+  graphics hardware of any kind.
 * License text: `mesa-license.txt`, distributed alongside this file — Mesa's
-  own license page and the MIT terms it names. Most of Mesa is MIT; individual
-  files may carry their own license, named by the SPDX identifier in each
-  source file, and the full set of texts lives in the `licenses/` directory of
-  Mesa's source tree.
+  own license page and its default MIT grant, copyright notice included. Most
+  of Mesa is MIT; individual files may carry their own license, named by the
+  SPDX identifier in each source file, and the full set of texts lives in the
+  `licenses/` directory of Mesa's source tree.
 * llvmpipe links LLVM, whose license is `llvm-license.txt`: Apache-2.0 with the
-  LLVM exceptions.
+  LLVM exceptions. A Mesa build of this kind statically links other permissive
+  components as well — zlib, the SPIRV tooling, the Khronos headers among them
+  — each under its own terms in that same `licenses/` directory. None of it is
+  copyleft.
 
 ## Rust crates
 

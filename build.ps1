@@ -337,8 +337,9 @@ Write-Host "      runtime carried: $($carried -join ', ')" -ForegroundColor Dark
 # mpv wants 2.1. That is what a virtual machine with no graphics chip is left
 # with, and what a Remote Desktop session gets even where there is one, because
 # the session replaces the display driver. Mesa's opengl32.dll rasterises on
-# the processor and is complete, and `platform::use_software_opengl` loads it
-# out of this directory when the window fails to open any other way.
+# the processor and is complete. Every machine is asked what OpenGL it has
+# before the window exists, and this is what draws when the answer is that it
+# cannot compile a shader — or when Draw with is set to Software in Settings.
 #
 # Optional on purpose. The DLL is tens of megabytes and every machine with a
 # graphics driver has no use for it, so this refuses nothing: without it the
@@ -353,6 +354,22 @@ Write-Host "      runtime carried: $($carried -join ', ')" -ForegroundColor Dark
 # wildcard over an empty directory is a compile error in Inno Setup, and an
 # optional component that breaks the build when it is absent is not optional.
 $mesa = Join-Path $Root 'third_party\mesa'
+# Where to find one, and an honest answer where there is nowhere to point.
+# mesa-dist-win publishes x86 and x64 only, so telling somebody on an Arm PC to
+# take the x64 files would be telling them to download a library their build
+# cannot load.
+$MesaWhere = if ($AppArch -eq 'x64') {
+    @'
+Windows builds of Mesa: https://github.com/pal1000/mesa-dist-win/releases
+Take the release-msvc package and the two files under x64.
+'@
+} else {
+    @"
+The distribution Clicker builds against - https://github.com/pal1000/mesa-dist-win
+- publishes x86 and x64 only, so there is no ready-made $AppArch build to drop
+in here. Mesa can be built for this processor from source.
+"@
+}
 $mesaStage = (New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'mesa')).FullName
 @"
 Clicker's software OpenGL lives in this folder.
@@ -364,19 +381,19 @@ machines are left with it: a virtual machine with no graphics chip, and a
 Remote Desktop session, which replaces the display driver even on a machine
 that has a good one.
 
-So Mesa is here instead. Clicker loads it only when the machine turns out to
-have no OpenGL of its own, or when Graphics is set to Software in Settings.
-Everything is drawn on the processor then, which works and is not fast. A
-machine with a graphics driver never loads any of this.
+So Mesa is here instead. Clicker asks every machine what OpenGL it has before
+it opens a window, and uses what is in this folder when the answer is that the
+machine cannot draw - or when Draw with is set to Software in Settings, under
+Video. Everything is drawn on the processor then, which works and is not fast.
+A machine whose own OpenGL can draw never loads any of this.
 
-If the folder is empty, this installer was built without it. Two files are
-needed, both from a Mesa build for this processor ($AppArch): opengl32.dll and
-libgallium_wgl.dll. Since Mesa 21.3.0 the first is only a loader and the
-second is where the drivers actually are, so one without the other does
-nothing. dxil.dll is optional and lets the Direct3D 12 driver load.
+If this folder holds nothing but this note, the installer was built without a
+renderer. Two files are needed, both from a Mesa build for this machine's
+processor ($AppArch): opengl32.dll and libgallium_wgl.dll. Since Mesa 21.3.0
+the first is only a loader and the second is where the drivers are, so one
+without the other does nothing.
 
-Windows builds of Mesa: https://github.com/pal1000/mesa-dist-win/releases
-Take the release-msvc package and the files under x64.
+$MesaWhere
 "@ | Set-Content -Path (Join-Path $mesaStage 'README.txt') -Encoding UTF8
 
 $mesaDlls = @(Get-ChildItem (Join-Path $mesa '*.dll') -ErrorAction SilentlyContinue)
@@ -390,12 +407,20 @@ foreach ($file in $mesaDlls) {
     Copy-Item $file.FullName $mesaStage -Force
     $mesaTaken += $file.Name
 }
-if ($mesaTaken -contains 'opengl32.dll') {
-    Write-Host "      software OpenGL staged: $($mesaTaken -join ', ')" -ForegroundColor DarkGray
-} elseif ($mesaDlls) {
-    Write-Host '      WARNING: third_party\mesa has no opengl32.dll for this processor' -ForegroundColor Yellow
-} else {
+# Both, or it is not a renderer. opengl32.dll alone is a loader with nothing
+# behind it: it installs, it loads, and it cannot make a context — which is a
+# worse outcome than shipping no renderer at all, because the application would
+# choose it and then fail.
+$needed = @('opengl32.dll', 'libgallium_wgl.dll') | Where-Object { $mesaTaken -notcontains $_ }
+if (-not $mesaDlls) {
     Write-Host '      no software OpenGL bundled (third_party\mesa is empty)' -ForegroundColor DarkGray
+} elseif ($needed) {
+    Write-Host "      WARNING: the software OpenGL is incomplete; missing $($needed -join ' and ')" -ForegroundColor Yellow
+    if ($mesaTaken) {
+        Write-Host "      staged anyway: $($mesaTaken -join ', ')" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "      software OpenGL staged: $($mesaTaken -join ', ')" -ForegroundColor DarkGray
 }
 
 $wrongArch = @(Get-ChildItem (Join-Path $Stage '*.dll') |
@@ -443,7 +468,14 @@ Write-Host '      licenses verified: LGPL, no GPL components' -ForegroundColor D
 # information at all — a warning that cried wolf on its own fix.
 $profileName = Split-Path -Leaf $env:USERPROFILE
 $leaks = @()
-foreach ($file in Get-ChildItem $Stage -File -Include *.exe, *.dll -Recurse) {
+# Not the bundled renderer: those are a third party's binaries, built on a
+# machine that is none of this project's business, and reading 60MB of them to
+# look for this user's profile name is both slow and a claim nobody here can
+# make. Everything this build produced or staged from a redistributable is
+# still covered.
+$mine = Get-ChildItem $Stage -File -Include *.exe, *.dll -Recurse |
+    Where-Object { $_.Directory.Name -ne 'mesa' }
+foreach ($file in $mine) {
     $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($file.FullName))
     if ($text -match [regex]::Escape("Users\$profileName") -or
         $text -match [regex]::Escape("Users/$profileName")) {

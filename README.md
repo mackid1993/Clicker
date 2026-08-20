@@ -150,12 +150,15 @@ ask — Mesa draws instead. There is no second launch and nothing to install by
 hand: a machine either has graphics or it has the renderer that travels with
 it.
 
-Settings has the override, under Video: **Automatic** is the above,
-**Software** draws on the processor whatever the machine has — the way out of
-a virtual GPU whose OpenGL is present but draws wrong — and **This machine's**
-refuses the fallback, for proving what the graphics really are. It applies the
-next time Clicker starts, because whichever library loads first is the one the
-whole process draws with.
+Settings has the override, under Video, as **Draw with**: **Automatic** is the
+above, **Software** draws on the processor whatever the machine has — the way
+out of a virtual GPU whose OpenGL is present but draws wrong — and **Graphics
+chip** refuses the fallback, for proving what the graphics really are. It
+applies the next time Clicker starts, and the row says so, because whichever
+library loads first is the one the whole process draws with.
+
+`CLICKER_OPENGL` names a software OpenGL somewhere else entirely, for trying
+one without installing it.
 
 Drawn on the processor, everything works and nothing is fast. The picture
 profiles already read `llvmpipe` as software and drop to mpv's cheap scalers
@@ -237,14 +240,20 @@ there is no native compilation step and no headers to find.
 
 `build.ps1` stages whatever is in `third_party\mesa\` into `mesa\` beside the
 executable, and the installer carries it. The Windows build workflow fetches
-it — a pinned [mesa-dist-win](https://github.com/pal1000/mesa-dist-win)
-release-msvc package, `opengl32.dll` and `libgallium_wgl.dll` out of `x64` —
-so a CI installer has it and a local `build.ps1` does not unless you put one
-there. An empty directory is not an error: the installer is then what it was
-before any of this, and a machine with no OpenGL gets a dialog saying so.
+it — a [mesa-dist-win](https://github.com/pal1000/mesa-dist-win) release-msvc
+package, pinned by version and by sha256, with `opengl32.dll` and
+`libgallium_wgl.dll` taken out of `x64` — so a CI installer has it and a local
+`build.ps1` does not unless you put one there. An empty directory is not an
+error: the installer is then what it was before any of this, and a machine
+with no OpenGL gets a dialog saying so.
 
 Both DLLs, and the second is easy to miss: since Mesa 21.3.0 `opengl32.dll` is
-only a loader and `libgallium_wgl.dll` is where the drivers live.
+only a loader and `libgallium_wgl.dll` is where the drivers live. Nothing else
+from that package is taken — `dxil.dll` is in it and is Microsoft's, for the
+Direct3D 12 driver, which is not the driver this is for.
+
+x64 only: that distribution publishes x86 and x64, so the arm64 installer
+ships without a renderer and the folder's own note says so.
 
 It goes in a subdirectory and never beside the executable. An `opengl32.dll`
 there would be found by the loader ahead of the real driver on every machine

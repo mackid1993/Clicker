@@ -119,11 +119,12 @@ Source: "{#StageDir}\licenses\*";    DestDir: "{app}\licenses"; Flags: ignorever
 Source: "{#StageDir}\*.dll";         DestDir: "{app}"; Flags: ignoreversion
 
 ; A software OpenGL, in a directory of its own, and only if the build staged
-; one — see build.ps1, which makes it optional. It is never loaded on a machine
-; whose graphics work: the application asks for it by full path, and only after
-; the window has failed to open on the system's own OpenGL. That is why it is
-; here rather than beside the executable, where the loader would prefer it to
-; the real driver on every machine.
+; one — see build.ps1, which makes it optional. The application asks every
+; machine what OpenGL it has before it opens a window and loads this by full
+; path only when the answer is that the machine cannot draw, or when somebody
+; sets Draw with to Software. That is why it is here rather than beside the
+; executable, where the loader would prefer it to the real driver on every
+; machine that installs this.
 ;
 ; The directory always holds at least the note that says what belongs in it, so
 ; this never matches nothing; the flag is there in case a stage is ever
