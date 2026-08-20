@@ -93,8 +93,13 @@ on a machine with a working graphics driver.
   replaceable with any compatible build.
 * The driver actually used is llvmpipe, which rasterises on the processor and
   needs no graphics hardware of any kind.
-* License text: `mesa-license.txt`, distributed alongside this file. llvmpipe
-  links LLVM, whose license is `llvm-license.txt`.
+* License text: `mesa-license.txt`, distributed alongside this file — Mesa's
+  own license page and the MIT terms it names. Most of Mesa is MIT; individual
+  files may carry their own license, named by the SPDX identifier in each
+  source file, and the full set of texts lives in the `licenses/` directory of
+  Mesa's source tree.
+* llvmpipe links LLVM, whose license is `llvm-license.txt`: Apache-2.0 with the
+  LLVM exceptions.
 
 ## Rust crates
 
