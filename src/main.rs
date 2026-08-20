@@ -265,8 +265,8 @@ fn prefer_integrated_gpu() {
     }
 }
 
-/// Which OpenGL this program is about to draw with, settled before anything
-/// can draw.
+/// Which OpenGL this program draws with, and what to do if it is the wrong
+/// one.
 ///
 /// **Why there is a choice at all.** Windows has an OpenGL of its own for
 /// machines with no graphics driver: `GDI Generic`, version 1.1, from 1996 and
@@ -274,64 +274,92 @@ fn prefer_integrated_gpu() {
 /// graphics chip is left with, and what a Remote Desktop session gets even on
 /// a machine that has one, because the session replaces the display driver
 /// with its own. Nothing here can draw on it — egui needs 2.0 to compile a
-/// shader, and mpv wants 2.1 before it will make a renderer — so the window
-/// simply never opens. A software OpenGL travels with this program for those
+/// shader, mpv wants 2.1 before it will make a renderer — so the window simply
+/// never opens. A software OpenGL travels with this program for those
 /// machines: Mesa, rasterising on the processor, which is slow and complete.
 ///
-/// **Why it happens here.** Whichever `opengl32.dll` the process loads first
-/// is the one every OpenGL call in it goes to, this program's and its
-/// libraries' alike, and nothing can change that afterwards. So the question
-/// is settled above the window, before glutin and before mpv, and the machine
-/// is asked about rather than tried and failed.
+/// **Why the switch is a file and not a decision.** The library a process
+/// draws with is bound to it before any of its own code runs. glutin creates
+/// its context through `wglCreateContext` and its neighbours, and those are
+/// *static* imports — `glutin_wgl_sys` generates them with gl_generator's
+/// `StaticGenerator` over a bare `#[link(name = "opengl32")]` — so by the time
+/// `main` exists the question is already answered and nothing this program
+/// does can change it. What the loader does honour is where it looks, and the
+/// executable's own directory is first. So choosing the software renderer
+/// means putting it there, and it takes effect at the next start.
 ///
-/// **Why the machine is always asked.** This used to probe only where the
-/// machine looked suspicious — a remote session, or no hardware display
-/// adapter — and take the rest on trust. That is a guess about which machines
-/// can draw, and it is wrong for the one that matters: a graphics chip whose
-/// driver ships no OpenGL at all looks entirely ordinary from the outside, and
-/// sailed past unasked into a window that never opened. So the question is put
-/// to every machine, and the answer costs a hidden window and a context that
-/// is thrown away. The library the probe opens is kept where the answer is
-/// good, which is what stops an ordinary desktop paying to load its driver
-/// twice.
-///
-/// Returns whether the software renderer is what is being drawn with, which
-/// the interface says on its settings page.
+/// That is what this returns: whether anything changed and needs a restart to
+/// take, and where the process stands meanwhile.
 fn choose_opengl(asked: settings::Graphics) -> bool {
+    use platform::Placement;
     use settings::Graphics;
 
-    let take_software = |why: &str| match platform::use_software_opengl() {
-        Some(path) => {
-            log::logline!("[clicker] {why}: OpenGL from {}", path.display());
-            true
+    // Nothing to decide where there is no second renderer to decide between,
+    // and nothing to say about it either: an OpenGL that works is not news, and
+    // a line in every macOS and Linux log saying the fallback was not needed is
+    // the first thing somebody would read while debugging something else.
+    if !platform::HAS_SOFTWARE_GL {
+        return false;
+    }
+
+    let drawing_on_processor = platform::software_gl_in_use();
+
+    // What the machine itself offers, asked of the system library rather than
+    // of whatever this process happens to be drawing with. Skipped where the
+    // answer cannot change anything: two of the three settings are not asking.
+    let machine_can_draw = || match platform::probe_opengl() {
+        Some(report) => {
+            log::logline!("[clicker] this machine offers GL {}", report.identity);
+            report.major >= 2 && report.shaders
         }
         None => {
-            // Not fatal here. The window is about to be tried on whatever the
-            // machine does have, and if that fails too, `graphics_failed` is
-            // where somebody is told about it.
-            log::logline!("[clicker] {why}, and no software OpenGL could be loaded");
+            log::logline!("[clicker] this machine has no OpenGL that could be started");
             false
         }
     };
 
-    match asked {
+    let wanted = match asked {
         Graphics::System => false,
-        Graphics::Software => take_software("asked for the software renderer"),
-        Graphics::Automatic => match platform::probe_opengl() {
-            // What the interface needs is a shader, so that is what is asked
-            // about: the version is what a driver claims and `glCreateShader`
-            // is what it can do. Both have to hold.
-            Some(report) if report.major >= 2 && report.shaders => {
-                log::logline!("[clicker] GL {} · the machine's own", report.identity);
-                false
-            }
-            Some(report) => take_software(&format!(
-                "this display offers GL {} and cannot draw with it",
-                report.identity
-            )),
-            None => take_software("this display has no OpenGL that could be started"),
-        },
+        Graphics::Software => true,
+        // The only setting that asks. On a machine already drawing on the
+        // processor this is also how the software renderer is given back when
+        // the graphics start working — a driver installed after the fact, or a
+        // session that is no longer remote.
+        Graphics::Automatic => !machine_can_draw(),
+    };
+
+    if wanted == drawing_on_processor {
+        if drawing_on_processor {
+            log::logline!("[clicker] drawing with the software renderer");
+        }
+        return drawing_on_processor;
     }
+
+    if wanted {
+        match platform::place_software_opengl() {
+            Placement::Placed => {
+                log::logline!("[clicker] software renderer put in place; it draws from the next start");
+            }
+            Placement::Missing => {
+                log::logline!("[clicker] no software renderer to fall back to");
+                let _ = REFUSED.set("no software renderer installed".to_string());
+            }
+            Placement::Refused(why) => {
+                log::logline!("[clicker] the software renderer could not be put in place: {why}");
+                let _ = REFUSED.set(
+                    "Clicker cannot write to its own folder; the software renderer needs an \
+                     administrator here"
+                        .to_string(),
+                );
+            }
+            // Cannot happen: `drawing_on_processor` was false to get here.
+            Placement::Active => {}
+        }
+    } else if platform::remove_software_opengl() {
+        log::logline!("[clicker] software renderer taken away; the machine's own draws from the next start");
+    }
+
+    drawing_on_processor
 }
 
 /// Whether the picture and the interface are being drawn on the processor.
@@ -354,6 +382,15 @@ pub fn software_gl_in_use() -> bool {
 /// page reasoning from the picture would tell a machine that correctly chose
 /// the software renderer that it had been changed.
 static STARTED_WITH: std::sync::OnceLock<settings::Graphics> = std::sync::OnceLock::new();
+
+/// Why the software renderer is not in place, when it was asked for and could
+/// not be put there. The settings page says this instead of promising a
+/// restart that would change nothing.
+static REFUSED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn graphics_refused() -> Option<&'static str> {
+    REFUSED.get().map(String::as_str)
+}
 
 pub fn graphics_at_start() -> settings::Graphics {
     STARTED_WITH.get().copied().unwrap_or_default()
@@ -439,7 +476,7 @@ fn no_graphics_message(
              file, or set Graphics back to Automatic, and start Clicker again."
                 .to_string(),
         );
-    } else {
+    } else if platform::HAS_SOFTWARE_GL {
         let places = platform::software_opengl_candidates();
         said.push(
             "Clicker ships with a software renderer for exactly this, and could not find it. \

@@ -109,16 +109,26 @@ pub unsafe fn library_symbol(module: *mut c_void, name: *const u8) -> *mut c_voi
 
 // --- OpenGL, and which OpenGL ------------------------------------------------
 
-/// No, and so the setting that chooses one is not shown. macOS has its own
+/// No, and so the setting that chooses one is not shown, the probe below is
+/// never reached, and none of the rest of it is ever called. macOS has its own
 /// OpenGL always; on Linux the desktop's Mesa already falls back to llvmpipe
 /// by itself, which is the same answer arrived at by the driver stack rather
 /// than by this program.
 pub const HAS_SOFTWARE_GL: bool = false;
 
-/// Where a software OpenGL would be looked for, which is nowhere: see
-/// `software_opengl`.
+/// Where a software OpenGL would be looked for, which is nowhere.
 pub fn software_opengl_candidates() -> Vec<std::path::PathBuf> {
     Vec::new()
+}
+
+/// Never anything to find.
+pub fn software_opengl() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Never, because nothing here can be in that state.
+pub fn software_gl_in_use() -> bool {
+    false
 }
 
 /// Nothing to ask, and nothing that would act on the answer. The Windows
@@ -128,21 +138,27 @@ pub fn probe_opengl() -> Option<super::GlReport> {
     None
 }
 
-/// Never anything, so the setting that would choose one is not offered here.
-pub fn software_opengl() -> Option<std::path::PathBuf> {
-    None
+/// What happened when the software renderer was asked for — which here is
+/// nothing, because there is none to ask for. The shape is the Windows one so
+/// that the shared code has a single spelling; only `Missing` is ever built,
+/// and `HAS_SOFTWARE_GL` above is what stops anything asking in the first
+/// place.
+#[allow(dead_code)]
+pub enum Placement {
+    Active,
+    Placed,
+    Missing,
+    Refused(String),
 }
 
-/// Nothing to activate, because there is nothing to fall back *from*.
-///
-/// The Windows counterpart exists for a machine with no graphics driver at
-/// all, where the system's OpenGL is a 1.1 implementation from 1996 that
-/// cannot run a shader. These platforms have no such state: macOS always has
-/// its own OpenGL, and on Linux the desktop's Mesa already falls back to
-/// llvmpipe — software rasterising, the same answer, arrived at by the driver
-/// stack rather than by this program.
-pub fn use_software_opengl() -> Option<std::path::PathBuf> {
-    None
+/// Never anything to place: see `HAS_SOFTWARE_GL`.
+pub fn place_software_opengl() -> Placement {
+    Placement::Missing
+}
+
+/// Never anything to take away either.
+pub fn remove_software_opengl() -> bool {
+    false
 }
 
 /// Standard error, which these platforms leave attached: a `.deb` launched

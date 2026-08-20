@@ -711,7 +711,11 @@ pub fn settings_screen(
                     // picture alone would tell a machine that correctly chose
                     // the software renderer that it had been changed.
                     let changed = settings.graphics != crate::graphics_at_start();
-                    let note = if settings.graphics == Graphics::Software
+                    let note = if let Some(refused) = crate::graphics_refused() {
+                        // This launch tried and could not, which outranks
+                        // anything the setting says it wants.
+                        Some(refused)
+                    } else if settings.graphics == Graphics::Software
                         && crate::platform::software_opengl().is_none()
                     {
                         Some("no software renderer installed")
