@@ -59,6 +59,10 @@
 pub struct GlReport {
     pub identity: String,
     pub major: u32,
+    /// Whether a shader can be made at all, asked of the context rather than
+    /// inferred from the version above. It is the capability the interface
+    /// actually needs, and the two can disagree.
+    pub shaders: bool,
 }
 
 #[cfg(windows)]

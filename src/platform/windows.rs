@@ -817,6 +817,12 @@ pub fn use_software_opengl() -> Option<PathBuf> {
         // library was in the process and nothing used it: the interface came
         // up on the graphics chip with the software renderer sitting loaded
         // beside it.
+        // The system's OpenGL, if the probe left it mapped, goes now: nothing
+        // is going to use it, and a process holding two OpenGLs is a process
+        // where the next person to read a log has to work out which one won.
+        if let Some(probed) = PROBED.get() {
+            unsafe { FreeLibrary(*probed as *mut c_void) };
+        }
         std::env::set_var(GLUTIN_OPENGL_DLL, &candidate);
         let _ = CHOSEN.set(candidate.clone());
         crate::log::line(&format!(
@@ -908,68 +914,6 @@ const GL_VERSION: u32 = 0x1F02;
 /// OpenGL that exists, answers, and cannot draw.
 pub const HAS_SOFTWARE_GL: bool = true;
 
-/// Whether this is the kind of machine that may have no usable OpenGL, asked
-/// cheaply and answered pessimistically.
-///
-/// Not the decision — `probe_opengl` is the decision, and it costs a window
-/// and a context. This is only whether it is worth asking, so that an ordinary
-/// desktop pays nothing at all on the way to its own graphics driver. Two
-/// facts, either of which is enough:
-///
-///   * **A remote session.** Remote Desktop replaces the desktop's display
-///     driver with one of its own that has no OpenGL in it, whatever the
-///     machine's real graphics are. It is the common half of this problem and
-///     `SM_REMOTESESSION` is exactly the question.
-///   * **No graphics hardware.** A virtual machine with no chip in it has one
-///     DXGI adapter, Microsoft's own software one, which no OpenGL driver
-///     comes with. Asked of DXGI rather than of a driver name, because
-///     `DXGI_ADAPTER_FLAG_SOFTWARE` is a fact and a string is a guess.
-///
-/// Either can be true on a machine whose OpenGL is fine — a Remote Desktop
-/// session on a workstation with a graphics card and the hardware-adapter
-/// policy set is a real configuration — which costs a probe and nothing else,
-/// because the probe is what answers.
-pub fn session_may_lack_opengl() -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
-
-    if unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0 {
-        return true;
-    }
-    !has_hardware_adapter()
-}
-
-/// Whether anything in this machine draws in hardware.
-///
-/// True when DXGI cannot be asked at all, which is the same rule as everywhere
-/// else here: an unknown answer is read as "the graphics are real", because
-/// the cost of being wrong that way is a probe and the cost of being wrong the
-/// other way is a working machine drawing on its processor.
-fn has_hardware_adapter() -> bool {
-    use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_SOFTWARE,
-    };
-
-    unsafe {
-        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else {
-            return true;
-        };
-        let mut index = 0;
-        while let Ok(adapter) = factory.EnumAdapters1(index) {
-            index += 1;
-            let Ok(description) = adapter.GetDesc1() else {
-                continue;
-            };
-            let flags = DXGI_ADAPTER_FLAG(description.Flags as i32);
-            if (flags & DXGI_ADAPTER_FLAG_SOFTWARE) == DXGI_ADAPTER_FLAG(0) {
-                return true;
-            }
-        }
-        // Every adapter said software, or there were none. Both mean the same
-        // thing here.
-        index == 0
-    }
-}
-
 /// What the system's OpenGL is, asked before there is a window and without
 /// keeping the library afterwards.
 ///
@@ -992,15 +936,17 @@ fn has_hardware_adapter() -> bool {
 pub fn probe_opengl() -> Option<super::GlReport> {
     let module = unsafe { LoadLibraryW(wide("opengl32.dll").as_ptr()) };
     let wgl = Wgl::from_module(module)?;
-    let report = probe_with(&wgl);
-    // Given back whatever the answer was. On the machines this is asked about
-    // the library is about to be replaced; on the rest it is about to be
-    // loaded again by name, by glutin, and is the same file either way.
-    if !module.is_null() {
-        unsafe { FreeLibrary(module) };
-    }
-    report
+    // Kept, not given back. Where the answer is good this is the library the
+    // program goes on to draw with — glutin asks for the same bare name, which
+    // resolves to the same file, and the loader hands back what is already
+    // mapped rather than loading a driver twice. Where the answer is bad,
+    // `use_software_opengl` lets go of it before putting another in its place.
+    let _ = PROBED.set(module as usize);
+    probe_with(&wgl)
 }
+
+/// The system's OpenGL, while the probe still holds it.
+static PROBED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 /// The window and the context, made and taken down around one question.
 fn probe_with(wgl: &Wgl) -> Option<super::GlReport> {
@@ -1093,6 +1039,15 @@ unsafe fn probe_through(window: *mut c_void, wgl: &Wgl) -> Option<super::GlRepor
                         .next()
                         .and_then(|n| n.parse::<u32>().ok())
                         .unwrap_or(u32::MAX);
+                    // The version is what the driver says; this is what it
+                    // can do. egui compiles a shader before it draws anything,
+                    // and `glCreateShader` arrived with OpenGL 2.0 — so a
+                    // context that cannot produce the function cannot run the
+                    // interface, whatever number it reports. On the software
+                    // OpenGL Windows falls back to, `wglGetProcAddress`
+                    // answers for nothing at all, which is the same finding
+                    // arrived at from the other side.
+                    let shaders = !(wgl.get_proc_address)(b"glCreateShader\0".as_ptr()).is_null();
                     answer = Some(super::GlReport {
                         identity: format!(
                             "{} · {} · {}",
@@ -1101,6 +1056,7 @@ unsafe fn probe_through(window: *mut c_void, wgl: &Wgl) -> Option<super::GlRepor
                             version
                         ),
                         major,
+                        shaders,
                     });
                 }
                 (wgl.make_current)(std::ptr::null_mut(), std::ptr::null_mut());

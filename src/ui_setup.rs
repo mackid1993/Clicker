@@ -705,19 +705,20 @@ pub fn settings_screen(
                     // until something says so — which a tooltip nobody hovers
                     // does not.
                     let drawing_on_processor = crate::software_gl_in_use();
-                    let wanted_now = match settings.graphics {
-                        Graphics::Software => true,
-                        Graphics::System => false,
-                        Graphics::Automatic => drawing_on_processor,
-                    };
+                    // Against what this launch started with, not against what
+                    // is on screen. Automatic decides at startup and does not
+                    // record which way it went, so a page reasoning from the
+                    // picture alone would tell a machine that correctly chose
+                    // the software renderer that it had been changed.
+                    let changed = settings.graphics != crate::graphics_at_start();
                     let note = if settings.graphics == Graphics::Software
                         && crate::platform::software_opengl().is_none()
                     {
-                        Some("no software renderer installed".to_string())
-                    } else if wanted_now != drawing_on_processor {
-                        Some("restart Clicker to apply".to_string())
+                        Some("no software renderer installed")
+                    } else if changed {
+                        Some("restart Clicker to apply")
                     } else if drawing_on_processor {
-                        Some("drawing on the processor".to_string())
+                        Some("drawing on the processor")
                     } else {
                         None
                     };

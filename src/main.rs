@@ -284,9 +284,16 @@ fn prefer_integrated_gpu() {
 /// is settled above the window, before glutin and before mpv, and the machine
 /// is asked about rather than tried and failed.
 ///
-/// **What it costs when it is not needed.** Nothing. A machine with a graphics
-/// driver that is not on a remote desktop does not get probed at all — see
-/// `platform::session_may_lack_opengl`, which is two facts and no window.
+/// **Why the machine is always asked.** This used to probe only where the
+/// machine looked suspicious — a remote session, or no hardware display
+/// adapter — and take the rest on trust. That is a guess about which machines
+/// can draw, and it is wrong for the one that matters: a graphics chip whose
+/// driver ships no OpenGL at all looks entirely ordinary from the outside, and
+/// sailed past unasked into a window that never opened. So the question is put
+/// to every machine, and the answer costs a hidden window and a context that
+/// is thrown away. The library the probe opens is kept where the answer is
+/// good, which is what stops an ordinary desktop paying to load its driver
+/// twice.
 ///
 /// Returns whether the software renderer is what is being drawn with, which
 /// the interface says on its settings page.
@@ -310,24 +317,20 @@ fn choose_opengl(asked: settings::Graphics) -> bool {
     match asked {
         Graphics::System => false,
         Graphics::Software => take_software("asked for the software renderer"),
-        Graphics::Automatic => {
-            if !platform::session_may_lack_opengl() {
-                return false;
+        Graphics::Automatic => match platform::probe_opengl() {
+            // What the interface needs is a shader, so that is what is asked
+            // about: the version is what a driver claims and `glCreateShader`
+            // is what it can do. Both have to hold.
+            Some(report) if report.major >= 2 && report.shaders => {
+                log::logline!("[clicker] GL {} · the machine's own", report.identity);
+                false
             }
-            match platform::probe_opengl() {
-                // A remote session or a machine with no graphics chip that
-                // nonetheless has a real OpenGL. It is the machine's, and it
-                // is better than anything drawn on the processor.
-                Some(report) if report.major >= 2 => {
-                    log::logline!("[clicker] GL {} · the machine's own", report.identity);
-                    false
-                }
-                Some(report) => {
-                    take_software(&format!("this display offers only GL {}", report.identity))
-                }
-                None => take_software("this display has no OpenGL that could be started"),
-            }
-        }
+            Some(report) => take_software(&format!(
+                "this display offers GL {} and cannot draw with it",
+                report.identity
+            )),
+            None => take_software("this display has no OpenGL that could be started"),
+        },
     }
 }
 
@@ -341,6 +344,19 @@ static SOFTWARE_GL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 
 pub fn software_gl_in_use() -> bool {
     SOFTWARE_GL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The graphics setting as it was when this launch decided what to draw with.
+///
+/// Kept so the settings page can say whether what is on screen still matches
+/// what is selected, which it cannot work out from the setting alone:
+/// `Automatic` picks at startup and does not record which way it went, so a
+/// page reasoning from the picture would tell a machine that correctly chose
+/// the software renderer that it had been changed.
+static STARTED_WITH: std::sync::OnceLock<settings::Graphics> = std::sync::OnceLock::new();
+
+pub fn graphics_at_start() -> settings::Graphics {
+    STARTED_WITH.get().copied().unwrap_or_default()
 }
 
 /// Whether an error out of `run_native` is the graphics refusing, rather than
@@ -502,6 +518,7 @@ fn main() -> eframe::Result<()> {
     let saved_graphics = saved.graphics;
     let on_software_gl = choose_opengl(saved_graphics);
     SOFTWARE_GL.store(on_software_gl, std::sync::atomic::Ordering::Relaxed);
+    let _ = STARTED_WITH.set(saved_graphics);
 
     // The build's own license, from the binary rather than from a claim in a
     // text file. This application may only be distributed if FFmpeg was built

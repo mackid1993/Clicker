@@ -142,12 +142,13 @@ session, which replaces the desktop's display driver with one that has no
 OpenGL in it even on a machine that has a good graphics card.
 
 So the Windows installer carries Mesa's software renderer in `mesa\`, and the
-choice is made before the window exists. A machine with a graphics driver that
-is not on a remote desktop is never even asked the question; one that is gets
-its OpenGL probed once, through a throwaway window, and draws with Mesa only
-if what came back cannot compile a shader. There is no second launch and
-nothing to install by hand: it either has graphics or it has the renderer that
-travels with it.
+choice is made before the window exists. Every machine is asked the same
+question, once, through a throwaway window: what OpenGL is here, and can it
+compile a shader? If it can, that is what draws, and the library the question
+was asked through is the one kept. If it cannot — or if there is no OpenGL to
+ask — Mesa draws instead. There is no second launch and nothing to install by
+hand: a machine either has graphics or it has the renderer that travels with
+it.
 
 Settings has the override, under Video: **Automatic** is the above,
 **Software** draws on the processor whatever the machine has — the way out of

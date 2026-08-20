@@ -128,13 +128,6 @@ pub fn probe_opengl() -> Option<super::GlReport> {
     None
 }
 
-/// Never, so the probe above is never reached either. There is no session
-/// here that swaps the display driver out from under a running desktop, and
-/// no OpenGL of last resort to be left with if there were.
-pub fn session_may_lack_opengl() -> bool {
-    false
-}
-
 /// Never anything, so the setting that would choose one is not offered here.
 pub fn software_opengl() -> Option<std::path::PathBuf> {
     None
