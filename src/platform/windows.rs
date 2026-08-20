@@ -547,6 +547,7 @@ pub fn punch_hole(file: &tokio::fs::File, from: u64, len: u64) -> bool {
 #[link(name = "kernel32")]
 extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
+    fn LoadLibraryExW(name: *const u16, reserved: *mut c_void, flags: u32) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
     fn GetCurrentThread() -> *mut c_void;
     fn GetThreadTimes(
@@ -556,11 +557,6 @@ extern "system" {
         kernel: *mut u64,
         user: *mut u64,
     ) -> c_int;
-}
-
-#[link(name = "opengl32")]
-extern "system" {
-    fn wglGetProcAddress(name: *const u8) -> *mut c_void;
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -606,6 +602,352 @@ pub unsafe fn library_symbol(module: *mut c_void, name: *const u8) -> *mut c_voi
     GetProcAddress(module, name)
 }
 
+// --- OpenGL, and which OpenGL ------------------------------------------------
+
+/// The module WGL and the OpenGL 1.1 entry points are read out of.
+///
+/// By name and never by path, which is the whole mechanism: the loader keeps
+/// one module per base name, so whichever `opengl32.dll` the process loaded
+/// first is the one this — and glutin, and mpv's loader — will be handed. On
+/// an ordinary machine nothing has loaded one yet and this is the system's,
+/// out of System32. Where `use_software_opengl` has run, it is Mesa's, out of
+/// a directory beside the executable, and every OpenGL call in the process
+/// goes there instead without another line of code knowing about it.
+///
+/// This is also why nothing here is declared with `#[link(name = "opengl32")]`
+/// any more. A static import is resolved by the loader before `main` runs,
+/// which would put the system's copy in the module list before there was any
+/// chance to choose, and the substitution above would silently do nothing.
+fn opengl32() -> *mut c_void {
+    static MODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MODULE.get_or_init(|| unsafe { LoadLibraryW(wide("opengl32.dll").as_ptr()) as usize })
+        as *mut c_void
+}
+
+/// The handful of WGL calls this program makes, resolved once out of whatever
+/// `opengl32()` turned out to be.
+struct Wgl {
+    get_proc_address: unsafe extern "system" fn(*const u8) -> *mut c_void,
+    get_current_dc: unsafe extern "system" fn() -> *mut c_void,
+    get_current_context: unsafe extern "system" fn() -> *mut c_void,
+    create_context: unsafe extern "system" fn(*mut c_void) -> *mut c_void,
+    share_lists: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32,
+    make_current: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32,
+    delete_context: unsafe extern "system" fn(*mut c_void) -> i32,
+}
+
+impl Wgl {
+    /// `None` only if there is no OpenGL at all, which on Windows means the
+    /// system DLL is missing — every caller here already treats that as "no
+    /// second context" or "no such function" rather than as a fault.
+    fn get() -> Option<&'static Self> {
+        static WGL: std::sync::OnceLock<Option<Wgl>> = std::sync::OnceLock::new();
+        WGL.get_or_init(|| {
+            let module = opengl32();
+            if module.is_null() {
+                return None;
+            }
+            unsafe fn find<T>(module: *mut c_void, name: &[u8]) -> Option<T> {
+                let found = GetProcAddress(module, name.as_ptr());
+                if found.is_null() {
+                    return None;
+                }
+                Some(std::mem::transmute_copy::<*mut c_void, T>(&found))
+            }
+            unsafe {
+                Some(Wgl {
+                    get_proc_address: find(module, b"wglGetProcAddress\0")?,
+                    get_current_dc: find(module, b"wglGetCurrentDC\0")?,
+                    get_current_context: find(module, b"wglGetCurrentContext\0")?,
+                    create_context: find(module, b"wglCreateContext\0")?,
+                    share_lists: find(module, b"wglShareLists\0")?,
+                    make_current: find(module, b"wglMakeCurrent\0")?,
+                    delete_context: find(module, b"wglDeleteContext\0")?,
+                })
+            }
+        })
+        .as_ref()
+    }
+}
+
+/// Load the DLL's own directory alongside it, so a software OpenGL that comes
+/// with helper libraries finds them. Dependencies are otherwise searched from
+/// the *executable's* directory, which is not where these live.
+const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x08;
+
+/// What a software OpenGL is called and where it would sit, most specific
+/// first.
+///
+/// `CLICKER_OPENGL` may name either the DLL or the directory holding it. The
+/// second is what the installer ships when it ships one at all; the third is
+/// the hatch for a copy that was installed without one, because it needs no
+/// administrator and survives the next upgrade.
+pub fn software_opengl_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(asked) = std::env::var_os("CLICKER_OPENGL") {
+        let asked = PathBuf::from(asked);
+        candidates.push(if asked.extension().is_some() {
+            asked
+        } else {
+            asked.join("opengl32.dll")
+        });
+    }
+    if let Some(beside) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
+        candidates.push(beside.join("mesa").join("opengl32.dll"));
+    }
+    // Read after the settings have had their say about where this folder is,
+    // which is true of every caller: nothing asks about graphics until the
+    // program has decided where it keeps its files.
+    if let Some(data) = crate::paths::data_dir() {
+        candidates.push(data.join("mesa").join("opengl32.dll"));
+    }
+    candidates
+}
+
+/// Whether there is a software OpenGL on this machine to fall back to, and
+/// where. Existence only — nothing is loaded, because the question is asked on
+/// machines whose graphics are fine.
+pub fn software_opengl() -> Option<PathBuf> {
+    software_opengl_candidates().into_iter().find(|c| c.is_file())
+}
+
+/// Make a software OpenGL *the* OpenGL for this process.
+///
+/// Must run before anything touches graphics — before the window, before
+/// glutin, before mpv — because it works by getting there first: see
+/// `opengl32`. Afterwards every OpenGL call in the process, this program's and
+/// its libraries' alike, lands in the DLL named here.
+///
+/// Wrong-architecture copies are skipped rather than fatal. An arm64 build
+/// handed an x64 Mesa fails the load, and the next candidate — or the system's
+/// own OpenGL, and the message that goes with it — is a better answer than
+/// refusing to start.
+pub fn use_software_opengl() -> Option<PathBuf> {
+    for candidate in software_opengl_candidates() {
+        if !candidate.is_file() {
+            continue;
+        }
+        // The path as the loader wants it, out of the bytes the filesystem
+        // gave rather than through a string: `display()` is lossy by
+        // definition, and this is the one place where a mangled character
+        // would be a library that quietly is not found.
+        use std::os::windows::ffi::OsStrExt;
+        let path: Vec<u16> = candidate
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let module = unsafe {
+            LoadLibraryExW(path.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH)
+        };
+        if !module.is_null() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn CreateWindowExW(
+        ex_style: u32,
+        class: *const u16,
+        title: *const u16,
+        style: u32,
+        x: c_int,
+        y: c_int,
+        width: c_int,
+        height: c_int,
+        parent: *mut c_void,
+        menu: *mut c_void,
+        instance: *mut c_void,
+        param: *mut c_void,
+    ) -> *mut c_void;
+    fn DestroyWindow(window: *mut c_void) -> i32;
+    fn GetDC(window: *mut c_void) -> *mut c_void;
+    fn ReleaseDC(window: *mut c_void, dc: *mut c_void) -> i32;
+}
+
+#[link(name = "gdi32")]
+extern "system" {
+    fn ChoosePixelFormat(dc: *mut c_void, want: *const PixelFormat) -> c_int;
+    fn SetPixelFormat(dc: *mut c_void, format: c_int, want: *const PixelFormat) -> i32;
+}
+
+/// `PIXELFORMATDESCRIPTOR`, declared by hand for the same reason the rest of
+/// this file declares things by hand: it is one structure that has not changed
+/// since Windows 95, and the alternative is a crate feature that would also
+/// link the OpenGL entry points statically — which is exactly what
+/// `opengl32` above must not have.
+#[repr(C)]
+#[derive(Default)]
+struct PixelFormat {
+    size: u16,
+    version: u16,
+    flags: u32,
+    pixel_type: u8,
+    color_bits: u8,
+    red_bits: u8,
+    red_shift: u8,
+    green_bits: u8,
+    green_shift: u8,
+    blue_bits: u8,
+    blue_shift: u8,
+    alpha_bits: u8,
+    alpha_shift: u8,
+    accum_bits: u8,
+    accum_red_bits: u8,
+    accum_green_bits: u8,
+    accum_blue_bits: u8,
+    accum_alpha_bits: u8,
+    depth_bits: u8,
+    stencil_bits: u8,
+    aux_buffers: u8,
+    layer_type: u8,
+    reserved: u8,
+    layer_mask: u32,
+    visible_mask: u32,
+    damage_mask: u32,
+}
+
+const PFD_DRAW_TO_WINDOW: u32 = 0x04;
+const PFD_SUPPORT_OPENGL: u32 = 0x20;
+const PFD_DOUBLEBUFFER: u32 = 0x01;
+
+const GL_VENDOR: u32 = 0x1F00;
+const GL_RENDERER: u32 = 0x1F01;
+const GL_VERSION: u32 = 0x1F02;
+
+/// What OpenGL this display actually offers, in its own words.
+///
+/// A duplicate of what `log_gl_identity` writes down on a good day, and it
+/// exists for the day that never comes: when the graphics are too old the
+/// window fails before any of this program's code runs, so the one line that
+/// would say *why* is never written. This asks the same three questions
+/// through a throwaway window of its own, so a failed start can name the
+/// driver it failed on instead of leaving somebody to guess.
+///
+/// `None` means OpenGL could not be brought up at all, which is a different
+/// and worse answer than an old version.
+pub fn probe_opengl() -> Option<String> {
+    let wgl = Wgl::get()?;
+    unsafe {
+        // `STATIC` is a class the system has already registered, which saves
+        // registering and unregistering one of our own for a window that
+        // exists for a hundredth of a second. No `WS_VISIBLE`: nothing is ever
+        // meant to appear, and a style of zero is `WS_OVERLAPPED`.
+        let class = wide("STATIC");
+        let title = wide("");
+        let window = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            title.as_ptr(),
+            0,
+            0,
+            0,
+            1,
+            1,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        if window.is_null() {
+            return None;
+        }
+        let answer = probe_through(window, wgl);
+        DestroyWindow(window);
+        answer
+    }
+}
+
+/// The middle of `probe_opengl`, split out so that every way of failing still
+/// gives the device context and the context back.
+unsafe fn probe_through(window: *mut c_void, wgl: &Wgl) -> Option<String> {
+    let dc = GetDC(window);
+    if dc.is_null() {
+        return None;
+    }
+    let want = PixelFormat {
+        size: std::mem::size_of::<PixelFormat>() as u16,
+        version: 1,
+        flags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
+        // PFD_TYPE_RGBA, and the only one anything has used this century.
+        pixel_type: 0,
+        color_bits: 32,
+        ..Default::default()
+    };
+    let mut answer = None;
+    let format = ChoosePixelFormat(dc, &want);
+    if format != 0 && SetPixelFormat(dc, format, &want) != 0 {
+        let context = (wgl.create_context)(dc);
+        if !context.is_null() {
+            if (wgl.make_current)(dc, context) != 0 {
+                let get_string: Option<unsafe extern "system" fn(u32) -> *const u8> = {
+                    let found = GetProcAddress(opengl32(), b"glGetString\0".as_ptr());
+                    if found.is_null() {
+                        None
+                    } else {
+                        Some(std::mem::transmute(found))
+                    }
+                };
+                if let Some(get_string) = get_string {
+                    let read = |name: u32| {
+                        let text = get_string(name);
+                        if text.is_null() {
+                            // A driver that will not say. All three of these
+                            // have been in OpenGL since 1.0, so this is a
+                            // refusal rather than an old version, and one
+                            // missing word should not lose the other two.
+                            "unknown".to_string()
+                        } else {
+                            std::ffi::CStr::from_ptr(text as *const c_char)
+                                .to_string_lossy()
+                                .into_owned()
+                        }
+                    };
+                    answer = Some(format!(
+                        "{} · {} · {}",
+                        read(GL_VENDOR),
+                        read(GL_RENDERER),
+                        read(GL_VERSION)
+                    ));
+                }
+                (wgl.make_current)(std::ptr::null_mut(), std::ptr::null_mut());
+            }
+            (wgl.delete_context)(context);
+        }
+    }
+    ReleaseDC(window, dc);
+    answer
+}
+
+/// Say something to somebody who has no console and no window.
+///
+/// The one message this exists for is the graphics failing to come up, which
+/// is the only fault that can happen before there is an interface to report it
+/// in: a release build is `windows_subsystem = "windows"`, so the error that
+/// would otherwise be printed goes to a handle nobody is holding, and the
+/// program looks like it did nothing at all.
+pub fn alert(title: &str, body: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+    };
+
+    let title = wide(title);
+    let body = wide(body);
+    unsafe {
+        MessageBoxW(
+            HWND(std::ptr::null_mut()),
+            PCWSTR(body.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+        );
+    }
+}
+
 // --- a second GL context, for the render thread ------------------------------
 
 /// The interface's WGL context and the device context it belongs to,
@@ -632,29 +974,19 @@ type CreateContextAttribs =
 const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
 const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
 
-extern "system" {
-    fn wglGetCurrentDC() -> *mut c_void;
-    fn wglGetCurrentContext() -> *mut c_void;
-    fn wglCreateContext(dc: *mut c_void) -> *mut c_void;
-    fn wglShareLists(source: *mut c_void, destination: *mut c_void) -> i32;
-    fn wglMakeCurrent(dc: *mut c_void, context: *mut c_void) -> i32;
-    fn wglDeleteContext(context: *mut c_void) -> i32;
-    // wglGetProcAddress is declared with the GL loader below, which needs it
-    // for the same reason and got there first.
-}
-
 /// Capture the interface's context. Interface thread only, where it is
 /// current.
 pub fn gl_share() -> Option<GlShare> {
+    let wgl = Wgl::get()?;
     unsafe {
-        let dc = wglGetCurrentDC();
-        let context = wglGetCurrentContext();
+        let dc = (wgl.get_current_dc)();
+        let context = (wgl.get_current_context)();
         if dc.is_null() || context.is_null() {
             return None;
         }
         // Asked for here because it can only be asked for here. A null answer
         // is fine: `gl_worker_begin` falls back to the older pair of calls.
-        let create_attribs = wglGetProcAddress(b"wglCreateContextAttribsARB\0".as_ptr());
+        let create_attribs = (wgl.get_proc_address)(b"wglCreateContextAttribsARB\0".as_ptr());
         Some(GlShare {
             dc: dc as usize,
             context: context as usize,
@@ -672,6 +1004,7 @@ pub fn gl_share() -> Option<GlShare> {
 /// is only lawful while the new context has no objects of its own — true
 /// here, since it has just been made and nothing has touched it.
 pub fn gl_worker_begin(share: &GlShare) -> Option<GlWorker> {
+    let wgl = Wgl::get()?;
     unsafe {
         let dc = share.dc as *mut c_void;
         let source = share.context as *mut c_void;
@@ -685,9 +1018,9 @@ pub fn gl_worker_begin(share: &GlShare) -> Option<GlWorker> {
             ];
             create(dc, source, attribs.as_ptr())
         } else {
-            let fresh = wglCreateContext(dc);
-            if !fresh.is_null() && wglShareLists(source, fresh) == 0 {
-                wglDeleteContext(fresh);
+            let fresh = (wgl.create_context)(dc);
+            if !fresh.is_null() && (wgl.share_lists)(source, fresh) == 0 {
+                (wgl.delete_context)(fresh);
                 return None;
             }
             fresh
@@ -696,8 +1029,8 @@ pub fn gl_worker_begin(share: &GlShare) -> Option<GlWorker> {
         if context.is_null() {
             return None;
         }
-        if wglMakeCurrent(dc, context) == 0 {
-            wglDeleteContext(context);
+        if (wgl.make_current)(dc, context) == 0 {
+            (wgl.delete_context)(context);
             return None;
         }
         Some(GlWorker {
@@ -708,9 +1041,10 @@ pub fn gl_worker_begin(share: &GlShare) -> Option<GlWorker> {
 
 /// Give it back, on the thread that owns it.
 pub fn gl_worker_end(worker: GlWorker) {
+    let Some(wgl) = Wgl::get() else { return };
     unsafe {
-        wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut());
-        wglDeleteContext(worker.context as *mut c_void);
+        (wgl.make_current)(std::ptr::null_mut(), std::ptr::null_mut());
+        (wgl.delete_context)(worker.context as *mut c_void);
     }
 }
 
@@ -721,17 +1055,16 @@ pub fn gl_worker_end(worker: GlWorker) {
 /// for both kinds, so a loader that consults only one of them fails at
 /// context creation with nothing useful to say about why.
 pub unsafe extern "C" fn gl_proc_address(_ctx: *mut c_void, name: *const c_char) -> *mut c_void {
-    let found = wglGetProcAddress(name as *const u8);
+    let Some(wgl) = Wgl::get() else {
+        return std::ptr::null_mut();
+    };
+    let found = (wgl.get_proc_address)(name as *const u8);
     // These four are what WGL returns for "no such function", rather than null.
     let bad = [0usize, 1, 2, 3, usize::MAX];
     if !bad.contains(&(found as usize)) {
         return found;
     }
-    static OPENGL32: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let module = *OPENGL32.get_or_init(|| {
-        let name = wide("opengl32.dll");
-        LoadLibraryW(name.as_ptr()) as usize
-    }) as *mut c_void;
+    let module = opengl32();
     if module.is_null() {
         return std::ptr::null_mut();
     }

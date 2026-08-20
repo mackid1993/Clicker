@@ -107,6 +107,46 @@ pub unsafe fn library_symbol(module: *mut c_void, name: *const u8) -> *mut c_voi
     dlsym(module, name as *const c_char)
 }
 
+// --- OpenGL, and which OpenGL ------------------------------------------------
+
+/// Where a software OpenGL would be looked for, which is nowhere: see
+/// `software_opengl`.
+pub fn software_opengl_candidates() -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
+/// Nothing to ask, and nothing that would act on the answer. The Windows
+/// counterpart exists because a window can fail to open there before anything
+/// has had the chance to write down what the graphics were.
+pub fn probe_opengl() -> Option<String> {
+    None
+}
+
+/// Nothing to fall back to, because there is nothing to fall back *from*.
+///
+/// The Windows counterpart exists for a machine with no graphics driver at
+/// all, where the system's OpenGL is a 1.1 implementation from 1996 that
+/// cannot run a shader. These platforms have no such state: macOS always has
+/// its own OpenGL, and on Linux the desktop's Mesa already falls back to
+/// llvmpipe — software rasterising, the same answer, arrived at by the driver
+/// stack rather than by this program.
+pub fn software_opengl() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// The same, and for the same reason. Never anything to activate.
+pub fn use_software_opengl() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Standard error, which these platforms leave attached: a `.deb` launched
+/// from its desktop file writes to the journal and a `.app` to Console, so the
+/// message is somewhere findable rather than nowhere. The Windows version has
+/// to put up a dialog because a windowed build there has no such handle.
+pub fn alert(title: &str, body: &str) {
+    eprintln!("{title}: {body}");
+}
+
 extern "C" {
     fn gethostname(name: *mut c_char, len: usize) -> c_int;
 }

@@ -132,6 +132,27 @@ and the window is built to make all three easy:
 
 [ffpip]: https://bugzilla.mozilla.org/show_bug.cgi?id=1621261
 
+**It cannot draw on Windows' own OpenGL.** Where there is no graphics driver
+to ask, Windows answers with an OpenGL of its own: `GDI Generic`, version 1.1,
+from 1996 and without a shading language in it. Nothing here can use it — egui
+needs 2.0 before it can compile a shader and mpv wants 2.1 before it will make
+a renderer — and there are two ordinary ways to meet it: a virtual machine
+with no graphics chip, and a Remote Desktop session, which replaces the
+desktop's display driver with one that has no OpenGL even on a machine that
+has a good one. The window then does not open at all.
+
+What happens instead is a fallback, and it is a whole software OpenGL rather
+than anything drawn through GDI directly: if `mesa\opengl32.dll` is beside the
+application or in `%LOCALAPPDATA%\Clicker\mesa\`, Clicker starts itself again
+with that loaded in front of the system's and comes up on it — the interface
+and the picture both, rasterised on the processor, which works and is not
+fast. Where there is no such library, the failure is at least reported: a
+dialog naming what the display offered and where to put one, and the same in
+`player.log`, in place of a program that started and vanished. A machine known
+to have no graphics can skip the failed first launch by setting `CLICKER_GL`
+to `software`; `CLICKER_OPENGL` names a library somewhere else entirely.
+Machines with a real driver never load any of it and are untouched.
+
 **The window frame differs by platform, and only the frame.** Windows and Linux
 get the caption this application draws itself; macOS gets its own traffic
 lights floating over the same surface, because a Mac window that does not look
@@ -203,6 +224,22 @@ fetches what is missing.
 Once `third_party\mpv` exists, `cargo build` on its own needs nothing but a
 Rust toolchain: libmpv is loaded by name at runtime rather than linked, so
 there is no native compilation step and no headers to find.
+
+#### Shipping a software OpenGL
+
+Optional, and off unless the file is there. Put a Mesa `opengl32.dll` built
+for the same processor as the application in `third_party\mesa\`, and
+`build.ps1` stages it into `mesa\` beside the executable and the installer
+carries it; leave the directory empty and nothing changes. It is what makes
+the application run on a machine with no graphics driver — see **It cannot
+draw on Windows' own OpenGL** above — and it is tens of megabytes, which is
+why it is a decision rather than a default.
+
+It goes in a subdirectory and never beside the executable. An `opengl32.dll`
+there would be found by the loader ahead of the real driver on every machine
+that installs this, which is the opposite of a fallback: the application loads
+this one by full path, and only after the window has already failed to open on
+the system's own.
 
 ### macOS
 

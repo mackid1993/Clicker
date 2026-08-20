@@ -329,6 +329,70 @@ Install the C++ workload for this architecture:
 }
 Write-Host "      runtime carried: $($carried -join ', ')" -ForegroundColor DarkGray
 
+# A software OpenGL, in a directory of its own, and only if one has been put in
+# third_party\mesa.
+#
+# Windows has an OpenGL for machines with no graphics driver — GDI Generic,
+# version 1.1, no shaders — and nothing here can draw on it: egui needs 2.0 and
+# mpv wants 2.1. That is what a virtual machine with no graphics chip is left
+# with, and what a Remote Desktop session gets even where there is one, because
+# the session replaces the display driver. Mesa's opengl32.dll rasterises on
+# the processor and is complete, and `platform::use_software_opengl` loads it
+# out of this directory when the window fails to open any other way.
+#
+# Optional on purpose. The DLL is tens of megabytes and every machine with a
+# graphics driver has no use for it, so this refuses nothing: without it the
+# application is exactly what it was, and says where to put one when it finds
+# it cannot start. Not beside the executable, deliberately — an opengl32.dll
+# there would be loaded by every launch on every machine, in front of the real
+# driver, which is the opposite of a fallback.
+#
+# The directory is made either way, and carries a note saying what belongs in
+# it. That is partly for whoever opens it on a machine that turned out to need
+# one, and partly so the installer's file list always matches something: a
+# wildcard over an empty directory is a compile error in Inno Setup, and an
+# optional component that breaks the build when it is absent is not optional.
+$mesa = Join-Path $Root 'third_party\mesa'
+$mesaStage = (New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'mesa')).FullName
+@"
+A software OpenGL goes in this folder.
+
+Clicker draws with OpenGL 2.0 or later. Where there is no graphics driver to
+ask, Windows answers with an OpenGL of its own - "GDI Generic", version 1.1,
+with no shaders in it - and nothing in Clicker can draw on that. Two ordinary
+machines are left with it: a virtual machine with no graphics chip, and a
+Remote Desktop session, which replaces the display driver even on a machine
+that has a good one.
+
+Put Mesa's opengl32.dll, built for this machine's processor, in this folder and
+start Clicker again. Clicker loads it only after the window has failed to open
+on the system's own OpenGL, so a machine whose graphics work never touches it.
+Everything is drawn on the processor then, which works and is not fast.
+
+Windows builds of Mesa: https://github.com/pal1000/mesa-dist-win/releases
+Take the release-msvc package and the desktop-gl opengl32.dll for this
+processor ($AppArch).
+"@ | Set-Content -Path (Join-Path $mesaStage 'README.txt') -Encoding UTF8
+
+$mesaDlls = @(Get-ChildItem (Join-Path $mesa '*.dll') -ErrorAction SilentlyContinue)
+$mesaTaken = @()
+foreach ($file in $mesaDlls) {
+    $machine = Get-PeMachine $file.FullName
+    if ($machine -ne $AppArch) {
+        Write-Host "      skipping mesa\$($file.Name): it is $machine" -ForegroundColor Yellow
+        continue
+    }
+    Copy-Item $file.FullName $mesaStage -Force
+    $mesaTaken += $file.Name
+}
+if ($mesaTaken -contains 'opengl32.dll') {
+    Write-Host "      software OpenGL staged: $($mesaTaken -join ', ')" -ForegroundColor DarkGray
+} elseif ($mesaDlls) {
+    Write-Host '      WARNING: third_party\mesa has no opengl32.dll for this processor' -ForegroundColor Yellow
+} else {
+    Write-Host '      no software OpenGL bundled (third_party\mesa is empty)' -ForegroundColor DarkGray
+}
+
 $wrongArch = @(Get-ChildItem (Join-Path $Stage '*.dll') |
     Where-Object { (Get-PeMachine $_.FullName) -ne $AppArch })
 if ($wrongArch) {

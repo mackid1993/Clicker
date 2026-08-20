@@ -265,6 +265,161 @@ fn prefer_integrated_gpu() {
     }
 }
 
+/// Which OpenGL this launch is to use. `software` is the fallback below asking
+/// for its own second attempt, and is also the lever for anyone who wants that
+/// attempt first — a machine known to have no graphics driver can be told once
+/// rather than paying for the failed launch every time.
+const GL_CHOICE: &str = "CLICKER_GL";
+
+/// Put a software OpenGL in front of the system's, if this launch was asked to.
+///
+/// **Why there is a fallback at all.** Windows has an OpenGL of its own for
+/// machines with no graphics driver: `GDI Generic`, version 1.1, from 1996 and
+/// without so much as a shading language. It is what a virtual machine with no
+/// GPU is left with, and what a Remote Desktop session gets even on a machine
+/// that has one, because the session replaces the display driver with its own.
+/// Nothing here can run on it — egui needs 2.0 to compile a shader, and mpv
+/// wants 2.1 before it will make a renderer — so the whole program is a
+/// process that starts and vanishes. The way through is to bring an OpenGL
+/// along: Mesa's `opengl32.dll`, rasterising on the processor, which is slow
+/// and complete.
+///
+/// **Why it is a whole second launch.** The substitution works by loading that
+/// DLL before anything else asks for one — see `platform::use_software_opengl`
+/// — and by the time the window has failed, the system's copy is already in
+/// the process and cannot be taken back out. So the failure path starts the
+/// program again with this variable set, and the second process, which has
+/// touched nothing yet, comes up on Mesa.
+///
+/// Returns whether this launch is the fallback one, which is what tells the
+/// failure path that the fallback has had its turn. True even where the
+/// library could not be loaded: the turn is spent either way, and a launch
+/// that restarted itself over a library that is not there would restart itself
+/// forever.
+fn on_software_opengl() -> bool {
+    if std::env::var(GL_CHOICE).as_deref() != Ok("software") {
+        return false;
+    }
+    match platform::use_software_opengl() {
+        Some(path) => log::logline!("[clicker] OpenGL from {}", path.display()),
+        None => {
+            log::logline!("[clicker] a software OpenGL was asked for and none could be loaded")
+        }
+    }
+    true
+}
+
+/// Whether an error out of `run_native` is the graphics refusing, rather than
+/// anything this program did.
+fn is_graphics_failure(error: &eframe::Error) -> bool {
+    matches!(
+        error,
+        eframe::Error::OpenGL(_) | eframe::Error::Glutin(_) | eframe::Error::NoGlutinConfigs(..)
+    )
+}
+
+/// The window did not open. Say so where somebody will find it, and try the
+/// one thing that might work.
+///
+/// A release build is `windows_subsystem = "windows"`, so what `main` returns
+/// is printed to a handle nobody is holding: without this, the entire report
+/// of the most complete failure this program has is a process that appears in
+/// the task list and leaves. Hence a line in the log, the graphics named in it
+/// — asked for directly, because the usual line that says what they are is
+/// written after the point this failed — and a dialog, which is the only way
+/// left to reach the person who double-clicked.
+///
+/// Returns whether the program is to leave quietly, which it is when a second
+/// launch has been started to take its place.
+fn graphics_failed(error: &eframe::Error, fallback_had_its_turn: bool) -> bool {
+    log::logline!("[clicker] the window could not be opened: {error}");
+    let graphics = platform::probe_opengl();
+    match &graphics {
+        Some(identity) => log::logline!("[clicker] this display offers GL {identity}"),
+        None => log::logline!("[clicker] this display has no OpenGL that could be started"),
+    }
+
+    if !fallback_had_its_turn {
+        if let Some(software) = platform::software_opengl() {
+            log::logline!("[clicker] starting again on {}", software.display());
+            if restart_on_software_opengl() {
+                return true;
+            }
+        }
+    }
+    platform::alert(APP_NAME, &no_graphics_message(graphics.as_deref()));
+    false
+}
+
+/// Start this program again, on the software OpenGL this one could not reach.
+///
+/// The same arguments, and one more thing in the environment. Nothing is
+/// waited for: this process is about to end, and the one it started is the
+/// program now.
+fn restart_on_software_opengl() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    match std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env(GL_CHOICE, "software")
+        .spawn()
+    {
+        Ok(_) => true,
+        Err(e) => {
+            log::logline!("[clicker] could not start again: {e}");
+            false
+        }
+    }
+}
+
+/// What to tell somebody whose machine cannot draw this program.
+///
+/// Written for the case it is nearly always going to be — a virtual machine or
+/// a Remote Desktop session — and it names the places a software OpenGL would
+/// be picked up from, because "install Mesa" without a directory is a sentence
+/// that ends the conversation.
+fn no_graphics_message(graphics: Option<&str>) -> String {
+    let mut said = vec![
+        "Clicker could not open its window, because it needs OpenGL 2.0 or later to draw \
+         anything."
+            .to_string(),
+        match graphics {
+            Some(identity) => format!("This display offers OpenGL: {identity}."),
+            None => "OpenGL could not be started on this display at all.".to_string(),
+        },
+        "Windows falls back to an OpenGL of its own — version 1.1, with no shaders in it — \
+         when there is no graphics driver to ask. That is a virtual machine with no graphics \
+         chip, or a Remote Desktop session, where the desktop's own display driver is replaced \
+         by one that has no OpenGL in it."
+            .to_string(),
+    ];
+
+    let places = platform::software_opengl_candidates();
+    if !places.is_empty() {
+        said.push(
+            "Either use the machine's own screen, or give this one a software OpenGL to draw \
+             with: put Mesa's opengl32.dll in any of these and start Clicker again."
+                .to_string(),
+        );
+        said.push(
+            places
+                .iter()
+                .map(|path| format!("    {}", path.display()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        said.push(
+            "Everything is drawn on the processor then, which works and is not fast.".to_string(),
+        );
+    }
+
+    if let Some(log) = log::path() {
+        said.push(format!("There is more in {}", log.display()));
+    }
+    said.join("\n\n")
+}
+
 fn main() -> eframe::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -311,6 +466,11 @@ fn main() -> eframe::Result<()> {
     timeshift::sweep(&saved.buffer_path());
     settings::set_user_agent(&saved.client_name);
     prefer_integrated_gpu();
+
+    // Before the window, before glutin, and before mpv: whichever OpenGL is
+    // loaded first is the one the whole process gets. Ordinary launches ask
+    // for nothing and this does nothing.
+    let on_software_gl = on_software_opengl();
 
     // The build's own license, from the binary rather than from a claim in a
     // text file. This application may only be distributed if FFmpeg was built
@@ -366,7 +526,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let ran = eframe::run_native(
         APP_NAME,
         options,
         Box::new(|cc| {
@@ -374,7 +534,22 @@ fn main() -> eframe::Result<()> {
             theme::apply(&cc.egui_ctx);
             Ok(Box::new(App::new(cc)))
         }),
-    )
+    );
+
+    // The one failure that happens before there is an interface to report it
+    // in, and so the one that has to be reported by hand.
+    match ran {
+        Err(e) if is_graphics_failure(&e) => {
+            if graphics_failed(&e, on_software_gl) {
+                // A second launch is carrying on where this one stopped, so
+                // this one is not a failure to report.
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+        other => other,
+    }
 }
 
 /// Record panics to a file as well as to stderr.
