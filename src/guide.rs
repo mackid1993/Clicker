@@ -28,6 +28,22 @@ use serde_json::Value;
 pub struct Channel {
     #[serde(rename = "Number", default)]
     pub number: String,
+    /// What a collection calls this channel, which is not its number.
+    ///
+    /// The server keeps both. `Number` is where the channel sits in the
+    /// lineup, and it can be changed; `ChannelID` is what the source called
+    /// it, and it cannot. A channel collection stores the second: the
+    /// server builds a collection's `items` out of each source's channel
+    /// `ID`, falling back to the guide number only for a source that
+    /// offers no id. Matching a collection against numbers is therefore
+    /// matching against the wrong column, and it works only where nobody
+    /// has renumbered anything and every source names its channels after
+    /// their numbers.
+    ///
+    /// Filled in from the number when the server sends none, which is the
+    /// same fallback the server applies when it builds the guide.
+    #[serde(rename = "ChannelID", default)]
+    pub id: String,
     #[serde(rename = "Name", default)]
     pub name: String,
     #[serde(rename = "Image", default)]
@@ -96,6 +112,9 @@ pub struct Collection {
     pub name: String,
     #[serde(default)]
     pub slug: String,
+    /// The channels in it, by `ChannelID` — not by number. See
+    /// [`Channel::id`], which is what these are matched against.
+    ///
     /// `null` on the wire when the collection is empty, not `[]`: the server
     /// is Go, and Go marshals a nil slice as `null`. Plain `#[serde(default)]`
     /// only covers a *missing* key, so without the custom reader one
@@ -375,10 +394,17 @@ impl GuideApi {
                     if channel.number.is_empty() {
                         channel.number = number.clone();
                     }
-                    // The id becomes the name it is known by. Left as the id
-                    // when the device list did not mention it, so a channel
-                    // from a source that has since gone still groups somewhere
-                    // rather than falling out of the filter.
+                    // Every channel needs one, because that is what the
+                    // collection filter matches against. A server that sends no
+                    // `ChannelID` is one whose collections are keyed by number,
+                    // so the number is the right answer there.
+                    if channel.id.is_empty() {
+                        channel.id = channel.number.clone();
+                    }
+                    // The device id becomes the name it is known by. Left as
+                    // the id when the device list did not mention it, so a
+                    // channel from a source that has since gone still groups
+                    // somewhere rather than falling out of the filter.
                     if let Some(name) = device_names.get(&channel.source) {
                         channel.source = name.clone();
                     }
@@ -406,6 +432,13 @@ impl GuideApi {
                     let device = as_str(&c, "DeviceID");
                     Channel {
                         number: number.clone(),
+                        // Same fallback as above. A channel that reaches
+                        // this arm is one the channel list did not have,
+                        // and it still has to be selectable by collection.
+                        id: match as_str(&c, "ChannelID") {
+                            id if id.is_empty() => number.clone(),
+                            id => id,
+                        },
                         name: as_str(&c, "Name"),
                         logo: as_str(&c, "Image"),
                         // Named, on the same terms as above: a channel that
@@ -626,7 +659,8 @@ pub fn filter<'a>(
         .iter()
         .filter(|row| {
             if let Some(allowed) = &allowed {
-                if !allowed.contains(row.channel.number.as_str()) {
+                // By id, not by number. See the field it reads.
+                if !allowed.contains(row.channel.id.as_str()) {
                     return false;
                 }
             }
