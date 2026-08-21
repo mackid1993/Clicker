@@ -302,66 +302,65 @@ fn choose_opengl(asked: settings::Graphics) -> bool {
         return false;
     }
 
+    // Husks a previous launch renamed aside and could not delete — see
+    // `remove_software_opengl` — swept now, before this launch can have
+    // renamed anything itself.
+    platform::sweep_stale_opengl();
+
     let drawing_on_processor = platform::software_gl_in_use();
 
-    // What the machine itself offers, asked of the system library rather than
-    // of whatever this process happens to be drawing with. Skipped where the
-    // answer cannot change anything: two of the three settings are not asking.
-    let machine_can_draw = || match platform::probe_opengl() {
-        Some(report) => {
-            log::logline!("[clicker] this machine offers GL {}", report.identity);
-            report.major >= 2 && report.shaders
-        }
-        None => {
-            log::logline!("[clicker] this machine has no OpenGL that could be started");
-            false
-        }
-    };
-
-    // Whether this launch could draw at all if it were left alone, which is
-    // the difference between a restart that rescues somebody and a restart
-    // that interrupts them.
-    let mut stranded = false;
     let wanted = match asked {
-        Graphics::System => false,
-        Graphics::Software => true,
-        // The only setting that asks. On a machine already drawing on the
-        // processor this is also how the software renderer is given back when
-        // the graphics start working — a driver installed after the fact, or a
-        // session that is no longer remote.
-        Graphics::Automatic => {
-            stranded = !machine_can_draw();
-            stranded
+        // The machine's own OpenGL always — while that can put any window on
+        // screen. A setting that would strand the machine with no window at
+        // all is not honored into that state, because the way back from every
+        // graphics setting is the settings page, and the settings page needs
+        // a window. So where the probe says nothing here can draw and the
+        // bundled renderer is present, the setting is rewritten — exactly
+        // what the rescue after a dead launch would write, put down before
+        // the launch dies rather than after.
+        Graphics::System => {
+            if platform::software_opengl().is_some() && !probe_machine_gl().can_draw {
+                log::logline!(
+                    "[clicker] Graphics chip is set and this machine's OpenGL cannot \
+                     draw; the software renderer draws instead"
+                );
+                let mut settings = settings::Settings::load();
+                settings.graphics = Graphics::Software;
+                let _ = settings.save();
+                true
+            } else {
+                false
+            }
         }
+        Graphics::Software => true,
+        // The only setting that asks, and it asks every start: a session that
+        // is no longer remote, or a driver installed since, is how a machine
+        // that once needed the software renderer stops needing it, and nobody
+        // should have to know to visit a settings page for their graphics
+        // card to get its job back.
+        Graphics::Automatic => !probe_machine_gl().can_draw,
     };
 
     if wanted == drawing_on_processor {
         if drawing_on_processor {
             log::logline!("[clicker] drawing with the software renderer");
+            // Already in place and already bound — which is when an upgrade's
+            // newer staged copy would otherwise never be noticed. Answers
+            // `Active`, refreshing the placed pair if the staged one moved on.
+            let _ = platform::place_software_opengl();
         }
         return drawing_on_processor;
     }
 
+    // The setting and the binding disagree, and the binding is settled for
+    // this process — the loader chose before `main` ran. Whichever way the
+    // files change below, only a fresh start can rebind, and this early there
+    // is no window yet for a restart to interrupt: see `RESTART`.
     if wanted {
         match platform::place_software_opengl() {
             Placement::Placed => {
-                log::logline!("[clicker] software renderer put in place; it draws from the next start");
-                // Written down as the setting, not merely acted on. It is what
-                // the settings page will show, it is what stops every later
-                // launch paying for a probe, and it is a plain word in a file
-                // somebody can read and change.
-                if asked == Graphics::Automatic {
-                    let mut settings = settings::Settings::load();
-                    settings.graphics = Graphics::Software;
-                    let _ = settings.save();
-                }
-                // Only where there would otherwise be no window. A machine
-                // that can draw is left to finish the launch it is having: the
-                // setting says it applies at the next start, and taking that
-                // start without being asked is not the same promise.
-                if stranded {
-                    RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                log::logline!("[clicker] software renderer put in place");
+                RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Placement::Missing => {
                 log::logline!("[clicker] no software renderer to fall back to");
@@ -369,20 +368,208 @@ fn choose_opengl(asked: settings::Graphics) -> bool {
             }
             Placement::Refused(why) => {
                 log::logline!("[clicker] the software renderer could not be put in place: {why}");
-                let _ = REFUSED.set(
-                    "Clicker cannot write to its own folder; the software renderer needs an \
-                     administrator here"
-                        .to_string(),
-                );
+                let _ = REFUSED.set(why);
             }
             // Cannot happen: `drawing_on_processor` was false to get here.
             Placement::Active => {}
         }
-    } else if platform::remove_software_opengl() {
-        log::logline!("[clicker] software renderer taken away; the machine's own draws from the next start");
+    } else {
+        if platform::remove_software_opengl() {
+            log::logline!("[clicker] software renderer set aside; the machine's own OpenGL is next");
+        }
+        // Restart only once the files say the next binding really will be
+        // the machine's own — a removal the directory refused would make the
+        // restart a spawn for nothing.
+        if !platform::software_opengl_placed() {
+            RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     drawing_on_processor
+}
+
+/// What the machine's own OpenGL said it was, when it was last asked.
+///
+/// Kept for the settings page, which reads it to refuse "Graphics chip" on a
+/// machine that has none worth the name — the one choice that would otherwise
+/// trade a working window for no window at all.
+#[derive(Clone)]
+pub struct MachineGl {
+    pub identity: String,
+    pub can_draw: bool,
+}
+
+static MACHINE_GL: std::sync::Mutex<Option<MachineGl>> = std::sync::Mutex::new(None);
+
+/// Ask the machine what its own OpenGL is, and remember the answer.
+fn probe_machine_gl() -> MachineGl {
+    let report = probe_gl_isolated();
+    match &report {
+        Some(report) => log::logline!("[clicker] this machine offers GL {}", report.identity),
+        None => log::logline!("[clicker] this machine has no OpenGL that could be started"),
+    }
+    let answer = match report {
+        Some(report) => MachineGl {
+            can_draw: report.major >= 2 && report.shaders,
+            identity: report.identity,
+        },
+        None => MachineGl {
+            can_draw: false,
+            identity: "no OpenGL could be started".to_string(),
+        },
+    };
+    *MACHINE_GL.lock().unwrap() = Some(answer.clone());
+    answer
+}
+
+/// The last probe's answer, probing now if this launch never had a reason to
+/// ask. Blocks for the probe's length, which is a moment; only the settings
+/// page calls it outside startup, on a click.
+pub fn machine_gl() -> MachineGl {
+    if let Some(known) = MACHINE_GL.lock().unwrap().clone() {
+        return known;
+    }
+    probe_machine_gl()
+}
+
+/// The argument that makes a launch nothing but the graphics probe: answer on
+/// stdout and leave. The child half of `probe_gl_isolated`.
+const PROBE_FLAG: &str = "--probe-gl";
+
+fn answer_probe_and_exit() -> ! {
+    let answer = match platform::probe_opengl() {
+        Some(report) => format!(
+            "{} {} {}",
+            report.major,
+            if report.shaders { "shaders" } else { "fixed" },
+            report.identity
+        ),
+        None => "none".to_string(),
+    };
+    println!("{answer}");
+    std::process::exit(0);
+}
+
+/// What the machine's own OpenGL is — asked in this process where that is
+/// safe, and through a short-lived child of this executable where it is not.
+///
+/// It stops being safe the moment the software renderer is what this process
+/// draws with: two libraries answering to `opengl32.dll` in one process do
+/// not share a WGL, and asking the system's about a context while Mesa holds
+/// the name fails at best and faults at worst — measured, not imagined: the
+/// probe run in-process beside Mesa could not create a context at all. A
+/// child asks instead, with the renderer's files stepped aside for its
+/// length, so the child binds the machine's own OpenGL the way any launch
+/// without the fallback would and answers about exactly that. If the worst
+/// happens it happens to a process whose silence is an answer, not a crash.
+fn probe_gl_isolated() -> Option<platform::GlReport> {
+    // The lever for testing the no-graphics paths on a machine that has
+    // graphics: make the probe report a machine with none (`none`), or with
+    // Windows' own unshaded 1.1 (`old`). Only the probe lies — whatever
+    // actually loads still draws — so the decisions downstream of the probe
+    // can all be walked on any desk. See docs/TESTING.md.
+    match std::env::var("CLICKER_PROBE").as_deref() {
+        Ok("none") => return None,
+        Ok("old") => {
+            return Some(platform::GlReport {
+                identity: "pretend GDI Generic · 1.1.0 (CLICKER_PROBE=old)".to_string(),
+                major: 1,
+                shaders: false,
+            })
+        }
+        _ => {}
+    }
+    if !platform::software_gl_in_use() {
+        return platform::probe_opengl();
+    }
+    let hidden = platform::hide_software_opengl();
+    let answer = probe_in_child();
+    platform::restore_software_opengl(hidden);
+    answer
+}
+
+/// The parent half of `answer_probe_and_exit`: start one, wait bounded, read
+/// the line.
+fn probe_in_child() -> Option<platform::GlReport> {
+    let exe = std::env::current_exe().ok()?;
+    let mut child = std::process::Command::new(exe)
+        .arg(PROBE_FLAG)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    // Bounded: a probe that hangs must not hold the launch hostage. One line
+    // of output fits any pipe, so waiting before reading cannot deadlock.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let answered = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    if !answered {
+        return None;
+    }
+    let mut said = String::new();
+    use std::io::Read as _;
+    child.stdout.take()?.read_to_string(&mut said).ok()?;
+    let line = said.lines().next()?.trim();
+    if line == "none" {
+        return None;
+    }
+    let mut parts = line.splitn(3, ' ');
+    let major = parts.next()?.parse().ok()?;
+    let shaders = parts.next()? == "shaders";
+    let identity = parts.next().unwrap_or("unknown").to_string();
+    Some(platform::GlReport { identity, major, shaders })
+}
+
+/// The settings page picked a renderer. Make it true on disk now — place the
+/// files or set them aside — so a single restart is all it takes, and return
+/// what the row should say when the stock notes do not cover it.
+pub fn apply_graphics_choice(choice: settings::Graphics) -> Option<String> {
+    use platform::Placement;
+    if !platform::HAS_SOFTWARE_GL {
+        return None;
+    }
+    let wants_software = match choice {
+        settings::Graphics::Software => true,
+        settings::Graphics::System => false,
+        settings::Graphics::Automatic => !machine_gl().can_draw,
+    };
+    if wants_software {
+        match platform::place_software_opengl() {
+            Placement::Placed | Placement::Active => None,
+            Placement::Missing => Some("no software renderer installed".to_string()),
+            Placement::Refused(why) => {
+                log::logline!("[clicker] the software renderer could not be put in place: {why}");
+                Some("the software renderer could not be put in place — see the log".to_string())
+            }
+        }
+    } else {
+        platform::remove_software_opengl();
+        None
+    }
+}
+
+/// What the settings page's renderer row should say beyond the stock notes,
+/// written when a choice is applied and cleared by the next one.
+static CHOICE_NOTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_graphics_note(note: Option<String>) {
+    *CHOICE_NOTE.lock().unwrap() = note;
+}
+
+pub fn graphics_note() -> Option<String> {
+    CHOICE_NOTE.lock().unwrap().clone()
 }
 
 /// Whether the picture and the interface are being drawn on the processor.
@@ -427,11 +614,15 @@ fn note_attempt(mode: &str) {
 /// Called by the first frame that draws. Anything that got this far works.
 pub fn graphics_survived() {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        if let Some(path) = attempt_marker() {
-            let _ = std::fs::remove_file(path);
-        }
-    });
+    ONCE.call_once(clear_attempt);
+}
+
+/// Take the record back off outside the first frame: a launch that hands off
+/// to a restarted copy of itself has not failed, it has finished.
+fn clear_attempt() {
+    if let Some(path) = attempt_marker() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// What the last launch was trying to draw with, if it never drew.
@@ -442,18 +633,20 @@ fn failed_attempt() -> Option<String> {
     Some(mode)
 }
 
-/// Whether this launch put the software renderer where the next one will find
-/// it, on a machine that cannot open a window without it.
+/// Whether this launch changed the renderer files underneath a binding the
+/// loader already made for this process — placed the software renderer, or set
+/// it aside.
 ///
-/// The one case where starting again is the difference between a program and
-/// nothing at all: the library a process draws with is bound before its own
-/// code runs, so the copy this launch just made is of no use to it. It happens
-/// once on such a machine — the file stays where it was put, and every start
-/// after this one binds it directly.
+/// Either way the change is of no use to the launch that made it: the library
+/// a process draws with is bound before its own code runs. So the launch hands
+/// off — before any window exists, where a restart interrupts nothing — and
+/// the started copy binds what is now there. It happens only on the launch
+/// that changed something: the files then match the setting, and every later
+/// start binds them directly with nothing to change.
 static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Set on the one that is started, so a machine where the renderer is in place
-/// and still cannot draw stops rather than starting itself forever.
+/// Set on the copy that is started, so a machine where the files are right and
+/// the drawing still fails stops rather than starting itself forever.
 const PLACED: &str = "CLICKER_GL_PLACED";
 
 /// Why the software renderer is not in place, when it was asked for and could
@@ -496,7 +689,7 @@ fn is_graphics_failure(error: &eframe::Error) -> bool {
 /// one it was.
 fn graphics_failed(error: &eframe::Error, on_software: bool, asked: settings::Graphics) {
     log::logline!("[clicker] the window could not be opened: {error}");
-    let graphics = platform::probe_opengl();
+    let graphics = probe_gl_isolated();
     match &graphics {
         Some(report) => log::logline!("[clicker] this display offers GL {}", report.identity),
         None => log::logline!("[clicker] this display has no OpenGL that could be started"),
@@ -507,28 +700,60 @@ fn graphics_failed(error: &eframe::Error, on_software: bool, asked: settings::Gr
     );
 }
 
-/// Start once more, on the renderer this launch just put in place.
+/// Start once more, binding the renderer files as this launch just arranged
+/// them.
 ///
 /// The same arguments and one thing added to the environment, which is what
-/// stops it happening twice: a machine where the renderer is deployed and the
+/// stops it happening twice: a machine where the files are right and the
 /// window still will not open has a fault this cannot fix, and should say so
 /// rather than starting itself again.
+///
+/// The child is watched for a moment rather than abandoned, for one specific
+/// death: an exit code in the loader's range means the process never got as
+/// far as `main` — a placed library that would not load, which no marker or
+/// dialog of the child's can report because no code of the child's ever ran.
+/// That is the one failure that would recur on every future launch, so the
+/// files come back out here, while there is still a process that can do it.
 fn start_again() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    match std::process::Command::new(exe)
+    let mut child = match std::process::Command::new(exe)
         .args(std::env::args_os().skip(1))
         .env(PLACED, "1")
         .spawn()
     {
-        Ok(_) => {
-            log::logline!("[clicker] starting again, on the software renderer");
-            true
-        }
+        Ok(child) => child,
         Err(e) => {
             log::logline!("[clicker] could not start again: {e}");
-            false
+            return false;
+        }
+    };
+    log::logline!("[clicker] starting again, to bind the renderer as the files now are");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // STATUS_DLL_NOT_FOUND, STATUS_INVALID_IMAGE_FORMAT,
+                // STATUS_ENTRYPOINT_NOT_FOUND: the loader's own verdicts.
+                let code = status.code().unwrap_or(0) as u32;
+                if [0xC0000135, 0xC000007B, 0xC0000139].contains(&code) {
+                    log::logline!(
+                        "[clicker] the started copy would not even load ({code:#010X}); \
+                         taking the software renderer back out"
+                    );
+                    platform::remove_software_opengl();
+                    return false;
+                }
+                // Any other exit is the child's own story, told by its own
+                // marker and its own dialogs.
+                return true;
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            // Still running as the watch ends, or unknowable: it lives.
+            _ => return true,
         }
     }
 }
@@ -575,6 +800,25 @@ fn no_graphics_message(
              file, or set Graphics back to Automatic, and start Clicker again."
                 .to_string(),
         );
+    } else if platform::HAS_SOFTWARE_GL && platform::software_opengl().is_some() {
+        // The renderer is here and could not be put where the loader would
+        // bind it, which is a different problem with a different way out than
+        // not having one at all.
+        said.push(match graphics_refused() {
+            Some(why) => format!(
+                "Clicker ships with a software renderer for exactly this, and could not put \
+                 it beside its own executable: {why}"
+            ),
+            None => "Clicker ships with a software renderer for exactly this, and could not \
+                     put it beside its own executable."
+                .to_string(),
+        });
+        said.push(
+            "Starting Clicker once as an administrator puts it in place for good. Installing \
+             Clicker for this user only — the installer's default — needs no administrator at \
+             all."
+                .to_string(),
+        );
     } else if platform::HAS_SOFTWARE_GL {
         let places = platform::software_opengl_candidates();
         said.push(
@@ -602,7 +846,33 @@ fn no_graphics_message(
     said.join("\n\n")
 }
 
+/// What to say when the machine has now failed to draw with both renderers —
+/// its own OpenGL on one launch and the software one on another.
+fn both_renderers_failed_message() -> String {
+    let mut said = vec![
+        "Clicker could not start with either renderer: this machine's own OpenGL and the \
+         software renderer have each been tried, and each launch ended before anything was \
+         drawn."
+            .to_string(),
+        "That usually means the fault is not the choice of graphics at all.".to_string(),
+    ];
+    if let Some(log) = log::path() {
+        said.push(format!("There is more in {}", log.display()));
+    }
+    if let Some(crash) = crash_log_path() {
+        said.push(format!("A crash would be recorded in {}", crash.display()));
+    }
+    said.join("\n\n")
+}
+
 fn main() -> eframe::Result<()> {
+    // Before everything else: a launch that exists only to answer another
+    // launch's question about the graphics must not touch settings, logs,
+    // markers or windows.
+    if std::env::args().nth(1).as_deref() == Some(PROBE_FLAG) {
+        answer_probe_and_exit();
+    }
+
     #[cfg(target_os = "linux")]
     {
         // Before anything opens sockets or files: the graphics driver on some
@@ -651,39 +921,101 @@ fn main() -> eframe::Result<()> {
 
     // Before the window, before glutin, and before mpv: whichever OpenGL is
     // loaded first is the one the whole process draws with.
-    // A launch that chose a renderer and never drew with it. Whatever it
-    // chose, this one does not choose again: the way out of a machine that
-    // cannot draw with what it was told to use is to stop using it, and that
-    // decision cannot wait for a window nobody is going to see.
+    //
+    // A launch that chose its graphics and never drew with them. Whatever it
+    // chose, this one does not choose the same way again: the way out of a
+    // machine that cannot draw with what it was told to use is to stop using
+    // it, and that decision cannot wait for a window nobody is going to see.
     let mut saved = saved;
-    if let Some(mode) = failed_attempt() {
-        if mode == "software" {
-            log::logline!(
-                "[clicker] the software renderer did not survive the last launch; \
-                 going back to this machine's OpenGL"
-            );
-            platform::remove_software_opengl();
-            saved.graphics = settings::Graphics::System;
-        } else {
-            log::logline!(
-                "[clicker] the last launch never drew with this machine's OpenGL; \
-                 the software renderer is what this one will try"
-            );
-            saved.graphics = settings::Graphics::Software;
+    let mut rescue_attempt = false;
+    let mut skip_choose = false;
+    if let Some(marker) = failed_attempt() {
+        let (died_on, was_rescue) = match marker.strip_suffix(" rescue") {
+            Some(mode) => (mode.to_string(), true),
+            None => (marker, false),
+        };
+        if was_rescue {
+            // The launch that died was itself the rescue from the one before:
+            // both renderers have now failed to make a window, and the fault
+            // is almost certainly not the choice between them. Flipping
+            // silently forever is the one outcome worse than either, so say
+            // so — this dialog may be the only interface this machine ever
+            // shows — and flip once more only because staying on the mode
+            // that just died is not better.
+            platform::alert(APP_NAME, &both_renderers_failed_message());
         }
-        let _ = saved.save();
+        match died_on.as_str() {
+            // Death while asking the machine about its own graphics, before
+            // any choice was staked on the answer. Asking again is how one
+            // bad driver turns that into every launch, so this one keeps
+            // whatever the loader bound, writes it down, and stops asking.
+            "choosing" => {
+                let bound = if platform::software_gl_in_use() {
+                    settings::Graphics::Software
+                } else {
+                    settings::Graphics::System
+                };
+                log::logline!(
+                    "[clicker] the last launch died while probing the graphics; \
+                     not asking again, staying on what is loaded"
+                );
+                saved.graphics = bound;
+                let _ = saved.save();
+                skip_choose = true;
+            }
+            "software" => {
+                log::logline!(
+                    "[clicker] the software renderer did not survive the last launch; \
+                     going back to this machine's OpenGL"
+                );
+                platform::remove_software_opengl();
+                saved.graphics = settings::Graphics::System;
+                let _ = saved.save();
+                rescue_attempt = true;
+            }
+            _ => {
+                log::logline!(
+                    "[clicker] the last launch never drew with this machine's OpenGL; \
+                     the software renderer is what this one will try"
+                );
+                saved.graphics = settings::Graphics::Software;
+                let _ = saved.save();
+                rescue_attempt = true;
+            }
+        }
     }
 
     let saved_graphics = saved.graphics;
-    let on_software_gl = choose_opengl(saved_graphics);
+    // On the record before the probe rather than after: a probe that dies
+    // takes the process with it, and a death nothing wrote down would happen
+    // again on every launch. See `attempt_marker`.
+    if !skip_choose {
+        note_attempt("choosing");
+    }
+    let on_software_gl = if skip_choose {
+        platform::software_gl_in_use()
+    } else {
+        choose_opengl(saved_graphics)
+    };
     SOFTWARE_GL.store(on_software_gl, std::sync::atomic::Ordering::Relaxed);
     let _ = STARTED_WITH.set(saved_graphics);
 
-    // A machine that cannot draw, and a renderer that is now where the loader
-    // will find it. Nothing else in this launch can use it, so this launch is
-    // over — see `RESTART`. Once, guarded, and never on a machine that has a
-    // window to show for itself.
+    // Drawing with the bundled renderer means drawing on the processor —
+    // Mesa is not left to pick a GPU path of its own inside the code path
+    // that exists to escape GPU drivers. Before the window, before any
+    // context, and before any thread: the variable is read at context
+    // creation and set_var is only safe while the process is still alone.
+    if on_software_gl {
+        platform::pin_software_driver();
+    }
+
+    // The renderer files just changed underneath a binding the loader already
+    // made for this process, so this launch hands off to one that will bind
+    // them — see `RESTART`. Once, guarded, and before there is any window for
+    // the handoff to interrupt. The marker comes off first: this launch is
+    // finishing, not failing, and the started copy keeps its own record.
     if RESTART.load(std::sync::atomic::Ordering::Relaxed) && std::env::var_os(PLACED).is_none() {
+        clear_attempt();
         if start_again() {
             return Ok(());
         }
@@ -744,8 +1076,15 @@ fn main() -> eframe::Result<()> {
     };
 
     // From here until the first frame, this launch is on the record as having
-    // chosen something it has not yet proved.
-    note_attempt(if on_software_gl { "software" } else { "system" });
+    // chosen something it has not yet proved. A launch that is itself the
+    // rescue from a failed one says so, which is how a machine failing on
+    // both renderers gets a dialog instead of an endless silent alternation.
+    let mode = if on_software_gl { "software" } else { "system" };
+    if rescue_attempt {
+        note_attempt(&format!("{mode} rescue"));
+    } else {
+        note_attempt(mode);
+    }
 
     let ran = eframe::run_native(
         APP_NAME,
@@ -812,6 +1151,21 @@ fn install_panic_log() {
                 use std::io::Write;
                 let _ = write!(file, "{line}");
             }
+        }
+        // A death before the first frame is otherwise a launch nobody saw
+        // fail: no window yet, no console, and the dialog `graphics_failed`
+        // puts up is only reached when the failure comes back as an error
+        // rather than a panic. The attempt marker is exactly the record of
+        // being in that gap.
+        if thread == "main" && attempt_marker().map(|p| p.exists()).unwrap_or(false) {
+            platform::alert(
+                APP_NAME,
+                &format!(
+                    "Clicker crashed before it could draw anything.\n\n{}\n\nThe next start \
+                     will avoid whatever this one was trying.",
+                    line.trim_end()
+                ),
+            );
         }
         previous(info);
     }));
@@ -1294,6 +1648,7 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let settings = settings::Settings::load();
+        mpv::set_soft_pixels(settings.soft_pixels.percent());
 
         // The popped-out window's side of the wire, built now rather than on
         // the first pop-out: the closure has to have something to send on from
@@ -2063,7 +2418,20 @@ fn blit_video(
     // times a second, from its own thread, which Windows delivers — and needs
     // no ask of its own.
     if !paused && pace {
-        ctx.request_repaint();
+        if mpv::graphics_are_translated() {
+            // "Vsync caps this" is the whole premise of the ask above, and a
+            // translated OpenGL has no vsync to cap anything: asked this way,
+            // llvmpipe painted the browse screen at a hundred passes a second
+            // — every one a full window rasterised on the processor — and the
+            // picture fought its own interface for cores. Here the decoder's
+            // frame announcements are what wake the paint (see the worker's
+            // `frame_ready`), which is one pass per frame that actually
+            // exists; this is only the backstop that keeps the transport
+            // alive if playback stalls.
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        } else {
+            ctx.request_repaint();
+        }
     }
 
     // The entrance fade, painted over the picture rather than tinted into
@@ -3826,6 +4194,9 @@ impl App {
                 // agree with it. Cheap enough to do on every save rather than
                 // trying to work out whether this one touched the keyboard.
                 platform::sync_menu_shortcuts(&self.settings);
+                // Likewise the software renderer's pixel dial, which takes
+                // effect on the next frame rather than the next start.
+                mpv::set_soft_pixels(self.settings.soft_pixels.percent());
             }
             ui_setup::SetupAction::PickFolder(which) => {
                 // On its own thread. The picker runs its own message loop and

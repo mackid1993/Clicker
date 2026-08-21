@@ -685,9 +685,29 @@ pub fn settings_screen(
                                         }
                                     })
                                     .clicked()
+                                    && choice != settings.graphics
                                 {
-                                    settings.graphics = choice;
-                                    action = SetupAction::Save;
+                                    // The one choice that can take the window
+                                    // away entirely is refused where it would:
+                                    // a machine whose own OpenGL cannot draw
+                                    // this program keeps its working renderer,
+                                    // and the row says why.
+                                    if choice == Graphics::System
+                                        && !crate::machine_gl().can_draw
+                                    {
+                                        crate::set_graphics_note(Some(format!(
+                                            "refused: this machine offers {}",
+                                            crate::machine_gl().identity
+                                        )));
+                                    } else {
+                                        settings.graphics = choice;
+                                        // The files change now, so one restart
+                                        // is all it takes to draw with them.
+                                        crate::set_graphics_note(
+                                            crate::apply_graphics_choice(choice),
+                                        );
+                                        action = SetupAction::Save;
+                                    }
                                 }
                             }
                         })
@@ -705,24 +725,36 @@ pub fn settings_screen(
                     // until something says so — which a tooltip nobody hovers
                     // does not.
                     let drawing_on_processor = crate::software_gl_in_use();
-                    // Against what this launch started with, not against what
-                    // is on screen. Automatic decides at startup and does not
-                    // record which way it went, so a page reasoning from the
-                    // picture alone would tell a machine that correctly chose
-                    // the software renderer that it had been changed.
                     let changed = settings.graphics != crate::graphics_at_start();
-                    let note = if let Some(refused) = crate::graphics_refused() {
-                        // This launch tried and could not, which outranks
-                        // anything the setting says it wants.
-                        Some(refused)
+                    let note = if let Some(applied) = crate::graphics_note() {
+                        // What happened when the current choice was made,
+                        // which outranks anything inferred: a refusal, or a
+                        // renderer that could not be put in place.
+                        Some(applied)
+                    } else if crate::graphics_refused().is_some() {
+                        // This launch wanted the software renderer and could
+                        // not have it. The detail is in the log.
+                        Some("the software renderer could not be put in place".to_string())
                     } else if settings.graphics == Graphics::Software
                         && crate::platform::software_opengl().is_none()
                     {
-                        Some("no software renderer installed")
-                    } else if changed {
-                        Some("restart Clicker to apply")
+                        Some("no software renderer installed".to_string())
+                    } else if settings.graphics == Graphics::Software && !drawing_on_processor {
+                        // Judged against what is actually drawing, not against
+                        // what this launch started with: the files may already
+                        // be right while the binding is still last start's.
+                        Some("restart Clicker to apply".to_string())
+                    } else if settings.graphics == Graphics::System && drawing_on_processor {
+                        Some("restart Clicker to apply".to_string())
+                    } else if changed && settings.graphics == Graphics::Automatic {
+                        // Automatic resolves at startup, so a change onto it
+                        // only lands at the next one. The two settings above
+                        // compare against what is actually drawing instead,
+                        // which stays honest when startup itself rewrote the
+                        // setting — see the System arm of `choose_opengl`.
+                        Some("restart Clicker to apply".to_string())
                     } else if drawing_on_processor {
-                        Some("drawing on the processor")
+                        Some("drawing on the processor".to_string())
                     } else {
                         None
                     };
@@ -733,6 +765,58 @@ pub fn settings_screen(
                                 .color(Fluent::TEXT_TERTIARY),
                         );
                     }
+                });
+            }
+
+            // The dial on how many pixels the processor shades, shown only
+            // where the processor is what shades them: on translated graphics
+            // the pixel count is the whole frame budget, and how to spend it
+            // — sharpness or frames — is not a call anyone can make for the
+            // user. Applies to the next frame, no restart.
+            if crate::mpv::graphics_are_translated() {
+                control_row(ui, |ui| {
+                    use crate::settings::SoftPixels;
+                    setting_label(ui, "Pixels to shade");
+                    let name = |p: SoftPixels| match p {
+                        SoftPixels::All => "All",
+                        SoftPixels::Most => "Most",
+                        SoftPixels::Half => "Half",
+                    };
+                    egui::ComboBox::from_id_salt("soft_pixels")
+                        .selected_text(name(settings.soft_pixels))
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for choice in [SoftPixels::All, SoftPixels::Most, SoftPixels::Half]
+                            {
+                                if ui
+                                    .selectable_label(settings.soft_pixels == choice, name(choice))
+                                    .on_hover_text(match choice {
+                                        SoftPixels::All => {
+                                            "Every pixel the window shows, up to the \
+                                             stream's own size."
+                                        }
+                                        SoftPixels::Most => {
+                                            "Three quarters of the picture's width — about \
+                                             half the pixels, noticeably faster."
+                                        }
+                                        SoftPixels::Half => {
+                                            "Half the picture's width — a quarter of the \
+                                             pixels. The fastest, and the softest."
+                                        }
+                                    })
+                                    .clicked()
+                                {
+                                    settings.soft_pixels = choice;
+                                    action = SetupAction::Save;
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "How much of the picture is drawn when the processor is doing \
+                             the drawing. Every pixel costs processor time, so fewer pixels \
+                             is directly more frames. Takes effect immediately.",
+                        );
                 });
             }
 

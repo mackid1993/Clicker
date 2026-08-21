@@ -126,6 +126,15 @@ pub fn software_opengl() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Never placed, there being nothing to place.
+pub fn software_opengl_placed() -> bool {
+    false
+}
+
+/// Nothing to pin: the bundled renderer is a Windows arrangement, and these
+/// platforms' Mesa is the system's own business.
+pub fn pin_software_driver() {}
+
 /// Never, because nothing here can be in that state.
 pub fn software_gl_in_use() -> bool {
     false
@@ -160,6 +169,19 @@ pub fn place_software_opengl() -> Placement {
 pub fn remove_software_opengl() -> bool {
     false
 }
+
+/// Nothing was ever renamed aside, so there is nothing to sweep.
+pub fn sweep_stale_opengl() {}
+
+/// Nothing to hide, and so nothing to restore. The type exists so the shared
+/// code has one spelling; see the Windows implementation for what it is for.
+pub struct HiddenRenderer;
+
+pub fn hide_software_opengl() -> HiddenRenderer {
+    HiddenRenderer
+}
+
+pub fn restore_software_opengl(_hidden: HiddenRenderer) {}
 
 /// Standard error, which these platforms leave attached: a `.deb` launched
 /// from its desktop file writes to the journal and a `.app` to Console, so the

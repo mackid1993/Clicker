@@ -152,6 +152,10 @@ pub struct Settings {
     /// picture. See `Scaling`.
     #[serde(default)]
     pub scaling: Scaling,
+    /// How much of the picture the software renderer shades. See
+    /// `SoftPixels`.
+    #[serde(default)]
+    pub soft_pixels: SoftPixels,
     /// Which OpenGL is drawn with, on the one platform where there is a
     /// choice. See `Graphics`.
     #[serde(default)]
@@ -312,6 +316,7 @@ impl Default for Settings {
             cache_dir: String::new(),
             software_decoding: false,
             scaling: Scaling::default(),
+            soft_pixels: SoftPixels::default(),
             graphics: Graphics::default(),
             shortcuts_enabled: true,
             shortcut_keys: Default::default(),
@@ -428,6 +433,35 @@ pub enum Scaling {
     /// Good kernels regardless of what the graphics are. Sharp on a machine
     /// that can afford it; dropped frames on one that cannot.
     Detailed,
+}
+
+/// How much of the picture the software renderer is asked to shade.
+///
+/// Only consulted where the graphics are translated or emulated — llvmpipe, a
+/// virtual GPU — because there every pixel is shaded by a processor core and
+/// the pixel count is the whole frame budget. The steps are per side, so
+/// `Half` is a quarter of the pixels and close to four times the speed, paid
+/// for in softness the upscale cannot give back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum SoftPixels {
+    /// Every pixel the window shows, up to the stream's own size.
+    #[default]
+    All,
+    /// Three quarters of the width — about half the pixels.
+    Most,
+    /// Half the width — a quarter of the pixels.
+    Half,
+}
+
+impl SoftPixels {
+    /// The width multiplier, in percent.
+    pub fn percent(self) -> u32 {
+        match self {
+            SoftPixels::All => 100,
+            SoftPixels::Most => 75,
+            SoftPixels::Half => 50,
+        }
+    }
 }
 
 impl Settings {

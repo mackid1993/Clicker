@@ -38,7 +38,7 @@
 //! a missing library is a message rather than a program that will not start.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -65,10 +65,20 @@ const MPV_RENDER_PARAM_API_TYPE: c_int = 1;
 const MPV_RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
 const MPV_RENDER_PARAM_OPENGL_FBO: c_int = 3;
 const MPV_RENDER_PARAM_FLIP_Y: c_int = 4;
+const MPV_RENDER_PARAM_SW_SIZE: c_int = 17;
+const MPV_RENDER_PARAM_SW_FORMAT: c_int = 18;
+const MPV_RENDER_PARAM_SW_STRIDE: c_int = 19;
+const MPV_RENDER_PARAM_SW_POINTER: c_int = 20;
 /// Whether `render` waits until the frame is due before returning. It defaults
 /// to waiting, which is right for a thread that does nothing else and very
 /// wrong for the one drawing the interface.
-const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: c_int = 11;
+///
+/// 12, and it was 11 here for a long time — which is `NEXT_FRAME_INFO`, a
+/// param `render` does not consume, so the intended "do not wait" was never
+/// actually being said. Nothing visibly broke because `video-timing-offset=0`
+/// was carrying the same meaning through the option system; the number is
+/// corrected because the next person to trust it should be able to.
+const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: c_int = 12;
 
 const MPV_RENDER_UPDATE_FRAME: u64 = 1;
 
@@ -163,6 +173,7 @@ api! {
 const GL_TEXTURE_2D: u32 = 0x0DE1;
 const GL_RGBA8: i32 = 0x8058;
 const GL_RGBA: u32 = 0x1908;
+const GL_BGRA: u32 = 0x80E1;
 const GL_UNSIGNED_BYTE: u32 = 0x1401;
 const GL_LINEAR: i32 = 0x2601;
 const GL_CLAMP_TO_EDGE: i32 = 0x812F;
@@ -481,6 +492,17 @@ pub fn note_graphics(renderer: &str) {
     let _ = GRAPHICS.set(renderer.to_lowercase());
 }
 
+/// The user's answer to how much of the picture the software renderer should
+/// shade, as a width percentage. Written from the settings page — it takes
+/// effect on the next frame, because the render target is sized on every one
+/// — and read only where `graphics_are_translated`, which is where pixels
+/// are the whole frame budget.
+static SOFT_PIXELS: AtomicU32 = AtomicU32::new(100);
+
+pub fn set_soft_pixels(percent: u32) {
+    SOFT_PIXELS.store(percent.clamp(25, 100), Ordering::Relaxed);
+}
+
 /// Whether the graphics are real, or translated or emulated somewhere.
 ///
 /// Not a guess at speed — a reading of what the driver says it is. llvmpipe,
@@ -559,15 +581,21 @@ struct Picture {
 /// avoiding one. It costs real GPU time, which is why it is not the default.
 fn picture_for(scaling: crate::settings::Scaling) -> Picture {
     use crate::settings::Scaling;
-    const PLAIN: Picture = Picture {
-        scale: "",
-        cscale: "",
-        dscale: "",
-        correct_downscaling: "",
-        linear_downscaling: "",
-        sigmoid_upscaling: "",
-        dither: "",
-        deband: "",
+    // The genuinely cheap profile. "mpv's defaults" used to be this and are
+    // not any more: current mpv defaults to lanczos for both scalers and
+    // fruit dithering, which are the right defaults for a graphics card and
+    // a meaningful share of the frame budget on a processor. Measured on
+    // llvmpipe drawing 1080p60: 35ms a render with mpv left to its defaults.
+    // Bilinear and no dithering is what "cheap" actually spells.
+    const CHEAP: Picture = Picture {
+        scale: "bilinear",
+        cscale: "bilinear",
+        dscale: "bilinear",
+        correct_downscaling: "no",
+        linear_downscaling: "no",
+        sigmoid_upscaling: "no",
+        dither: "no",
+        deband: "no",
     };
     const GOOD: Picture = Picture {
         scale: "catmull_rom",
@@ -580,16 +608,16 @@ fn picture_for(scaling: crate::settings::Scaling) -> Picture {
         deband: "no",
     };
     match scaling {
-        // mpv's defaults and nothing else, for a machine that is dropping
-        // frames — where every option above is a reason it might be.
-        Scaling::Fast => PLAIN,
+        // The cheapest thing that works, for a machine that is dropping
+        // frames — which is what this setting's own description promises.
+        Scaling::Fast => CHEAP,
         Scaling::Detailed => Picture { deband: "yes", ..GOOD },
-        // Everything cheap on graphics that are real; nothing at all on
+        // Everything good on graphics that are real; the cheap kernels on
         // graphics that are translated or emulated, where the budget is the
         // whole problem.
         Scaling::Automatic => {
             if graphics_are_translated() {
-                PLAIN
+                CHEAP
             } else {
                 GOOD
             }
@@ -625,6 +653,24 @@ fn picture_for(scaling: crate::settings::Scaling) -> Picture {
 /// fixed nothing. If display pacing is ever suspected again, that zero is
 /// where to start.
 const PACES_ON_DISPLAY: bool = !cfg!(target_os = "linux");
+
+/// `PACES_ON_DISPLAY`, corrected by what the graphics turned out to be.
+///
+/// The constant says where the platform's compositor has vsync worth
+/// believing; a translated or emulated OpenGL is where it does not, whatever
+/// the platform. llvmpipe completes a swap whenever the raster happens to
+/// finish, so the refresh mpv would estimate from those swaps is noise — seen
+/// directly on this path as `display 0.0Hz estimated 0.0Hz` beside a drop
+/// counter climbing past a healthy 60fps decoder. Everything the constant
+/// used to decide is decided here instead, so the pieces that must agree
+/// stay agreed: the pacing clock, autosync, and whether rendering runs on
+/// its own thread.
+///
+/// Runtime rather than compile-time because the answer is: the graphics are
+/// read once the window is up, which is before any player exists to care.
+fn paces_on_display() -> bool {
+    PACES_ON_DISPLAY && !graphics_are_translated()
+}
 
 /// Where mpv is asked to draw its picture.
 ///
@@ -996,9 +1042,14 @@ impl Player {
             // `display-resample`, where it was measured to fix a real problem
             // — a drop counter climbing beside a healthy decoder on 60fps
             // content — and where there is one compositor with honest vsync.
+            // Unless the graphics are translated, which forfeits that trust
+            // whatever the platform: the measurement in the paragraph above
+            // was reproduced note for note on Windows drawing with llvmpipe —
+            // hundreds of frames discarded against a refresh estimated at
+            // zero. See `paces_on_display`.
             (
                 "video-sync",
-                if PACES_ON_DISPLAY {
+                if paces_on_display() {
                     "display-resample"
                 } else {
                     "audio"
@@ -1030,9 +1081,13 @@ impl Player {
             // autosync to smooth video timing against jittery audio delay
             // measurements instead of trusting each one. 30 is the manual's
             // own suggested value. Blank elsewhere, and blank is skipped.
+            //
+            // "Every Linux" has since become "everywhere the audio clock is
+            // the pacer", which now includes any platform whose graphics are
+            // translated — same axis, same remedy. See `paces_on_display`.
             (
                 "autosync",
-                if cfg!(target_os = "linux") { "30" } else { "" },
+                if paces_on_display() { "" } else { "30" },
             ),
             // Which audio output, from the environment only; mpv's own probe
             // order stands otherwise.
@@ -1342,8 +1397,23 @@ impl Player {
         // and by a different amount at every scale step: mpv letterboxed the
         // mismatch inside the framebuffer, and the blit stretched the bars
         // along with the picture.
+        // The clamp the paragraph above rejects comes back where the graphics
+        // are translated. There every pixel is shaded by the processor, the
+        // sharpness a real GPU buys with the extra pixels cannot be paid for,
+        // and the stream's own size is the most the picture honestly holds
+        // anyway. Measured on llvmpipe rendering a 1080p stream at 2560x1440:
+        // 40ms a frame, which is 17fps before the interface has drawn
+        // anything on top.
         let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-        let width = target.0.max(2);
+        let mut width = target.0.max(2);
+        if graphics_are_translated() {
+            let (vw, _) = self.video_size();
+            if vw > 0 {
+                width = width.min(vw as i32);
+            }
+            // And the user's dial below that — see `set_soft_pixels`.
+            width = (width * SOFT_PIXELS.load(Ordering::Relaxed) as i32 / 100).max(2);
+        }
         let height = (((width as i64 * target.1 as i64) / target.0.max(1) as i64) as i32
             & !1)
             .max(2);
@@ -2128,7 +2198,12 @@ impl Player {
         // The code is one path on every platform regardless, which is the
         // point: a bug found here is fixed once, and either default can be
         // tried on any machine in ten seconds.
-        let default_on = !PACES_ON_DISPLAY;
+        // Also the default wherever the graphics are translated, whatever
+        // the platform: there a render call is mostly a wait — measured on
+        // llvmpipe at 40ms of wall for 0.04 cores of work — and display-sync,
+        // the reason the thread is off elsewhere, is off there too. See
+        // `paces_on_display`.
+        let default_on = !paces_on_display();
         let asked = std::env::var("CLICKER_RENDER_THREAD");
         let on = match asked.as_deref() {
             Ok("1") => true,
@@ -2200,9 +2275,9 @@ impl Player {
         let read_fbo = cache.1[front];
         drop(cache);
 
-        let (sw, sh) = {
+        let (sw, sh, flipped) = {
             let st = link.state.lock().unwrap();
-            (st.width, st.height)
+            (st.width, st.height, st.flipped)
         };
 
         let target = gl.draw_framebuffer();
@@ -2212,8 +2287,12 @@ impl Player {
         }
         gl.bind_framebuffer(GL_READ_FRAMEBUFFER, read_fbo);
         gl.bind_framebuffer(GL_DRAW_FRAMEBUFFER, target);
+        // A software-rendered frame is uploaded in memory order, top row
+        // first, where a GL-rendered one leaves the framebuffer bottom-up;
+        // the blit un-mirrors whichever kind was published.
+        let (src_y0, src_y1) = if flipped { (sh, 0) } else { (0, sh) };
         (gl.blit_framebuffer)(
-            0, 0, sw, sh,
+            0, src_y0, sw, src_y1,
             x, bottom, x + w, top,
             GL_COLOR_BUFFER_BIT,
             GL_LINEAR as u32,
@@ -2590,6 +2669,15 @@ mod worker {
         pub stop: AtomicBool,
         /// The worker failed and cleaned up entirely; use the in-paint path.
         pub dead: AtomicBool,
+        /// The worker has either created mpv's renderer or given up — the
+        /// moment `spawn` may return. Waited for, because "eventually" is not
+        /// soon enough: a file is usually already loading, and a video track
+        /// whose VO initializes before any render context exists is disabled
+        /// for good — mpv says "No render context set" once and never asks
+        /// again. Context creation is quick on a real driver, which is why
+        /// the race never showed on Linux; llvmpipe spends visible time
+        /// bringing a context up, and lost it.
+        pub ready: AtomicBool,
         /// A frame or a resize is waiting. Latched, because a condvar notify
         /// with nobody waiting evaporates: mpv announces frames while the
         /// worker is mid-render, and without this the announcement was lost
@@ -2613,6 +2701,10 @@ mod worker {
         pub want: (i32, i32),
         pub generation: u64,
         pub painted: bool,
+        /// Whether the published frame is top-down — a software-rendered
+        /// upload — rather than GL's bottom-up. The interface's blit reads
+        /// this and un-mirrors.
+        pub flipped: bool,
     }
 
     /// Capture the paint thread's context and start the worker. Called once,
@@ -2641,10 +2733,12 @@ mod worker {
                 want: (0, 0),
                 generation: 0,
                 painted: false,
+                flipped: false,
             }),
             wake: std::sync::Condvar::new(),
             stop: AtomicBool::new(false),
             dead: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             pending: AtomicBool::new(true),
             render_ctx: Mutex::new(Ptr(std::ptr::null_mut())),
         });
@@ -2658,9 +2752,25 @@ mod worker {
             .spawn(move || {
                 run(share, api, mpv, shared, thread_link.clone());
                 thread_link.dead.store(true, Ordering::SeqCst);
+                // After `dead`, so a waiter released here reads the give-up.
+                thread_link.ready.store(true, Ordering::SeqCst);
             })
             .ok()?;
         *player.render_thread.lock().unwrap() = Some(handle);
+        // Until the renderer exists or the worker has given up — see `ready`.
+        // The wait is a moment on a real driver and the length of llvmpipe's
+        // context bring-up on the machines that need it, paid once.
+        let patience = std::time::Instant::now();
+        while !link.ready.load(Ordering::SeqCst)
+            && patience.elapsed() < std::time::Duration::from_secs(10)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if link.dead.load(Ordering::SeqCst) {
+            // It already said why in the log; the in-paint path takes over
+            // with no second context left behind.
+            return None;
+        }
         crate::log::line("[mpv] rendering on its own thread and context");
         Some(link)
     }
@@ -2701,30 +2811,75 @@ mod worker {
                 }
             };
 
-            // mpv's renderer, against this context.
-            let api_type = CString::new("opengl").unwrap();
+            // mpv's renderer, against this context — or against no graphics
+            // at all. Where the OpenGL is translated, asking mpv to shade
+            // video through it means every scaler pass emulated pixel by
+            // pixel on the processor *through a GL*, which was measured at
+            // 38ms a frame with the cheapest kernels. mpv has a renderer for
+            // exactly this machine: the software API, its own SIMD scaler
+            // straight into a memory buffer, built for the machines its GL
+            // cannot serve. The buffer is uploaded into the same shared
+            // textures the interface already blits, so from the publish
+            // onward nothing changes. The GL context stays: uploading is
+            // what it is for now.
+            let software = graphics_are_translated();
+            let api_type = CString::new(if software { "sw" } else { "opengl" }).unwrap();
             let mut init = OpenGlInitParams {
                 get_proc_address: gl_proc_address,
                 get_proc_address_ctx: std::ptr::null_mut(),
             };
-            let mut params = [
-                RenderParam { kind: MPV_RENDER_PARAM_API_TYPE, data: api_type.as_ptr() as *mut c_void },
-                RenderParam { kind: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, data: &mut init as *mut OpenGlInitParams as *mut c_void },
-                RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
-            ];
+            let mut params = if software {
+                [
+                    RenderParam { kind: MPV_RENDER_PARAM_API_TYPE, data: api_type.as_ptr() as *mut c_void },
+                    RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
+                    RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
+                ]
+            } else {
+                [
+                    RenderParam { kind: MPV_RENDER_PARAM_API_TYPE, data: api_type.as_ptr() as *mut c_void },
+                    RenderParam { kind: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, data: &mut init as *mut OpenGlInitParams as *mut c_void },
+                    RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
+                ]
+            };
             let mut created: *mut c_void = std::ptr::null_mut();
-            let rc = (api.render_create)(&mut created, mpv.0, params.as_mut_ptr());
+            let mut rc = (api.render_create)(&mut created, mpv.0, params.as_mut_ptr());
+            let software = if software && rc < 0 {
+                // A libmpv built without the software renderer answers here;
+                // the GL path is slow on this machine and works.
+                let why = CStr::from_ptr((api.error_string)(rc)).to_string_lossy();
+                crate::log::line(&format!(
+                    "[mpv] no software renderer in this libmpv ({why}); rendering through the GL"
+                ));
+                let gl_type = CString::new("opengl").unwrap();
+                params = [
+                    RenderParam { kind: MPV_RENDER_PARAM_API_TYPE, data: gl_type.as_ptr() as *mut c_void },
+                    RenderParam { kind: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, data: &mut init as *mut OpenGlInitParams as *mut c_void },
+                    RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
+                ];
+                created = std::ptr::null_mut();
+                rc = (api.render_create)(&mut created, mpv.0, params.as_mut_ptr());
+                false
+            } else {
+                software
+            };
             if rc < 0 {
                 let why = CStr::from_ptr((api.error_string)(rc)).to_string_lossy();
                 crate::log::line(&format!("[mpv] renderer refused the shared context: {why}"));
                 crate::platform::gl_worker_end(worker_ctx);
                 return;
             }
+            if software {
+                crate::log::line("[mpv] rendering with mpv's software renderer");
+            }
             *link.render_ctx.lock().unwrap() = Ptr(created);
             (api.render_set_update_callback)(created, frame_ready, Arc::as_ptr(&link) as *mut c_void);
+            // The renderer exists; whoever is holding `spawn` open may go.
+            link.ready.store(true, Ordering::SeqCst);
 
             let mut fbos = [0u32; 2];
             let mut texs = [0u32; 2];
+            // The software renderer's canvas, reused frame to frame.
+            let mut sw_frame: Vec<u8> = Vec::new();
 
             loop {
                 if link.stop.load(Ordering::SeqCst) {
@@ -2754,17 +2909,19 @@ mod worker {
                 if want.0 <= 0 || want.1 <= 0 {
                     continue;
                 }
-                // Same sizing as the in-paint path: the width quantized so a
-                // drag does not reallocate per pixel, the height following by
-                // the rectangle's exact ratio, the whole thing clamped to the
-                // stream.
                 // The same two sizes as the in-paint path, and for the same
                 // reason: mpv draws exactly the rectangle it will occupy so
                 // the interface's blit resamples nothing, while the texture
                 // under it is rounded up so a window drag does not reallocate
-                // on every pixel. See `render_to_texture`.
+                // on every pixel. And the same clamp: translated graphics
+                // never shade more pixels than the stream holds. See
+                // `render_to_texture`.
                 let round32 = |n: i32| ((n + 31) / 32 * 32).max(32);
-                let width = want.0.max(2);
+                let mut width = want.0.max(2);
+                if graphics_are_translated() {
+                    width = (width.min(vw) * SOFT_PIXELS.load(Ordering::Relaxed) as i32 / 100)
+                        .max(2);
+                }
                 let height = ((((width as i64 * want.1 as i64) / want.0.max(1) as i64) as i32) & !1).max(2);
                 let alloc = (round32(width), round32(height));
 
@@ -2834,13 +2991,6 @@ mod worker {
                 let cpu_before = thread_cpu_ms();
                 let wall_before = Instant::now();
 
-                let mut fbo = OpenGlFbo {
-                    fbo: fbos[back] as c_int,
-                    w: width,
-                    h: height,
-                    internal_format: 0,
-                };
-                let mut flip: c_int = 1;
                 // Render immediately, do not wait for the frame's due time.
                 // Blocking sounded right for a thread built to wait, and froze
                 // the interface instead: mpv holds its internal render lock
@@ -2849,15 +2999,75 @@ mod worker {
                 // worker's sleep. The latch above already paces this loop to
                 // mpv's announcements; nothing needs the wait.
                 let mut block: c_int = 0;
-                let mut render_params = [
-                    RenderParam { kind: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo as *mut OpenGlFbo as *mut c_void },
-                    RenderParam { kind: MPV_RENDER_PARAM_FLIP_Y, data: &mut flip as *mut c_int as *mut c_void },
-                    RenderParam { kind: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, data: &mut block as *mut c_int as *mut c_void },
-                    RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
-                ];
-                let rc = (api.render)(created, render_params.as_mut_ptr());
+                let rc = if software {
+                    // mpv shades in memory with its own scaler; the GL only
+                    // carries the finished bytes into the shared texture.
+                    // The renderer insists on a pointer aligned to 64 and is
+                    // happiest with a stride to match, and a Vec promises
+                    // neither, so both are arranged by hand: rows padded to
+                    // 64, the start slid up to the boundary, and the upload
+                    // told about the padding through UNPACK_ROW_LENGTH.
+                    let mut stride: usize = (width as usize * 4 + 63) & !63;
+                    let need = stride * height as usize + 64;
+                    if sw_frame.len() < need {
+                        sw_frame.resize(need, 0);
+                    }
+                    let canvas = {
+                        let base = sw_frame.as_mut_ptr();
+                        base.add(base.align_offset(64))
+                    };
+                    let mut size: [c_int; 2] = [width, height];
+                    let mut render_params = [
+                        RenderParam { kind: MPV_RENDER_PARAM_SW_SIZE, data: size.as_mut_ptr() as *mut c_void },
+                        RenderParam { kind: MPV_RENDER_PARAM_SW_FORMAT, data: b"bgr0\0".as_ptr() as *mut c_void },
+                        RenderParam { kind: MPV_RENDER_PARAM_SW_STRIDE, data: &mut stride as *mut usize as *mut c_void },
+                        RenderParam { kind: MPV_RENDER_PARAM_SW_POINTER, data: canvas as *mut c_void },
+                        RenderParam { kind: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, data: &mut block as *mut c_int as *mut c_void },
+                        RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
+                    ];
+                    let rc = (api.render)(created, render_params.as_mut_ptr());
+                    if rc >= 0 {
+                        gl.bind_texture(GL_TEXTURE_2D, texs[back]);
+                        (gl.pixel_storei)(GL_UNPACK_ALIGNMENT, 4);
+                        (gl.pixel_storei)(GL_UNPACK_ROW_LENGTH, (stride / 4) as i32);
+                        gl.tex_image_2d(
+                            GL_TEXTURE_2D,
+                            0,
+                            GL_RGBA8,
+                            width,
+                            height,
+                            0,
+                            GL_BGRA,
+                            GL_UNSIGNED_BYTE,
+                            canvas as *const c_void,
+                        );
+                        (gl.pixel_storei)(GL_UNPACK_ROW_LENGTH, 0);
+                        gl.bind_texture(GL_TEXTURE_2D, 0);
+                    }
+                    rc
+                } else {
+                    let mut fbo = OpenGlFbo {
+                        fbo: fbos[back] as c_int,
+                        w: width,
+                        h: height,
+                        internal_format: 0,
+                    };
+                    let mut flip: c_int = 1;
+                    let mut render_params = [
+                        RenderParam { kind: MPV_RENDER_PARAM_OPENGL_FBO, data: &mut fbo as *mut OpenGlFbo as *mut c_void },
+                        RenderParam { kind: MPV_RENDER_PARAM_FLIP_Y, data: &mut flip as *mut c_int as *mut c_void },
+                        RenderParam { kind: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, data: &mut block as *mut c_int as *mut c_void },
+                        RenderParam { kind: MPV_RENDER_PARAM_INVALID, data: std::ptr::null_mut() },
+                    ];
+                    (api.render)(created, render_params.as_mut_ptr())
+                };
                 if rc < 0 {
-                    shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    // Once, not per frame: sixty a second of the same sentence
+                    // is a log nobody can read.
+                    if shared.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+                        let why = CStr::from_ptr((api.error_string)(rc)).to_string_lossy();
+                        crate::log::line(&format!("[mpv] the renderer refused a frame: {why}"));
+                    }
                     continue;
                 }
 
@@ -2875,6 +3085,7 @@ mod worker {
                     let mut st = link.state.lock().unwrap();
                     st.front = back;
                     st.painted = true;
+                    st.flipped = software;
                 }
                 shared.rendered.fetch_add(1, Ordering::Relaxed);
 

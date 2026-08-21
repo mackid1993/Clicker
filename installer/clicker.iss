@@ -137,6 +137,15 @@ Source: "{#StageDir}\mesa\*";        DestDir: "{app}\mesa"; Flags: ignoreversion
 ; this is the rest of that directory, so nothing is left behind but the folder
 ; the user chose to fill.
 Type: filesandordirs; Name: "{app}\mesa"
+; The copy the application places beside its executable on a machine that
+; needed the fallback — put there at runtime, so the uninstaller does not know
+; it installed it — and the renamed-aside husks removal leaves when a running
+; process still had the library mapped. See place_software_opengl and
+; remove_software_opengl in src/platform/windows.rs.
+Type: files; Name: "{app}\opengl32.dll"
+Type: files; Name: "{app}\libgallium_wgl.dll"
+Type: files; Name: "{app}\opengl32.dll.stale*"
+Type: files; Name: "{app}\libgallium_wgl.dll.stale*"
 
 [Icons]
 ; IconFilename is given explicitly rather than left to inherit from the

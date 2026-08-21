@@ -142,27 +142,47 @@ session, which replaces the desktop's display driver with one that has no
 OpenGL in it even on a machine that has a good graphics card.
 
 So the Windows installer carries Mesa's software renderer in `mesa\`, and the
-choice is made before the window exists. Every machine is asked the same
-question, once, through a throwaway window: what OpenGL is here, and can it
-compile a shader? If it can, that is what draws, and the library the question
-was asked through is the one kept. If it cannot — or if there is no OpenGL to
-ask — Mesa draws instead. There is no second launch and nothing to install by
-hand: a machine either has graphics or it has the renderer that travels with
-it.
+choice is made before the window exists. Every start asks the same question
+through a throwaway window: what OpenGL is here, and can it compile a shader?
+If it can, that is what draws. If it cannot — or if there is no OpenGL to ask
+— Mesa is put beside the executable, where the loader binds it first, and the
+launch hands off to a started copy of itself that draws with it; there is
+still no window at that point, so nobody sees the handoff. Asking every start
+is what makes the answer track the machine: the same install drawn on the
+processor over Remote Desktop goes back to the graphics card by itself the
+next time it is started at the console, or after a driver is installed.
+
+A launch that chooses a renderer and never manages to draw with it is not
+repeated: the attempt is written down before the window is tried and crossed
+off by the first frame that reaches the screen, so the next start knows, says
+so, and tries the other renderer instead of failing the same way forever.
 
 Settings has the override, under Video, as **Draw with**: **Automatic** is the
 above, **Software** draws on the processor whatever the machine has — the way
 out of a virtual GPU whose OpenGL is present but draws wrong — and **Graphics
-chip** refuses the fallback, for proving what the graphics really are. It
-applies the next time Clicker starts, and the row says so, because whichever
-library loads first is the one the whole process draws with.
+chip** refuses the fallback, for proving what the graphics really are. On a
+machine whose own OpenGL cannot draw this program, Graphics chip is refused
+and the row says what the machine offered instead — a setting whose only
+possible outcome is a window that never opens is not offered. A choice takes
+effect at the next start, and the row says so, because whichever library loads
+first is the one the whole process draws with.
 
 `CLICKER_OPENGL` names a software OpenGL somewhere else entirely, for trying
 one without installing it.
 
-Drawn on the processor, everything works and nothing is fast. The picture
-profiles already read `llvmpipe` as software and drop to mpv's cheap scalers
-there, and `CLICKER_RENDER_THREAD=1` is worth trying on such a machine.
+Drawn on the processor, everything is arranged around the fact that pixels
+are the whole budget. Mesa is held to llvmpipe — its GPU-backed d3d12 driver
+was measured taking the whole process down on a machine whose native OpenGL
+drew perfectly, and a fallback that depends on GPU drivers is not a fallback.
+The video itself is not pushed through that GL at all: mpv renders it with
+its own software renderer straight into memory, and the GL only carries the
+finished frame to the screen. Rendering runs on its own thread, video is
+paced by the audio clock — llvmpipe has no vsync for `display-resample` to
+believe in — and the picture renders no larger than the stream. Settings
+gains **Pixels to shade** on such machines: All, Most, or Half of the
+picture's width, traded live against frame rate, because how to spend a
+processor's pixel budget — sharpness or motion — is not a call anyone can
+make for the user.
 
 **The window frame differs by platform, and only the frame.** Windows and Linux
 get the caption this application draws itself; macOS gets its own traffic
@@ -465,12 +485,16 @@ capability is genuinely absent.
 Outside that module there are eight conditionals in shared files, and they are
 all of them:
 
-Three behaviours are chosen at runtime by what the graphics say they are —
+Several behaviours are chosen at runtime by what the graphics say they are —
 `llvmpipe`, `virgl`, `SwiftShader` and Basic Render are read as translated or
 emulated — rather than by which platform is running: the picture profile under
-Automatic, whether video renders on its own thread, and the cap on egui's
-texture atlas. A Mac, a PC and a Linux desktop with real drivers are treated
-alike, and a virtual machine is treated alike whichever of them it is running.
+Automatic, whether video renders on its own thread, the pacing clock (audio
+rather than display, since a translated OpenGL has no vsync worth pacing
+against), whether mpv renders through the GL at all or with its own software
+renderer, the cap on the picture's render size at the stream's own, and the
+cap on egui's texture atlas. A Mac, a PC and a Linux desktop with real
+drivers are treated alike, and a virtual machine is treated alike whichever
+of them it is running.
 
 | Where | What it decides |
 |---|---|
