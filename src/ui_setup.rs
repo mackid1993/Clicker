@@ -1209,7 +1209,12 @@ const KEY_COLUMN: f32 = 150.0;
 
 /// How wide the label before a setting is, so the controls below each other
 /// start at the same place whatever their labels say.
-const LABEL_COLUMN: f32 = 96.0;
+///
+/// Wide enough for the widest label in the column, because the padding in
+/// `setting_label` can only add, never subtract: a label past the column
+/// pushes its own control right and out of line — which is exactly what
+/// "Picture scaling" did to its dropdown at 96.
+const LABEL_COLUMN: f32 = 120.0;
 
 /// A setting's label, and the space that puts what follows it in a column.
 ///
