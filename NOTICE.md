@@ -55,6 +55,20 @@ and shows it in Settings under About. `scripts/build-mpv.ps1` reproduces the
 build from the pinned tag, and `build.ps1` re-reads the shipped library and
 refuses to package it if it reports GPL.
 
+## Mesa
+
+The x64 Windows installer includes Mesa's software OpenGL — `opengl32.dll` and
+`libgallium_wgl.dll` — in the `mesa` directory beside the executable, for
+machines with no OpenGL of their own to draw with. They are unmodified and
+separately replaceable, and they are loaded when the machine turns out to need
+them or when Clicker is set to draw with the software renderer. Mesa is MIT —
+most of it, with individual files naming their own license by SPDX identifier.
+The renderer used is llvmpipe, which links LLVM, licensed under Apache-2.0 with
+LLVM exceptions. Both license texts are installed in `licenses`.
+
+The arm64 installer ships no renderer: the distribution these binaries come
+from publishes x86 and x64 only.
+
 ## Rust crates
 
 The Rust dependencies listed in `Cargo.toml`, and their own dependencies, are

@@ -80,6 +80,14 @@ jobs:
     permissions:
       contents: read
 
+    env:
+      # The software OpenGL, pinned by version and by the bytes themselves. Up
+      # here rather than on the step that fetches it because the cache key
+      # below has to name the same two things: a cache that outlives the pin it
+      # was filled for is a build shipping a renderer nobody chose.
+      MESA_VERSION: "26.2.0"
+      MESA_SHA256: "dcb2719ef346dab5b609fcb193a5f13cfc4b0502e3f4de1ad43d349477402f47"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -285,6 +293,103 @@ jobs:
         run: |
           $msys = if ($env:MSYS_LOCATION) { $env:MSYS_LOCATION } else { 'C:\msys64' }
           ./scripts/build-mpv.ps1 -Arch ${{ matrix.arch }} -Msys $msys
+
+      # The software OpenGL that ships inside the installer, in mesa\.
+      #
+      # Windows has an OpenGL for machines with no graphics driver — GDI
+      # Generic, version 1.1, no shading language — and nothing in this
+      # application can draw on it: egui needs 2.0 for a shader and mpv wants
+      # 2.1 for a renderer. A virtual machine with no graphics chip is left
+      # with exactly that, and so is any Remote Desktop session, which replaces
+      # the display driver with one that has no OpenGL in it. Mesa's llvmpipe
+      # rasterises on the processor and is complete. Without this step the
+      # installer still builds — build.ps1 treats the directory as optional —
+      # and those machines get a dialog instead of a program.
+      #
+      # Two DLLs, and the second is easy to miss: since Mesa 21.3.0
+      # opengl32.dll is only a loader and libgallium_wgl.dll is where the
+      # drivers actually live. Nothing else is taken. dxil.dll is in the same
+      # package and is Microsoft's, not Mesa's — it signs shaders for the
+      # Direct3D 12 driver, which is not the driver this is here for, and
+      # redistributing it is governed by terms this project does not carry.
+      #
+      # x64 only. mesa-dist-win publishes x86 and x64; Windows-on-Arm builds
+      # come from a different project, so the arm64 installer ships without a
+      # renderer and says as much where somebody would look for one.
+      - name: Cache the software OpenGL
+        if: matrix.arch == 'x64'
+        id: mesa
+        uses: actions/cache@v4
+        with:
+          # The archive as downloaded, not the files taken out of it. Caching
+          # the extraction would mean every run after the first shipped DLLs
+          # that no longer passed through the hash check below, since that
+          # check lives in the step a cache hit skips. This way the download is
+          # saved and the verification still happens on every single build.
+          path: mesa-package.7z
+          key: ${{ runner.os }}-mesa-${{ env.MESA_VERSION }}-${{ env.MESA_SHA256 }}
+
+      - name: Stage the software OpenGL
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $package = "mesa-package.7z"
+          $url = "https://github.com/pal1000/mesa-dist-win/releases/download/$env:MESA_VERSION/mesa3d-$env:MESA_VERSION-release-msvc.7z"
+
+          # Three tries, and the hash is checked inside the loop rather than
+          # after it: a download can end early with a success status, and a
+          # truncated package should be fetched again rather than reported as
+          # the wrong package.
+          for ($attempt = 1; ; $attempt++) {
+            try {
+              if (-not (Test-Path $package)) {
+                Write-Host "Fetching $url"
+                Invoke-WebRequest -Uri $url -OutFile $package
+              }
+              $sha = (Get-FileHash $package -Algorithm SHA256).Hash.ToLower()
+              if ($sha -ne $env:MESA_SHA256) {
+                throw "sha256 is $sha, not the pinned $env:MESA_SHA256"
+              }
+              Write-Host "sha256 verified: $sha"
+              break
+            } catch {
+              Remove-Item $package -Force -ErrorAction SilentlyContinue
+              if ($attempt -ge 3) { throw }
+              Write-Host "attempt $attempt failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds (3 * $attempt)
+            }
+          }
+
+          7z x $package -omesa-package -y | Out-Null
+          New-Item -ItemType Directory -Force -Path third_party\mesa | Out-Null
+
+          $wanted = 'opengl32.dll', 'libgallium_wgl.dll'
+          foreach ($name in $wanted) {
+            $file = "mesa-package\x64\$name"
+            if (-not (Test-Path $file)) {
+              throw "the Mesa package has no $name; the renderer needs both of $($wanted -join ' and ')"
+            }
+            Copy-Item $file third_party\mesa -Force
+          }
+          $size = (Get-ChildItem third_party\mesa -File | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host ("staged {0}: {1:N1} MB" -f ($wanted -join ', '), $size)
+
+      # Separate from the staging step so that it holds whatever happened
+      # there. The licenses travel with the binaries or the binaries do not
+      # ship: Mesa is MIT, and llvmpipe links LLVM, which is Apache-2.0 with
+      # the LLVM exceptions. build.ps1 stages the whole licenses directory into
+      # the installer, so this only has to check that both texts are still in
+      # the tree — a renderer that quietly outlived its paperwork is the
+      # failure worth being loud about.
+      - name: The renderer's licenses must be in the tree
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          foreach ($license in 'licenses\mesa-license.txt', 'licenses\llvm-license.txt') {
+            if (-not (Test-Path $license)) {
+              throw "$license is missing, and these binaries do not ship without it."
+            }
+          }
 
       # Inno Setup ships on the windows runner images, and build.ps1 looks for
       # it in the two Program Files directories, which is where choco puts it

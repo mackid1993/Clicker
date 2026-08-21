@@ -118,6 +118,35 @@ Source: "{#StageDir}\licenses\*";    DestDir: "{app}\licenses"; Flags: ignorever
 ; executable or renamed.
 Source: "{#StageDir}\*.dll";         DestDir: "{app}"; Flags: ignoreversion
 
+; A software OpenGL, in a directory of its own, and only if the build staged
+; one — see build.ps1, which makes it optional. The application asks every
+; machine what OpenGL it has before it opens a window and loads this by full
+; path only when the answer is that the machine cannot draw, or when somebody
+; sets Draw with to Software. That is why it is here rather than beside the
+; executable, where the loader would prefer it to the real driver on every
+; machine that installs this.
+;
+; The directory always holds at least the note that says what belongs in it, so
+; this never matches nothing; the flag is there in case a stage is ever
+; assembled by hand.
+Source: "{#StageDir}\mesa\*";        DestDir: "{app}\mesa"; Flags: ignoreversion skipifsourcedoesntexist
+
+[UninstallDelete]
+; Whatever was put here by hand on a machine that needed a software OpenGL and
+; did not get one from the installer. Uninstalling removes what it installed;
+; this is the rest of that directory, so nothing is left behind but the folder
+; the user chose to fill.
+Type: filesandordirs; Name: "{app}\mesa"
+; The copy the application places beside its executable on a machine that
+; needed the fallback — put there at runtime, so the uninstaller does not know
+; it installed it — and the renamed-aside husks removal leaves when a running
+; process still had the library mapped. See place_software_opengl and
+; remove_software_opengl in src/platform/windows.rs.
+Type: files; Name: "{app}\opengl32.dll"
+Type: files; Name: "{app}\libgallium_wgl.dll"
+Type: files; Name: "{app}\opengl32.dll.stale*"
+Type: files; Name: "{app}\libgallium_wgl.dll.stale*"
+
 [Icons]
 ; IconFilename is given explicitly rather than left to inherit from the
 ; executable. The exe now carries the icon as a Win32 resource, so inheriting

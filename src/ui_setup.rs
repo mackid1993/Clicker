@@ -593,19 +593,21 @@ pub fn settings_screen(
 
             control_row(ui, |ui| {
                 use crate::settings::Scaling;
-                ui.label(
-                    egui::RichText::new("Picture scaling")
-                        .size(12.0)
-                        .color(Fluent::TEXT_SECONDARY),
-                );
+                setting_label(ui, "Picture scaling");
                 let name = |s: Scaling| match s {
                     Scaling::Automatic => "Automatic",
                     Scaling::Fast => "Fast",
                     Scaling::Detailed => "Detailed",
                 };
+                // 150 on all three dropdowns in this column, and it must be
+                // enough for the widest selected text any of them can show.
+                // The width egui is given is a floor, not a size: a text that
+                // does not fit widens its own box, and "Graphics chip" at 120
+                // did — so its box ran past the others and its chevron sat
+                // against the text while the rest right-aligned theirs.
                 egui::ComboBox::from_id_salt("scaling")
                     .selected_text(name(settings.scaling))
-                    .width(120.0)
+                    .width(150.0)
                     .show_ui(ui, |ui| {
                         for choice in [Scaling::Automatic, Scaling::Fast, Scaling::Detailed] {
                             if ui
@@ -641,6 +643,190 @@ pub fn settings_screen(
                          chip may spend doing it. Takes effect on the next thing played.",
                     );
             });
+
+            // Shown only where there is a second renderer to choose. That is
+            // Windows alone: it is the one platform whose answer, when there is
+            // no graphics driver to ask, is an OpenGL that exists, answers and
+            // cannot draw a shader.
+            if crate::platform::HAS_SOFTWARE_GL {
+                control_row(ui, |ui| {
+                    use crate::settings::Graphics;
+                    // "Draw with", not "Graphics", and it is a deliberate pair
+                    // with "Decode in software" above: one names what turns the
+                    // stream into frames, the other what puts frames on the
+                    // screen. Called anything vaguer they read as two spellings
+                    // of the same switch, which is how the first version of
+                    // this row was read.
+                    setting_label(ui, "Draw with");
+                    let name = |g: Graphics| match g {
+                        Graphics::Automatic => "Automatic",
+                        Graphics::Software => "Software",
+                        Graphics::System => "Graphics chip",
+                    };
+                    // Same 150 as the dropdown above; see the note there.
+                    egui::ComboBox::from_id_salt("graphics")
+                        .selected_text(name(settings.graphics))
+                        .width(150.0)
+                        .show_ui(ui, |ui| {
+                            for choice in [Graphics::Automatic, Graphics::Software, Graphics::System]
+                            {
+                                if ui
+                                    .selectable_label(settings.graphics == choice, name(choice))
+                                    .on_hover_text(match choice {
+                                        Graphics::Automatic => {
+                                            "The graphics chip, unless this machine turns \
+                                             out not to have one that can draw — a virtual \
+                                             machine, or a Remote Desktop session — where \
+                                             the software renderer is used instead."
+                                        }
+                                        Graphics::Software => {
+                                            "The software renderer always: the picture and \
+                                             the interface drawn on the processor, which \
+                                             works and is not fast. The way out of a \
+                                             display whose driver is there and draws wrong."
+                                        }
+                                        Graphics::System => {
+                                            "The graphics chip always, and no window at all \
+                                             if its driver cannot draw. For proving what \
+                                             the graphics really are."
+                                        }
+                                    })
+                                    .clicked()
+                                    && choice != settings.graphics
+                                {
+                                    // The one choice that can take the window
+                                    // away entirely is refused where it would:
+                                    // a machine whose own OpenGL cannot draw
+                                    // this program keeps its working renderer,
+                                    // and the row says why.
+                                    if choice == Graphics::System
+                                        && !crate::machine_gl().can_draw
+                                    {
+                                        crate::set_graphics_note(Some(format!(
+                                            "refused: this machine offers {}",
+                                            crate::machine_gl().identity
+                                        )));
+                                    } else {
+                                        settings.graphics = choice;
+                                        // The files change now, so one restart
+                                        // is all it takes to draw with them.
+                                        crate::set_graphics_note(
+                                            crate::apply_graphics_choice(choice),
+                                        );
+                                        action = SetupAction::Save;
+                                    }
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Which OpenGL draws the interface and the picture — this \
+                             machine's own, or the software renderer that ships with \
+                             Clicker. Separate from decoding above: one is what turns the \
+                             stream into frames, this is what puts them on the screen.",
+                        );
+
+                    // What is happening, beside what has been asked for.
+                    // Automatic does not say which way it went, and a setting
+                    // that only takes effect at the next start looks broken
+                    // until something says so — which a tooltip nobody hovers
+                    // does not.
+                    let drawing_on_processor = crate::software_gl_in_use();
+                    let changed = settings.graphics != crate::graphics_at_start();
+                    let note = if let Some(applied) = crate::graphics_note() {
+                        // What happened when the current choice was made,
+                        // which outranks anything inferred: a refusal, or a
+                        // renderer that could not be put in place.
+                        Some(applied)
+                    } else if crate::graphics_refused().is_some() {
+                        // This launch wanted the software renderer and could
+                        // not have it. The detail is in the log.
+                        Some("the software renderer could not be put in place".to_string())
+                    } else if settings.graphics == Graphics::Software
+                        && crate::platform::software_opengl().is_none()
+                    {
+                        Some("no software renderer installed".to_string())
+                    } else if settings.graphics == Graphics::Software && !drawing_on_processor {
+                        // Judged against what is actually drawing, not against
+                        // what this launch started with: the files may already
+                        // be right while the binding is still last start's.
+                        Some("restart Clicker to apply".to_string())
+                    } else if settings.graphics == Graphics::System && drawing_on_processor {
+                        Some("restart Clicker to apply".to_string())
+                    } else if changed && settings.graphics == Graphics::Automatic {
+                        // Automatic resolves at startup, so a change onto it
+                        // only lands at the next one. The two settings above
+                        // compare against what is actually drawing instead,
+                        // which stays honest when startup itself rewrote the
+                        // setting — see the System arm of `choose_opengl`.
+                        Some("restart Clicker to apply".to_string())
+                    } else if drawing_on_processor {
+                        Some("drawing on the processor".to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(note) = note {
+                        ui.label(
+                            egui::RichText::new(note)
+                                .size(11.0)
+                                .color(Fluent::TEXT_TERTIARY),
+                        );
+                    }
+                });
+            }
+
+            // The dial on how many pixels the processor shades, shown only
+            // where the processor is what shades them: on translated graphics
+            // the pixel count is the whole frame budget, and how to spend it
+            // — sharpness or frames — is not a call anyone can make for the
+            // user. Applies to the next frame, no restart.
+            if crate::mpv::graphics_are_translated() {
+                control_row(ui, |ui| {
+                    use crate::settings::SoftPixels;
+                    setting_label(ui, "Pixels to shade");
+                    let name = |p: SoftPixels| match p {
+                        SoftPixels::All => "All",
+                        SoftPixels::Most => "Most",
+                        SoftPixels::Half => "Half",
+                    };
+                    // Same 150 as the dropdowns above; see the note there.
+                    egui::ComboBox::from_id_salt("soft_pixels")
+                        .selected_text(name(settings.soft_pixels))
+                        .width(150.0)
+                        .show_ui(ui, |ui| {
+                            for choice in [SoftPixels::All, SoftPixels::Most, SoftPixels::Half]
+                            {
+                                if ui
+                                    .selectable_label(settings.soft_pixels == choice, name(choice))
+                                    .on_hover_text(match choice {
+                                        SoftPixels::All => {
+                                            "Every pixel the window shows, up to the \
+                                             stream's own size."
+                                        }
+                                        SoftPixels::Most => {
+                                            "Three quarters of the picture's width — about \
+                                             half the pixels, noticeably faster."
+                                        }
+                                        SoftPixels::Half => {
+                                            "Half the picture's width — a quarter of the \
+                                             pixels. The fastest, and the softest."
+                                        }
+                                    })
+                                    .clicked()
+                                {
+                                    settings.soft_pixels = choice;
+                                    action = SetupAction::Save;
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "How much of the picture is drawn when the processor is doing \
+                             the drawing. Every pixel costs processor time, so fewer pixels \
+                             is directly more frames. Takes effect immediately.",
+                        );
+                });
+            }
 
             // ── Where things are kept ──────────────────────────────────
             //
@@ -686,20 +872,7 @@ pub fn settings_screen(
                 ),
             ] {
                 control_row(ui, |ui| {
-                    // A fixed column rather than however wide the word is.
-                    // "Downloads" and "Live buffer" are not the same width, so
-                    // laying the row out after the label put the two fields,
-                    // and the two Browse buttons under them, a couple of pixels
-                    // apart — which is exactly the kind of misalignment that is
-                    // impossible to unsee.
-                    let start = ui.cursor().min.x;
-                    ui.label(
-                        egui::RichText::new(label)
-                            .size(12.0)
-                            .color(Fluent::TEXT_SECONDARY),
-                    );
-                    let used = ui.cursor().min.x - start;
-                    ui.add_space((LABEL_COLUMN - used).max(0.0));
+                    setting_label(ui, label);
 
                     let entry = field(ui, value, FIELD_W - 110.0).hint_text(PATH_HINT);
                     let typed = ui.add(entry);
@@ -1042,9 +1215,33 @@ const ROW_H: f32 = 34.0;
 /// How far in the description column of the keyboard list starts.
 const KEY_COLUMN: f32 = 150.0;
 
-/// How wide the label before a folder field is, so the fields below each other
+/// How wide the label before a setting is, so the controls below each other
 /// start at the same place whatever their labels say.
-const LABEL_COLUMN: f32 = 96.0;
+///
+/// Wide enough for the widest label in the column, because the padding in
+/// `setting_label` can only add, never subtract: a label past the column
+/// pushes its own control right and out of line — which is exactly what
+/// "Picture scaling" did to its dropdown at 96.
+const LABEL_COLUMN: f32 = 120.0;
+
+/// A setting's label, and the space that puts what follows it in a column.
+///
+/// "Downloads" and "Live buffer" are not the same width, and neither are
+/// "Picture scaling" and "Graphics", so a row laid out straight after its
+/// label puts the fields under each other a few pixels apart — which is
+/// exactly the kind of misalignment that is impossible to unsee. Measured
+/// rather than guessed at, because the face is the system's own and is a
+/// different width on each of the three.
+fn setting_label(ui: &mut egui::Ui, text: &str) {
+    let start = ui.cursor().min.x;
+    ui.label(
+        egui::RichText::new(text)
+            .size(12.0)
+            .color(Fluent::TEXT_SECONDARY),
+    );
+    let used = ui.cursor().min.x - start;
+    ui.add_space((LABEL_COLUMN - used).max(0.0));
+}
 
 /// How wide a single-line setting field is.
 ///

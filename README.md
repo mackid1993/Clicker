@@ -132,6 +132,58 @@ and the window is built to make all three easy:
 
 [ffpip]: https://bugzilla.mozilla.org/show_bug.cgi?id=1621261
 
+**It cannot draw on Windows' own OpenGL, so it brings one.** Where there is
+no graphics driver to ask, Windows answers with an OpenGL of its own: `GDI
+Generic`, version 1.1, from 1996 and without so much as a shading language.
+Nothing here can use it — egui needs 2.0 before it can compile a shader and
+mpv wants 2.1 before it will make a renderer — and there are two ordinary ways
+to meet it: a virtual machine with no graphics chip, and a Remote Desktop
+session, which replaces the desktop's display driver with one that has no
+OpenGL in it even on a machine that has a good graphics card.
+
+So the Windows installer carries Mesa's software renderer in `mesa\`, and the
+choice is made before the window exists. Every start asks the same question
+through a throwaway window: what OpenGL is here, and can it compile a shader?
+If it can, that is what draws. If it cannot — or if there is no OpenGL to ask
+— Mesa is put beside the executable, where the loader binds it first, and the
+launch hands off to a started copy of itself that draws with it; there is
+still no window at that point, so nobody sees the handoff. Asking every start
+is what makes the answer track the machine: the same install drawn on the
+processor over Remote Desktop goes back to the graphics card by itself the
+next time it is started at the console, or after a driver is installed.
+
+A launch that chooses a renderer and never manages to draw with it is not
+repeated: the attempt is written down before the window is tried and crossed
+off by the first frame that reaches the screen, so the next start knows, says
+so, and tries the other renderer instead of failing the same way forever.
+
+Settings has the override, under Video, as **Draw with**: **Automatic** is the
+above, **Software** draws on the processor whatever the machine has — the way
+out of a virtual GPU whose OpenGL is present but draws wrong — and **Graphics
+chip** refuses the fallback, for proving what the graphics really are. On a
+machine whose own OpenGL cannot draw this program, Graphics chip is refused
+and the row says what the machine offered instead — a setting whose only
+possible outcome is a window that never opens is not offered. A choice takes
+effect at the next start, and the row says so, because whichever library loads
+first is the one the whole process draws with.
+
+`CLICKER_OPENGL` names a software OpenGL somewhere else entirely, for trying
+one without installing it.
+
+Drawn on the processor, everything is arranged around the fact that pixels
+are the whole budget. Mesa is held to llvmpipe — its GPU-backed d3d12 driver
+was measured taking the whole process down on a machine whose native OpenGL
+drew perfectly, and a fallback that depends on GPU drivers is not a fallback.
+The video itself is not pushed through that GL at all: mpv renders it with
+its own software renderer straight into memory, and the GL only carries the
+finished frame to the screen. Rendering runs on its own thread, video is
+paced by the audio clock — llvmpipe has no vsync for `display-resample` to
+believe in — and the picture renders no larger than the stream. Settings
+gains **Pixels to shade** on such machines: All, Most, or Half of the
+picture's width, traded live against frame rate, because how to spend a
+processor's pixel budget — sharpness or motion — is not a call anyone can
+make for the user.
+
 **The window frame differs by platform, and only the frame.** Windows and Linux
 get the caption this application draws itself; macOS gets its own traffic
 lights floating over the same surface, because a Mac window that does not look
@@ -203,6 +255,30 @@ fetches what is missing.
 Once `third_party\mpv` exists, `cargo build` on its own needs nothing but a
 Rust toolchain: libmpv is loaded by name at runtime rather than linked, so
 there is no native compilation step and no headers to find.
+
+#### The software OpenGL
+
+`build.ps1` stages whatever is in `third_party\mesa\` into `mesa\` beside the
+executable, and the installer carries it. The Windows build workflow fetches
+it — a [mesa-dist-win](https://github.com/pal1000/mesa-dist-win) release-msvc
+package, pinned by version and by sha256, with `opengl32.dll` and
+`libgallium_wgl.dll` taken out of `x64` — so a CI installer has it and a local
+`build.ps1` does not unless you put one there. An empty directory is not an
+error: the installer is then what it was before any of this, and a machine
+with no OpenGL gets a dialog saying so.
+
+Both DLLs, and the second is easy to miss: since Mesa 21.3.0 `opengl32.dll` is
+only a loader and `libgallium_wgl.dll` is where the drivers live. Nothing else
+from that package is taken — `dxil.dll` is in it and is Microsoft's, for the
+Direct3D 12 driver, which is not the driver this is for.
+
+x64 only: that distribution publishes x86 and x64, so the arm64 installer
+ships without a renderer and the folder's own note says so.
+
+It goes in a subdirectory and never beside the executable. An `opengl32.dll`
+there would be found by the loader ahead of the real driver on every machine
+that installs this, which is the opposite of a fallback: it is loaded by full
+path, and only once the machine has been found to need it.
 
 ### macOS
 
@@ -409,12 +485,16 @@ capability is genuinely absent.
 Outside that module there are eight conditionals in shared files, and they are
 all of them:
 
-Three behaviours are chosen at runtime by what the graphics say they are —
+Several behaviours are chosen at runtime by what the graphics say they are —
 `llvmpipe`, `virgl`, `SwiftShader` and Basic Render are read as translated or
 emulated — rather than by which platform is running: the picture profile under
-Automatic, whether video renders on its own thread, and the cap on egui's
-texture atlas. A Mac, a PC and a Linux desktop with real drivers are treated
-alike, and a virtual machine is treated alike whichever of them it is running.
+Automatic, whether video renders on its own thread, the pacing clock (audio
+rather than display, since a translated OpenGL has no vsync worth pacing
+against), whether mpv renders through the GL at all or with its own software
+renderer, the cap on the picture's render size at the stream's own, and the
+cap on egui's texture atlas. A Mac, a PC and a Linux desktop with real
+drivers are treated alike, and a virtual machine is treated alike whichever
+of them it is running.
 
 | Where | What it decides |
 |---|---|

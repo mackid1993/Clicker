@@ -1,0 +1,101 @@
+Mesa 3D Graphics Library — license and copyright
+
+Where Clicker ships Mesa, it is in the mesa\ directory beside the executable —
+opengl32.dll and libgallium_wgl.dll, unmodified, replaceable with any
+compatible build, and loaded only when this program is drawing with the
+software renderer. That is the x64 Windows installer; the arm64 one carries
+this notice and no Mesa, because the distribution used publishes no
+Windows-on-Arm build. The driver it is here for is llvmpipe, which rasterises
+on the processor.
+
+Three things follow. First, Mesa's own license page, verbatim, as published at
+https://docs.mesa3d.org/license.html. Second, Mesa's default license grant,
+which is the MIT license the page names, with the copyright notice MIT
+requires be carried with every copy. Third, a note on what else is inside these
+binaries.
+
+Individual files in Mesa may carry their own license, named by an SPDX
+identifier in the file itself, and the full set of texts lives in the licenses/
+directory of Mesa's source tree at https://gitlab.freedesktop.org/mesa/mesa.
+
+llvmpipe links LLVM, whose license is beside this file in llvm-license.txt.
+
+------------------------------------------------------------------------------
+
+License and Copyright
+
+Disclaimer
+
+Mesa implements various APIs, including OpenGL, OpenGL ES, Vulkan and OpenCL.
+Even though Mesa implements these APIs, the implementation isn't formally
+conformant on all combinations of drivers and hardware. Khronos maintains lists
+of conformant implementations for each of their APIs, as well as trademark
+details.
+
+This project is called Mesa, Mesa3D, or The Mesa 3-D graphics library.
+
+License / Copyright Information
+
+The Mesa distribution consists of several components. Different copyrights and
+licenses apply to different components. For example, the GLX client code uses
+the SGI Free Software License B, and some of the Mesa device drivers are
+copyrighted by their authors. See below for a list of Mesa's main components
+and the license for each.
+
+The core Mesa library is licensed according to the terms of the MIT license.
+
+Most of the Mesa code is licensed under MIT license, but individual files may
+have their own licenses.
+
+You may find all the licenses used within this project in the licenses/
+directory.
+
+Attention, Contributors
+
+When contributing to the Mesa project you must agree to the licensing terms of
+the component to which you're contributing. The following section lists the
+primary components of the Mesa distribution and their respective licenses.
+
+Mesa Component Licenses
+
+In general, consult each source file SPDX identifier for license terms.
+
+------------------------------------------------------------------------------
+
+Mesa's default license, as published on the page above, and the copyright
+notice that travels with it.
+
+    Copyright (C) 1999-2007  Brian Paul   All Rights Reserved.
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+Mesa's copyrights are held by its authors and contributors, whose notices are
+carried in the individual source files; the grant above is the project's own
+default, quoted from its license page.
+
+------------------------------------------------------------------------------
+
+What else is inside these binaries.
+
+libgallium_wgl.dll is built with LLVM compiled into it, which is why LLVM's
+license is beside this file in llvm-license.txt. A Mesa build of this kind also
+statically links other permissively licensed components — zlib, the SPIRV
+tooling, the Khronos GL and WGL headers among them — each under its own terms,
+which are collected in the licenses/ directory of the Mesa source tree named
+above. Nothing in it is copyleft.

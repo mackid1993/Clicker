@@ -102,6 +102,8 @@ exists because the alternative was rebuilding to answer a question.
 | `CLICKER_AO=null` | Silence the audio output. Ten seconds to learn whether a sound device is what is ruining the picture, which on Linux it can be — video is paced by the audio clock there. |
 | `CLICKER_RENDER_THREAD=1` / `=0` | Force mpv's rendering onto a thread of its own, or back into the interface's paint. A two-way switch on every platform, overriding the default described below — and the way that default was arrived at. |
 | `CLICKER_VIDEO=window` | Hand mpv the window itself, with no offscreen target and no blit. It overdraws the interface; it is a measuring instrument, not a mode. |
+| `CLICKER_OPENGL=<path>` | Windows only. A software OpenGL to use instead of the one the installer ships, named as a file or as the directory holding it. What it names is loaded only when Clicker is drawing with the software renderer — Settings, Video, **Draw with** — or when the machine turns out to have no OpenGL that can compile a shader. |
+| `CLICKER_PROBE=none` / `=old` | Windows only. Make the startup probe report a machine with no OpenGL at all, or with the unshaded 1.1 a headless session gets. Only the probe lies — whatever actually loads still draws — so every decision downstream of it (the fallback, the flip away from **Graphics chip**, the settings row refusing it) can be walked on a machine whose graphics work. |
 
 ---
 
