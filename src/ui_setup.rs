@@ -599,9 +599,15 @@ pub fn settings_screen(
                     Scaling::Fast => "Fast",
                     Scaling::Detailed => "Detailed",
                 };
+                // 150 on all three dropdowns in this column, and it must be
+                // enough for the widest selected text any of them can show.
+                // The width egui is given is a floor, not a size: a text that
+                // does not fit widens its own box, and "Graphics chip" at 120
+                // did — so its box ran past the others and its chevron sat
+                // against the text while the rest right-aligned theirs.
                 egui::ComboBox::from_id_salt("scaling")
                     .selected_text(name(settings.scaling))
-                    .width(120.0)
+                    .width(150.0)
                     .show_ui(ui, |ui| {
                         for choice in [Scaling::Automatic, Scaling::Fast, Scaling::Detailed] {
                             if ui
@@ -657,9 +663,10 @@ pub fn settings_screen(
                         Graphics::Software => "Software",
                         Graphics::System => "Graphics chip",
                     };
+                    // Same 150 as the dropdown above; see the note there.
                     egui::ComboBox::from_id_salt("graphics")
                         .selected_text(name(settings.graphics))
-                        .width(120.0)
+                        .width(150.0)
                         .show_ui(ui, |ui| {
                             for choice in [Graphics::Automatic, Graphics::Software, Graphics::System]
                             {
@@ -782,9 +789,10 @@ pub fn settings_screen(
                         SoftPixels::Most => "Most",
                         SoftPixels::Half => "Half",
                     };
+                    // Same 150 as the dropdowns above; see the note there.
                     egui::ComboBox::from_id_salt("soft_pixels")
                         .selected_text(name(settings.soft_pixels))
-                        .width(120.0)
+                        .width(150.0)
                         .show_ui(ui, |ui| {
                             for choice in [SoftPixels::All, SoftPixels::Most, SoftPixels::Half]
                             {
